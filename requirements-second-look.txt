@@ -1,0 +1,9 @@
+# The second look at new dishes (wash_dishes/verifier.py): CLIP image features via open_clip.
+# Install with --no-deps so pip never replaces the Jetson's CUDA Torch/torchvision:
+#   .venv/bin/pip install --no-deps -r requirements-second-look.txt
+open_clip_torch==3.3.0
+ftfy==6.3.1
+regex==2026.9.29
+wcwidth==0.2.5
+tqdm==4.70.1
+safetensors==0.8.0

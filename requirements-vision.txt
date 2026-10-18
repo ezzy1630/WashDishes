@@ -1,0 +1,6 @@
+# Portable Mac/CPU development environment. On Jetson, install NVIDIA's
+# matching CUDA Torch/torchvision first; see README before using this file.
+opencv-python==4.11.0.86
+numpy==1.26.4
+ultralytics==8.4.174
+lap==0.5.12

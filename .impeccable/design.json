@@ -1,0 +1,375 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-17T21:59:23.310962+00:00",
+  "title": "Design System: Dish Watch",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Background",
+        "tonalRamp": [
+          "oklch(15.00% 0.00458 264.43)",
+          "oklch(26.43% 0.00458 264.43)",
+          "oklch(37.86% 0.00458 264.43)",
+          "oklch(49.29% 0.00458 264.43)",
+          "oklch(60.71% 0.00458 264.43)",
+          "oklch(72.14% 0.00458 264.43)",
+          "oklch(83.57% 0.00458 264.43)",
+          "oklch(95.00% 0.00458 264.43)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.00690 258.37)",
+          "oklch(26.43% 0.00690 258.37)",
+          "oklch(37.86% 0.00690 258.37)",
+          "oklch(49.29% 0.00690 258.37)",
+          "oklch(60.71% 0.00690 258.37)",
+          "oklch(72.14% 0.00690 258.37)",
+          "oklch(83.57% 0.00690 258.37)",
+          "oklch(95.00% 0.00690 258.37)"
+        ]
+      },
+      "control": {
+        "role": "neutral",
+        "displayName": "Control",
+        "tonalRamp": [
+          "oklch(15.00% 0.00911 255.61)",
+          "oklch(26.43% 0.00911 255.61)",
+          "oklch(37.86% 0.00911 255.61)",
+          "oklch(49.29% 0.00911 255.61)",
+          "oklch(60.71% 0.00911 255.61)",
+          "oklch(72.14% 0.00911 255.61)",
+          "oklch(83.57% 0.00911 255.61)",
+          "oklch(95.00% 0.00911 255.61)"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Raised",
+        "tonalRamp": [
+          "oklch(15.00% 0.01117 254.04)",
+          "oklch(26.43% 0.01117 254.04)",
+          "oklch(37.86% 0.01117 254.04)",
+          "oklch(49.29% 0.01117 254.04)",
+          "oklch(60.71% 0.01117 254.04)",
+          "oklch(72.14% 0.01117 254.04)",
+          "oklch(83.57% 0.01117 254.04)",
+          "oklch(95.00% 0.01117 254.04)"
+        ]
+      },
+      "divider": {
+        "role": "neutral",
+        "displayName": "Divider",
+        "tonalRamp": [
+          "oklch(15.00% 0.01112 254.04)",
+          "oklch(26.43% 0.01112 254.04)",
+          "oklch(37.86% 0.01112 254.04)",
+          "oklch(49.29% 0.01112 254.04)",
+          "oklch(60.71% 0.01112 254.04)",
+          "oklch(72.14% 0.01112 254.04)",
+          "oklch(83.57% 0.01112 254.04)",
+          "oklch(95.00% 0.01112 254.04)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Border",
+        "tonalRamp": [
+          "oklch(15.00% 0.01293 253.01)",
+          "oklch(26.43% 0.01293 253.01)",
+          "oklch(37.86% 0.01293 253.01)",
+          "oklch(49.29% 0.01293 253.01)",
+          "oklch(60.71% 0.01293 253.01)",
+          "oklch(72.14% 0.01293 253.01)",
+          "oklch(83.57% 0.01293 253.01)",
+          "oklch(95.00% 0.01293 253.01)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Border strong",
+        "tonalRamp": [
+          "oklch(15.00% 0.01594 255.61)",
+          "oklch(26.43% 0.01594 255.61)",
+          "oklch(37.86% 0.01594 255.61)",
+          "oklch(49.29% 0.01594 255.61)",
+          "oklch(60.71% 0.01594 255.61)",
+          "oklch(72.14% 0.01594 255.61)",
+          "oklch(83.57% 0.01594 255.61)",
+          "oklch(95.00% 0.01594 255.61)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00458 258.33)",
+          "oklch(26.43% 0.00458 258.33)",
+          "oklch(37.86% 0.00458 258.33)",
+          "oklch(49.29% 0.00458 258.33)",
+          "oklch(60.71% 0.00458 258.33)",
+          "oklch(72.14% 0.00458 258.33)",
+          "oklch(83.57% 0.00458 258.33)",
+          "oklch(95.00% 0.00458 258.33)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Text secondary",
+        "tonalRamp": [
+          "oklch(15.00% 0.01401 251.60)",
+          "oklch(26.43% 0.01401 251.60)",
+          "oklch(37.86% 0.01401 251.60)",
+          "oklch(49.29% 0.01401 251.60)",
+          "oklch(60.71% 0.01401 251.60)",
+          "oklch(72.14% 0.01401 251.60)",
+          "oklch(83.57% 0.01401 251.60)",
+          "oklch(95.00% 0.01401 251.60)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Text muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.01801 250.91)",
+          "oklch(26.43% 0.01801 250.91)",
+          "oklch(37.86% 0.01801 250.91)",
+          "oklch(49.29% 0.01801 250.91)",
+          "oklch(60.71% 0.01801 250.91)",
+          "oklch(72.14% 0.01801 250.91)",
+          "oklch(83.57% 0.01801 250.91)",
+          "oklch(95.00% 0.01801 250.91)"
+        ]
+      },
+      "action": {
+        "role": "primary",
+        "displayName": "Action",
+        "tonalRamp": [
+          "oklch(15.00% 0.00457 258.32)",
+          "oklch(26.43% 0.00457 258.32)",
+          "oklch(37.86% 0.00457 258.32)",
+          "oklch(49.29% 0.00457 258.32)",
+          "oklch(60.71% 0.00457 258.32)",
+          "oklch(72.14% 0.00457 258.32)",
+          "oklch(83.57% 0.00457 258.32)",
+          "oklch(95.00% 0.00457 258.32)"
+        ]
+      },
+      "action-hover": {
+        "role": "primary",
+        "displayName": "Action hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "waiting": {
+        "role": "primary",
+        "displayName": "Waiting",
+        "tonalRamp": [
+          "oklch(15.00% 0.12866 75.81)",
+          "oklch(26.43% 0.12866 75.81)",
+          "oklch(37.86% 0.12866 75.81)",
+          "oklch(49.29% 0.12866 75.81)",
+          "oklch(60.71% 0.12866 75.81)",
+          "oklch(72.14% 0.12866 75.81)",
+          "oklch(83.57% 0.12866 75.81)",
+          "oklch(95.00% 0.12866 75.81)"
+        ]
+      },
+      "late": {
+        "role": "primary",
+        "displayName": "Late",
+        "tonalRamp": [
+          "oklch(15.00% 0.17977 26.98)",
+          "oklch(26.43% 0.17977 26.98)",
+          "oklch(37.86% 0.17977 26.98)",
+          "oklch(49.29% 0.17977 26.98)",
+          "oklch(60.71% 0.17977 26.98)",
+          "oklch(72.14% 0.17977 26.98)",
+          "oklch(83.57% 0.17977 26.98)",
+          "oklch(95.00% 0.17977 26.98)"
+        ]
+      },
+      "confirmed-washed": {
+        "role": "primary",
+        "displayName": "Confirmed washed",
+        "tonalRamp": [
+          "oklch(15.00% 0.12670 158.89)",
+          "oklch(26.43% 0.12670 158.89)",
+          "oklch(37.86% 0.12670 158.89)",
+          "oklch(49.29% 0.12670 158.89)",
+          "oklch(60.71% 0.12670 158.89)",
+          "oklch(72.14% 0.12670 158.89)",
+          "oklch(83.57% 0.12670 158.89)",
+          "oklch(95.00% 0.12670 158.89)"
+        ]
+      },
+      "needs-review": {
+        "role": "primary",
+        "displayName": "Needs review",
+        "tonalRamp": [
+          "oklch(15.00% 0.13739 262.86)",
+          "oklch(26.43% 0.13739 262.86)",
+          "oklch(37.86% 0.13739 262.86)",
+          "oklch(49.29% 0.13739 262.86)",
+          "oklch(60.71% 0.13739 262.86)",
+          "oklch(72.14% 0.13739 262.86)",
+          "oklch(83.57% 0.13739 262.86)",
+          "oklch(95.00% 0.13739 262.86)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Page headline",
+        "purpose": "Incident feed and case titles."
+      },
+      "mono": {
+        "displayName": "Code and keyboard labels",
+        "purpose": "Implemented on kbd, pre and code; not currently applied to incident ID spans."
+      }
+    },
+    "shadows": [
+      {
+        "name": "menu",
+        "value": "0 18px 40px rgba(0, 0, 0, .5)",
+        "purpose": "Shared menu overlay only."
+      },
+      {
+        "name": "command-palette",
+        "value": "0 24px 60px rgba(0, 0, 0, .6)",
+        "purpose": "Shared command palette only."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-state",
+        "value": "background .12s, border-color .12s",
+        "purpose": "Shared button hover; disabled by reduced-motion preference."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "two-column-feed",
+        "value": "1100px"
+      },
+      {
+        "name": "stacked-workspace",
+        "value": "760px"
+      },
+      {
+        "name": "full-width-person-filter",
+        "value": "600px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary save button",
+      "kind": "button",
+      "description": "The unified review save action.",
+      "html": "<div class=\"ds-scope\"><button class=\"ds-btn ds-primary\" type=\"button\">Save review</button></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--ln2,#2a2f35);background:var(--s2,#171a1e);color:var(--tx,#e8eaed);font:500 14px var(--sans,\"Mona Sans\",system-ui,sans-serif);white-space:nowrap;cursor:pointer;transition:background .12s,border-color .12s}.ds-btn:hover:not(:disabled){background:var(--s3,#1e2227);border-color:var(--ln3,#3a4048)}.ds-btn:focus-visible{outline:2px solid rgba(232,234,237,.7);outline-offset:2px;}.ds-btn:disabled{cursor:not-allowed;opacity:.45}@media(prefers-reduced-motion:reduce){.ds-btn{transition:none}}.ds-primary{background:#eceef1;border-color:#eceef1;color:#0b0c0e}.ds-primary:hover:not(:disabled){background:#fff;border-color:#fff}"
+    },
+    {
+      "name": "Standard button",
+      "kind": "button",
+      "description": "Pagination and secondary evidence actions.",
+      "html": "<div class=\"ds-scope\"><button class=\"ds-btn\" type=\"button\">Load more</button></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--ln2,#2a2f35);background:var(--s2,#171a1e);color:var(--tx,#e8eaed);font:500 14px var(--sans,\"Mona Sans\",system-ui,sans-serif);white-space:nowrap;cursor:pointer;transition:background .12s,border-color .12s}.ds-btn:hover:not(:disabled){background:var(--s3,#1e2227);border-color:var(--ln3,#3a4048)}.ds-btn:focus-visible{outline:2px solid rgba(232,234,237,.7);outline-offset:2px;}.ds-btn:disabled{cursor:not-allowed;opacity:.45}@media(prefers-reduced-motion:reduce){.ds-btn{transition:none}}"
+    },
+    {
+      "name": "Quiet button",
+      "kind": "button",
+      "description": "Shared low-emphasis action variant.",
+      "html": "<div class=\"ds-scope\"><button class=\"ds-btn ds-quiet\" type=\"button\">Cancel</button></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--ln2,#2a2f35);background:var(--s2,#171a1e);color:var(--tx,#e8eaed);font:500 14px var(--sans,\"Mona Sans\",system-ui,sans-serif);white-space:nowrap;cursor:pointer;transition:background .12s,border-color .12s}.ds-btn:hover:not(:disabled){background:var(--s3,#1e2227);border-color:var(--ln3,#3a4048)}.ds-btn:focus-visible{outline:2px solid rgba(232,234,237,.7);outline-offset:2px;}.ds-btn:disabled{cursor:not-allowed;opacity:.45}@media(prefers-reduced-motion:reduce){.ds-btn{transition:none}}.ds-quiet{background:transparent;border-color:transparent;color:var(--tx2,#a3aab2)}.ds-quiet:hover:not(:disabled){background:var(--s2,#171a1e);border-color:transparent;color:var(--tx,#e8eaed)}"
+    },
+    {
+      "name": "Review field",
+      "kind": "input",
+      "description": "A native evidence answer with an explicit unknown choice.",
+      "html": "<div class=\"ds-scope\"><label class=\"ds-field\"><span>Dish condition</span><select class=\"ds-select\"><option>Cannot tell</option><option>Used / dirty dish</option><option>Clean dish</option><option>Not a dish</option></select></label></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-field{display:grid;gap:8px;margin:18px 0;font-size:13px;line-height:1.5}.ds-select{width:100%;min-width:0;min-height:42px;height:auto;padding:10px;border:1px solid var(--ln,#1f2328);border-radius:5px;background:var(--bg,#0b0c0e);color:var(--tx,#e8eaed);font:inherit;line-height:1.4;color-scheme:dark}.ds-select:focus-visible{outline:2px solid rgba(232,234,237,.5);outline-offset:0}"
+    },
+    {
+      "name": "Incident status navigation",
+      "kind": "nav",
+      "description": "Counted filters with an underline for the active view; example counts are illustrative.",
+      "html": "<div class=\"ds-scope\"><nav class=\"ds-tabs\" aria-label=\"Incident status\"><a class=\"ds-tab\" href=\"#needs-review\" aria-current=\"page\">Needs review <b class=\"ds-count\">2</b></a><a class=\"ds-tab\" href=\"#still-out\">Still out <b class=\"ds-count\">4</b></a></nav></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-tabs{display:flex;gap:24px;overflow:auto;margin:28px 0 16px;border-bottom:1px solid var(--ln,#1f2328)}.ds-tab{white-space:nowrap;padding:12px 0;color:var(--tx3);border-bottom:2px solid transparent;text-decoration:none}.ds-tab[aria-current=page]{color:var(--tx,#e8eaed);border-color:var(--tx,#e8eaed)}.ds-tab:focus-visible{outline:2px solid rgba(232,234,237,.7);outline-offset:2px;border-radius:6px}.ds-count{margin-left:8px;font-size:12px;font-weight:500}@media(max-width:760px){.ds-tabs{gap:18px}}"
+    },
+    {
+      "name": "Shared state pill",
+      "kind": "chip",
+      "description": "Existing neutral state badge; state remains explicit text.",
+      "html": "<div class=\"ds-scope\"><span class=\"ds-pill\">Unknown</span></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-pill{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:12px;font-size:12.5px;font-weight:550;white-space:nowrap;background:var(--s3,#1e2227);color:var(--tx2,#a3aab2)}"
+    },
+    {
+      "name": "Incident card with unavailable media",
+      "kind": "card",
+      "description": "Actual missing-image state; sample text contains no household data or invented photo.",
+      "html": "<div class=\"ds-scope\"><article class=\"ds-card\"><a class=\"ds-picture\" href=\"#incident\" aria-label=\"Open incident\"><span class=\"ds-missing\"><svg class=\"ds-icon\" width=\"25\" height=\"25\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 7.5h3l1.5-2.5h7L17 7.5h3V19H4z\"/><path d=\"M12 10a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4\"/></svg>Saved image unavailable</span></a><div class=\"ds-card-body\"><div class=\"ds-meta\"><span>Still out</span><span class=\"ds-muted\">#42</span></div><h2 class=\"ds-title\"><a class=\"ds-link\" href=\"#incident\">Dish</a></h2><p class=\"ds-location\">Kitchen · Time unknown</p><div class=\"ds-foot\"><span class=\"ds-muted\">Media unavailable · open for details</span><a class=\"ds-link\" href=\"#incident\">Open case</a></div></div></article></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-card{min-width:0;border:1px solid var(--ln,#1f2328);background:var(--s1,#111316);border-radius:10px;overflow:hidden}.ds-picture{display:block;aspect-ratio:2640/2020;background:var(--s2,#171a1e);overflow:hidden;text-decoration:none}.ds-missing{height:100%;display:flex;align-items:center;justify-content:center;gap:12px;color:var(--tx3)}.ds-icon{flex:none}.ds-card-body{padding:18px}.ds-meta,.ds-foot{display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:12px}.ds-meta,.ds-location{color:var(--tx2,#a3aab2)}.ds-muted{color:var(--tx3)}.ds-title{font-size:19px;font-weight:600;letter-spacing:-.01em;line-height:1.35;margin:12px 0 5px}.ds-link{color:inherit;text-decoration:none}.ds-location{font-size:13px;margin:0 0 18px}.ds-foot{border-top:1px solid var(--ln,#1f2328);padding-top:14px}.ds-link:focus-visible,.ds-picture:focus-visible{outline:2px solid rgba(232,234,237,.7);outline-offset:2px;border-radius:6px}@media(max-width:760px){.ds-title{font-size:21px}}"
+    },
+    {
+      "name": "Evidence caption",
+      "kind": "custom",
+      "description": "Capture completeness and observation limits below a full collage.",
+      "html": "<div class=\"ds-scope\"><div class=\"ds-caption\"><strong>3/4 stages captured · needs checking</strong><p class=\"ds-description\">Separate frames show observations. They cannot prove what happened between them.</p></div></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-caption{padding:20px 0}.ds-description{font-size:13px;margin:8px 0;color:var(--tx2,#a3aab2)}"
+    },
+    {
+      "name": "Review panel",
+      "kind": "card",
+      "description": "The unified review container, shown with its actual introductory copy.",
+      "html": "<div class=\"ds-scope\"><section class=\"ds-review\"><h2 class=\"ds-heading\">Check the evidence</h2><p class=\"ds-intro\">Save what you can establish. “Cannot tell” keeps the uncertainty visible.</p></section></div>",
+      "css": ".ds-scope{--tx3:#919aa4;font-family:var(--sans,\"Mona Sans\",system-ui,sans-serif);color:var(--tx,#e8eaed);background:var(--bg,#0b0c0e);font-size:14px;line-height:1.5;padding:16px;}.ds-review{padding:22px;background:var(--s1,#111316);border:1px solid var(--ln,#1f2328);border-radius:8px}.ds-heading{font-size:17px;line-height:1.5;font-weight:600;letter-spacing:-.01em;margin:0 0 12px}.ds-intro{font-size:13px;margin:0 0 20px;color:var(--tx2,#a3aab2)}"
+    }
+  ],
+  "narrative": {
+    "overview": "Dish Watch uses a restrained graphite interface with real camera evidence as its dominant visual material. Mona Sans, compact controls, thin borders and quiet metadata support short kitchen-review sessions. The interface keeps uncertain observations visibly distinct from confirmed responsibility.\n\nThis record covers the implemented incident feed and case/review page, with shared controls from the static app. It records the built palette rather than the slightly lighter range in the direction brief. Surface composition remains in `.impeccable/surfaces/wash-dishes-static-index-html.md`; product rules remain in `PRODUCT.md`.\n",
+    "keyCharacteristics": [
+      "Real full-scene evidence before attribution.",
+      "Graphite layers, restrained borders and compact native controls.",
+      "Readable muted metadata and explicit unknown states.",
+      "A responsive evidence column beside one review form."
+    ],
+    "rules": [
+      {
+        "name": "The Readable Metadata Rule",
+        "body": "Incident hints, timestamps, missing-media messages and inactive status tabs use the scoped muted text color. Do not inherit the legacy root muted value into these surfaces.",
+        "section": "colors"
+      },
+      {
+        "name": "The Evidence Boundary Rule",
+        "body": "Keep missing stages, uncertain attribution and washing-unknown outcomes explicit. A photograph, a nearby person or a disappearing dish is not a visual substitute for confirmed responsibility or washing.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do keep real evidence full-scene, uncropped and accompanied by its limits.",
+      "Do use the scoped readable muted token for incident metadata and field hints.",
+      "Do pair semantic state color with explicit text.",
+      "Do retain native labeled controls, visible focus and reduced-motion behavior.",
+      "Do stack evidence before review on narrow screens."
+    ],
+    "donts": [
+      "Don't invent or substitute imagery for missing household evidence.",
+      "Don't turn unknown observations into named responsibility or confirmed washing.",
+      "Don't promote the legacy root muted color or ornamental eyebrows into new surfaces.",
+      "Don't add card shadows or continuous decorative animation to these recorded surfaces."
+    ]
+  }
+}

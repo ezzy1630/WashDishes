@@ -1,0 +1,13 @@
+[Unit]
+Description=Use canonical firmware path before Jetson GPU initialization
+DefaultDependencies=no
+Before=systemd-udev-trigger.service systemd-modules-load.service nv-load-display-modules.service nvidia-cdi-refresh.service nvpmodel.service
+ConditionPathExists=/usr/lib/firmware/nvidia/ga10b/acr-gsp.data.encrypt.bin.prod
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'printf /usr/lib/firmware > /sys/module/firmware_class/parameters/path'
+
+[Install]
+WantedBy=sysinit.target
