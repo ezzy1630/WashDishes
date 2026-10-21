@@ -35,7 +35,7 @@ kbd, pre, code { font-family: var(--mono); }
 .tx2 { color: var(--tx2); } .tx3 { color: var(--tx3); }
 .late { color: var(--late); } .out { color: var(--out); } .ok, .done { color: var(--done); }
 .grow { flex: 1; min-width: 0; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .icon { flex: none; }
 kbd { display: inline-block; min-width: 18px; height: 18px; padding: 0 5px; font-size: 11px; line-height: 16px; text-align: center; color: var(--tx3); border: 1px solid var(--ln2); border-radius: 5px; background: rgba(255, 255, 255, .03); }
 .skip-link { position: fixed; left: 8px; top: -40px; z-index: 100; padding: 6px 10px; background: var(--tx); color: var(--bg); border-radius: 8px; font-weight: 600; }
@@ -670,3 +670,20 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .menu>a{display:block;padding:10px 14px;font-size:13px}.menu>a:hover{background:var(--s2)}
 @media(max-width:900px){.home-grid,.pending-view{grid-template-columns:minmax(0,1fr);gap:36px}.pending-view{gap:20px}}
 @media(max-width:760px){.photo-home .page-head,.photo-detail .page-head{align-items:flex-start}.photo-detail .page-head{flex-wrap:wrap}.watch-row{gap:12px}}
+
+/* Send: finished proof pictures, one per dish still out. The picture is the page. */
+.proof-page { max-width: 1000px; }
+.proof-list { display: grid; gap: 28px; }
+.proof-card { border: 1px solid var(--ln2); border-radius: 14px; background: var(--s1); overflow: hidden; }
+.proof-card img { width: 100%; height: auto; background: #fff; }
+.proof-bar { display: flex; align-items: center; gap: 14px; padding: 14px 16px 6px; font-size: 15px; }
+.proof-names { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px 4px; }
+.proof-names > span { margin-right: 4px; }
+.name-chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--ln2); background: var(--s2); font-weight: 500; text-transform: capitalize; }
+.name-chip:hover:not(:disabled) { border-color: var(--ln3); background: var(--s3); }
+.name-chip.guess { border-color: var(--ask); }
+.name-chip small { font-size: 11px; color: var(--ask); text-transform: none; }
+.name-chip.on { background: #eceef1; border-color: #eceef1; color: #0b0c0e; cursor: default; }
+.proof-more { display: flex; gap: 4px; padding: 4px 10px 12px; }
+.proof-foot { margin-top: 22px; font-size: 13px; }
+@media (max-width: 640px) { .proof-bar { flex-wrap: wrap; } .proof-bar .btn { width: 100%; height: 42px; } }

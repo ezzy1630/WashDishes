@@ -15,6 +15,8 @@ from .incidents import Incidents
 from .inventory import PUT_DOWN_CLIP, Inventory, area_for, in_area
 from .media import Media
 from .notify import Notifier
+from .proofs import Proofs
+from .putdown import find_putdown
 from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
@@ -38,6 +40,8 @@ class Runtime:
         self.sequences = SequenceCollection(store, media)
         self.recovery = EvidenceRecovery(store, media, self.dataset)
         self.incidents = Incidents(store, media, self.sequences)
+        self.proofs = Proofs(config.root, store, media)
+        self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
         self.notifier = Notifier(config.root, store)
@@ -145,12 +149,15 @@ class Runtime:
             # Network sends must never stall frame analysis; the demo's fictional people send nothing.
             self.notify_thread = threading.Thread(target=self._notify_worker, name="notify-worker", daemon=True)
             self.notify_thread.start()
+            # Searching footage takes up to a minute per dish; it gets its own low-priority thread.
+            self.proof_thread = threading.Thread(target=self._proof_worker, name="proof-worker", daemon=True)
+            self.proof_thread.start()
 
     def stop(self) -> None:
         self.stop_event.set()
         self.traces.stop()
         self.camera.stop()
-        for thread in (self.thread, self.media_thread, self.notify_thread):
+        for thread in (self.thread, self.media_thread, self.notify_thread, self.proof_thread):
             if thread:
                 thread.join(timeout=30)
 
@@ -179,6 +186,58 @@ class Runtime:
             except Exception:
                 # A transient file problem must not end retention or clip export for good.
                 next_cleanup = time.monotonic() + 60
+
+    def _proof_worker(self) -> None:
+        try:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        except (AttributeError, OSError):
+            pass
+        next_cleanup = 0.0
+        while not self.stop_event.wait(20):
+            try:
+                if time.monotonic() >= next_cleanup:
+                    self.proofs.cleanup()
+                    next_cleanup = time.monotonic() + 3600
+                with self.lock:
+                    seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
+                self.proofs.run_once(lambda box, logged, until: find_putdown(self.media.buffer, box, logged, until),
+                                     self._identify_putdown if seeing else None)
+            except Exception:
+                # One bad recording or picture must not stop proofs for every later dish.
+                pass
+
+    def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at) -> list[float] | None:
+        """Box of the person putting the dish down, or None if nobody is within reach of it.
+
+        Their appearance replaces whatever the camera captured when it logged the dish (often a
+        while later and of someone else), so naming this proof trains on the right person and the
+        guess shown next to it is about them.
+        """
+        x, y, w, h = dish_box
+        cx, cy = x + w / 2, y + h / 2
+        def reach(person: dict) -> float:
+            px, py, pw, ph = person["box"]
+            return max(px - cx, 0, cx - px - pw) + max(py - cy, 0, cy - py - ph)
+        with self.lock:
+            engine = self.local_vision()
+            person = min(engine.people(jpeg), key=reach, default=None)
+            if person is None or reach(person) > 0.1:
+                return None
+            try:
+                cues, crop = engine.describe_person(jpeg, person["box"])
+                faces = engine.enrolled_faces()
+            except Exception:
+                return person["box"]
+        settings = self.store.settings()
+        location = self.store.obligation(obligation_id)["location"]
+        context = next((a["id"] for a in monitoring_areas(settings) if a.get("name") == location), None)
+        evidence_id = self.media.save_snapshot(obligation_id, crop, "Who put it down (from footage)", at=at)
+        self.store.clear_unlabeled_samples(obligation_id)
+        for cue, vector in cues.items():
+            self.store.add_person_sample(obligation_id, vector, evidence_id, at=at, cue=cue, context=context)
+        resident, evidence, _, seen = self.store.suggest_identity(cues, at=at, context=context, enrolled_faces=faces)
+        self.store.set_suggestion(obligation_id, resident, evidence, seen)
+        return person["box"]
 
     def _notify_worker(self) -> None:
         while not self.stop_event.wait(30):

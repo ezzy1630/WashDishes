@@ -157,7 +157,7 @@ def test_invalid_dish_counts(dishes):
         validate_dishes(dishes)
 
 
-def test_unnamed_dishes_that_can_never_be_proven_late_close_after_a_day(store):
+def test_unnamed_dishes_gone_for_a_day_close_even_if_photographed_late(store):
     now = utcnow()
     old = now - timedelta(days=2)
     unprovable = store.create_obligation(None, [{"kind": "cup", "quantity": 1}], candidate=True, source="vision", at=old)
@@ -166,5 +166,5 @@ def test_unnamed_dishes_that_can_never_be_proven_late_close_after_a_day(store):
     named = store.create_obligation(store.add_resident("Sam")["id"], [{"kind": "bowl", "quantity": 1}], source="vision", at=old)
     recent = store.create_obligation(None, [{"kind": "pan", "quantity": 1}], candidate=True, source="vision", at=now - timedelta(hours=3))
     store.scan_deadlines(now)
-    assert store.obligation(unprovable["id"])["lifecycle"] == "dismissed"
-    assert all(store.obligation(item["id"])["lifecycle"] == "open" for item in (photographed, named, recent))
+    assert all(store.obligation(item["id"])["lifecycle"] == "dismissed" for item in (unprovable, photographed))
+    assert all(store.obligation(item["id"])["lifecycle"] == "open" for item in (named, recent))

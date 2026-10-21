@@ -5,6 +5,7 @@ import { openIncident, logDishes } from "./js/incident.js";
 import { kitchenPage } from "./js/pages/kitchen.js";
 import { livePage } from "./js/pages/live.js";
 import { feedPage } from "./js/pages/feed.js";
+import { proofPage } from "./js/pages/proof.js";
 import { incidentDetailPage } from "./js/pages/incident-detail.js";
 import { reviewPage } from "./js/pages/review.js";
 import { incidentsPage } from "./js/pages/incidents.js";
@@ -14,7 +15,9 @@ import { setupPage } from "./js/pages/setup.js";
 
 
 // `tab` names the nav item a page lives under; Train sits inside Settings.
+// `standalone` pages load their own data and open without waiting for /api/dashboard.
 const PAGES = {
+  proof: { label: "Send", mount: proofPage, standalone: true },
   feed: { label: "Photos", mount: feedPage },
   incident: { label: "Incident", mount: incidentDetailPage, tab: "feed" },
   kitchen: { label: "Overview", mount: kitchenPage, tab: "feed" },
@@ -61,7 +64,10 @@ function showLogin(message = "") {
     state.csrf = result.csrf_token || ""; state.session = { ...state.session, authenticated: true };
     await enter();
   }, { submit: "Sign in" });
-  f.append(field("Access key", h("input", { name: "password", type: "password", required: true, autocomplete: "current-password", maxlength: 256, autofocus: true }), "It's printed on the Jetson. You'll stay signed in on this browser for 12 hours."));
+  // There is no account name, but password managers (iCloud Passwords especially) file a key under a
+  // username and ask for one when the form has none. A fixed hidden name gives them something to save.
+  f.append(h("input", { name: "username", type: "text", autocomplete: "username", value: "Dish Watch", readonly: true, tabindex: "-1", "aria-hidden": "true", class: "sr-only" }));
+  f.append(field("Access key", h("input", { name: "password", type: "password", required: true, autocomplete: "current-password", maxlength: 256, autofocus: true }), "It's printed on the Jetson. You'll stay signed in on this browser."));
   f.finish();
   fill(app, h("main", { id: "main", class: "login" },
     h("section", { class: "login-box", "aria-labelledby": "login-title" },
@@ -75,9 +81,13 @@ function showLogin(message = "") {
 
 async function enter() {
   buildShell();
-  await Promise.all([refresh(), loadHistory()]);
+  // The home page needs neither the dashboard summary nor the full history, so it opens at once;
+  // other pages open when the summary arrives. History is never waited for.
   route();
+  loadHistory();
   startLoops();
+  await refresh();
+  if (!page) route();
 }
 
 // ---- Shell
@@ -99,7 +109,7 @@ function buildShell() {
   shell.main = h("main", { id: "main", tabindex: "-1" });
   fill(app, h("header", { class: "top" },
     h("div", { class: "top-in" },
-      h("a", { class: "brand", href: "#/feed", "aria-label": "Dish Watch incidents" }, brandMark(22), h("span", {}, "Dish Watch")),
+      h("a", { class: "brand", href: "#/proof", "aria-label": "Dish Watch home" }, brandMark(22), h("span", {}, "Dish Watch")),
       shell.nav,
       h("div", { class: "top-r" }, shell.status, shell.find, h("div", { class: "menu-wrap" }, shell.menuBtn, shell.menu)))),
     shell.banner, shell.main);
@@ -159,7 +169,7 @@ async function refresh() {
     } catch (e) {
       if (e.status === 401) return;
       state.error = e.message;
-      if (!state.data) showFatal(e.message); else renderHeader();
+      if (!state.data && !PAGES[state.route.page]?.standalone) showFatal(e.message); else renderHeader();
     } finally { refreshing = null; }
   })();
   return refreshing;
@@ -206,12 +216,13 @@ subscribe(kind => {
 function parseHash() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const [name, sub] = path.split("/");
-  return { page: PAGES[name] ? name : "feed", sub: sub || null, query: Object.fromEntries(new URLSearchParams(query)) };
+  return { page: PAGES[name] ? name : "proof", sub: sub || null, query: Object.fromEntries(new URLSearchParams(query)) };
 }
 
 function route() {
-  if (!state.session?.authenticated || !shell.main || !state.data) return;
+  if (!state.session?.authenticated || !shell.main) return;
   const next = parseHash(), first = !page;
+  if (!state.data && !PAGES[next.page].standalone) { page?.destroy(); page = null; fill(shell.main, h("div", { class: "full-state boot" }, h("p", {}, "Loading…"))); return; }
   if (page?.beforeLeave && !page.beforeLeave()) {
     const old = state.route;
     history.replaceState(null, '', `#/${old.page}${old.sub ? '/' + old.sub : ''}?${new URLSearchParams(old.query)}`);

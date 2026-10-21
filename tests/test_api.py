@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from wash_dishes.app import create_app
 from wash_dishes.config import Config
 from wash_dishes.demo import evidence
+from wash_dishes.security import _key
 from wash_dishes.store import utcnow
 
 
@@ -21,8 +22,12 @@ def test_api_login_csrf_origin_expiration_and_logout(client):
     assert client.post("/api/residents", json={"name": "A"}).status_code == 201
     assert client.post("/api/residents", json={"name": "B"}, headers={"Origin": "https://attacker.example"}).status_code == 403
     token = client.cookies.get("dish_session")
-    csrf = client.app.state.access.sessions[token][1]
-    client.app.state.access.sessions[token] = (time.time() - 1, csrf)
+    restarted = create_app(Config(client.app.state.access.root, password="test-household-key", workers=False))
+    assert restarted.state.access.session(token) == client.headers["X-CSRF-Token"]
+    key = _key(token)
+    assert token not in (client.app.state.access.root / "sessions.json").read_text()
+    csrf = client.app.state.access.sessions[key][1]
+    client.app.state.access.sessions[key] = (time.time() - 1, csrf)
     assert client.get("/api/dashboard").status_code == 401
     login = client.post("/api/login", json={"password": "test-household-key"})
     client.headers["X-CSRF-Token"] = login.json()["csrf_token"]

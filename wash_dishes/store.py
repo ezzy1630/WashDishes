@@ -32,9 +32,9 @@ UNCLAIMED_NOTE = "Gone before anyone knew whose it was"
 CANT_TELL_NOTE = "Can't tell whose it was"
 # A dish picked up and not put down again in view within this time was carried away (inventory.MOVE_WINDOW).
 CARRY_WINDOW = timedelta(minutes=30)
-# An unnamed dish with no photo after its deadline, unseen this long, can never be held against anyone.
+# An unnamed dish the camera has not seen for this long is gone; nobody names the owner of a dish that is no longer out.
 UNPROVABLE_AFTER = timedelta(hours=24)
-UNPROVABLE_NOTE = "Can't be proven: nobody was named and the camera has no photo of it after its deadline"
+UNPROVABLE_NOTE = "Gone before anyone named whose it was"
 # Closed by the camera after the deadline: the dish is no longer out, but it was out late.
 TAKEN_LATE_NOTE = "Taken away after its deadline and not put down again in view. Still late; whether it was washed was not observed."
 WASHED_LATE_NOTE = "Seen going through the sink onto a clean rack after its deadline. Still late; washing itself was not verified."
@@ -477,15 +477,15 @@ class Store:
             return len(rows)
 
     def _retire_unprovable(self, now: datetime) -> int:
-        """Close unnamed dishes that were never photographed after their deadline and are long gone.
+        """Close unnamed dishes that have been gone for a day.
 
-        They can never count against anyone, and on 2026-10-15 thirty of them buried the few late
-        dishes that could. Appearance labels are kept (no dismiss event, so nothing is learned as
-        "not a dish"), and a person can still reopen or name one.
+        Naming only happens while a dish is still out (household decision, 2026-10-20: nobody cares about a dish
+        from days ago that is no longer there), so an unnamed one that is gone will never count.
+        On 2026-10-15 thirty of them buried the few that could. Appearance labels are kept (no
+        dismiss event, so nothing is learned as "not a dish"), and a person can still reopen or name one.
         """
         rows = self.conn.execute("""SELECT o.id FROM obligations o WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.resident_id IS NULL AND o.timing_known=1
-            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?
-            AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.obligation_id=o.id AND e.label LIKE 'Matching dish still visible after the deadline%' AND e.created_at>=o.due_at)""",
+            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?""",
             (stamp(now), stamp(now - UNPROVABLE_AFTER))).fetchall()
         for row in rows:
             self.conn.execute("UPDATE obligations SET lifecycle='dismissed',review_pending=0,reason=? WHERE id=?", (UNPROVABLE_NOTE, row["id"]))
@@ -776,6 +776,11 @@ class Store:
             cursor = self.conn.execute("INSERT INTO person_samples(obligation_id,resident_id,created_at,embedding,evidence_id,cue,context) VALUES(?,NULL,?,?,?,?,?)",
                                        (obligation_id, stamp(at), json.dumps([round(v, 5) for v in embedding]), evidence_id, cue, context))
             return cursor.lastrowid
+
+    def clear_unlabeled_samples(self, obligation_id: int) -> None:
+        """Drop the camera's own captures for a dish when better ones (from the put-down footage) replace them."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM person_samples WHERE obligation_id=? AND resident_id IS NULL", (obligation_id,))
 
     def merge_sighting_face(self, obligation_id: int, embedding: list[float], evidence_id: str) -> bool:
         """Join a face from a clip to the sighting's latest capture, averaged with a face already there.

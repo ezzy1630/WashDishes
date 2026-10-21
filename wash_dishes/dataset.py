@@ -32,6 +32,7 @@ class Dataset:
         self.lock = threading.RLock()
         self.last_signature: tuple | None = None
         self.last_saved = 0.0
+        self._summary: tuple[tuple, dict] | None = None
 
     def _ready(self) -> bool:
         settings = self.store.settings()
@@ -233,15 +234,21 @@ class Dataset:
 
     def summary(self) -> dict:
         with self.lock:
-            items = self._labels()
-            used = sum(p.stat().st_size for p in self.images.glob("*.jpg")) if self.images.exists() else 0
-            counts = {status: sum(i["status"] == status for i in items) for status in STATUSES}
-            boxes = sum(len(i["boxes"]) for i in items if i["status"] == "labeled")
-            settings = self.store.settings()
-            return {"counts": counts, "from_review": sum(i["status"] == "unlabeled" and bool(i.get("review")) for i in items), "labeled_boxes": boxes, "used_bytes": used, "limit_bytes": int(settings["dataset_limit_gb"] * 1_000_000_000),
-                    "enabled": settings["dataset_enabled"], "kinds": list(KINDS),
+            # Reading every label file took over 3 s on the Jetson and the dashboard asks every few
+            # seconds. Every write is a rename into these folders and every delete an unlink, both of
+            # which move the folder's mtime, so the counts are only recomputed when something changed.
+            version = tuple(folder.stat().st_mtime_ns if folder.exists() else 0 for folder in (self.labels, self.images))
+            if self._summary is None or self._summary[0] != version:
+                items = self._labels()
+                self._summary = (version, {
+                    "counts": {status: sum(i["status"] == status for i in items) for status in STATUSES},
+                    "from_review": sum(i["status"] == "unlabeled" and bool(i.get("review")) for i in items),
+                    "labeled_boxes": sum(len(i["boxes"]) for i in items if i["status"] == "labeled"),
+                    "used_bytes": sum(p.stat().st_size for p in self.images.glob("*.jpg")) if self.images.exists() else 0,
                     "corrections": sum(bool(i.get("correction")) for i in items),
-                    "evaluation": frame_scores([i for i in items if i.get("holdout") and i.get("correction") and i["status"] == "labeled"])}
+                    "evaluation": frame_scores([i for i in items if i.get("holdout") and i.get("correction") and i["status"] == "labeled"])})
+            settings = self.store.settings()
+            return self._summary[1] | {"limit_bytes": int(settings["dataset_limit_gb"] * 1_000_000_000), "enabled": settings["dataset_enabled"], "kinds": list(KINDS)}
 
     def item(self, frame_id: str) -> dict:
         self._check_id(frame_id)

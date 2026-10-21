@@ -643,6 +643,12 @@ class LocalVision:
         deep = _unit_vector(features.float().cpu().reshape(-1).tolist())
         return _unit_vector([0.75 * v for v in deep] + [0.66 * v for v in self._colour(crop, bands)])
 
+    def people(self, jpeg: bytes) -> list[dict[str, Any]]:
+        """Person detections in any saved picture, without touching live tracking state."""
+        image = self._image(jpeg)
+        self._load_detector()
+        return [d for d in self._detect(image) if d["kind"] == "person"]
+
     def describe_person(self, jpeg: bytes, box: Sequence[float]) -> tuple[dict[str, list[float]], bytes]:
         """Identity cues for one sighting, plus a JPEG crop for review.
 
