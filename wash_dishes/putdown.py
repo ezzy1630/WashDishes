@@ -360,6 +360,14 @@ def _body_cover(box: list[float], person: list[float]) -> float:
     return max(_overlap(box, head), _overlap(box, torso))
 
 
+def _contact_candidates(candidates: list[dict], box: list[float]) -> list[dict]:
+    # Keep a release instant even if the person's detector box shrinks as the
+    # arm retracts. Proximity to a neighboring sink alone is not a reach.
+    touching = [c for c in candidates if _overlap(box, c["person_box"]) >= .5]
+    return [c for c in candidates if any(abs(c["at"] - t["at"]) <= .75
+            and box_iou(c["person_box"], t["person_box"]) >= .15 for t in touching)]
+
+
 def _jpeg_patch(jpeg: bytes, box: list[float]):
     import io
 
@@ -634,6 +642,7 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
             candidates.append(candidate)
             if len(candidates) >= 8:
                 break
+        candidates = _contact_candidates(candidates, box)
         if not candidates:
             # An appearance change without any person may be a lighting step.
             # Continue from the previous clear look instead of treating late

@@ -188,6 +188,15 @@ def test_body_cover_penalizes_head_and_torso_not_extended_reach():
     assert putdown._reach(BOX, [.2, .2, .22, .5]) < .1
 
 
+def test_contact_witness_keeps_immediate_release_but_not_neighboring_activity():
+    contact = {"at": 10, "person_box": [.2, .2, .25, .5]}
+    release = {"at": 10.4, "person_box": [.2, .2, .19, .5]}
+    late = release | {"at": 12}
+    other = {"at": 10.4, "person_box": [.7, .2, .2, .5]}
+    assert putdown._contact_candidates([release, late], BOX) == []
+    assert putdown._contact_candidates([contact, release, late, other], BOX) == [contact, release]
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf")])
 def test_nonfinite_time_is_rejected(tmp_path, value):
     with Journal(tmp_path / "journal.db") as journal:
@@ -224,7 +233,7 @@ def scene(dish):
 
 @pytest.mark.parametrize("detection_delay", [0, 4])
 def test_finder_returns_ordered_real_frames_candidates_and_departure_metadata(tmp_path, monkeypatch, detection_delay):
-    person = PERSON | {"box": [.2, .2, .22, .5]}
+    person = PERSON | {"box": [.2, .2, .25, .5]}
     empty, dish = scene(False), scene(True)
     sequence = [frame(t, t >= 20 + detection_delay, [person] if 18 <= t <= 20 else []) for t in range(50)]
     with Journal(tmp_path / "journal.db") as journal:
@@ -253,7 +262,7 @@ def test_finder_returns_ordered_real_frames_candidates_and_departure_metadata(tm
 
 
 def test_patch_rewinds_minutes_late_recognition_to_the_actual_reach(tmp_path, monkeypatch):
-    person = PERSON | {"box": [.2, .2, .22, .5]}
+    person = PERSON | {"box": [.2, .2, .25, .5]}
     empty, dish = scene(False), scene(True)
     with Journal(tmp_path / "journal.db") as journal:
         for t in range(300):
@@ -274,8 +283,22 @@ def test_finder_does_not_call_detector_for_missing_history(tmp_path):
         assert putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 50) == JOURNAL_TOO_NEW
 
 
+def test_neighboring_person_without_box_contact_is_not_a_putting_frame(tmp_path, monkeypatch):
+    person = PERSON | {"box": [.2, .2, .19, .5]}
+    assert putdown._reach(BOX, person["box"]) < .1
+    empty, dish = scene(False), scene(True)
+    with Journal(tmp_path / "journal.db") as journal:
+        for t in range(50):
+            journal.record(t, frame(t, t >= 20, [person] if 18 <= t <= 20 else [])["detections"])
+        monkeypatch.setattr(putdown, "segments", lambda _: [(0, 50, tmp_path / "clip.ts")])
+        monkeypatch.setattr(putdown, "samples", lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(50)])
+        monkeypatch.setattr(putdown, "decoded_photos", lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(200) if kw["t0"] <= t / 4 <= kw["t1"]])
+        assert isinstance(putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 49), str)
+
+
 def test_earlier_clear_view_prevents_uncovering_an_old_dish_becoming_arrival(tmp_path, monkeypatch):
-    person = PERSON | {"box": [.2, .2, .22, .5]}
+    person = PERSON | {"box": [.2, .2, .25, .5]}
     empty, dish = scene(False), scene(True)
     def picture(t):
         return dish if t >= 20 and not 100 <= t < 140 else empty
@@ -294,7 +317,7 @@ def test_earlier_clear_view_prevents_uncovering_an_old_dish_becoming_arrival(tmp
 
 
 def test_finder_rejects_missing_video_even_when_journal_has_an_arrival(tmp_path, monkeypatch):
-    person = PERSON | {"box": [.2, .2, .22, .5]}
+    person = PERSON | {"box": [.2, .2, .25, .5]}
     empty, dish = scene(False), scene(True)
     with Journal(tmp_path / "journal.db") as journal:
         for t in range(50):
