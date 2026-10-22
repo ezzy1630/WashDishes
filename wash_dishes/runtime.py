@@ -17,12 +17,12 @@ from .journal import Journal
 from .media import Media
 from .notify import Notifier
 from .proofs import Proofs
-from .putdown import JOURNAL_TOO_NEW, find_putdown, find_putdown_journal
 from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
 from .tracing import TraceSearch
 from .vision import box_iou, merge_detections
+from .visits import Footage, Tracer
 
 
 class Runtime:
@@ -44,6 +44,7 @@ class Runtime:
         self.recovery = EvidenceRecovery(store, media, self.dataset)
         self.incidents = Incidents(store, media, self.sequences)
         self.proofs = Proofs(config.root, store, media)
+        self.tracer: Tracer | None = None  # needs the dish verifier's CLIP; made with local vision
         # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
         self.journal = Journal(config.root / "journal.db")
         self.proof_thread: threading.Thread | None = None
@@ -124,6 +125,8 @@ class Runtime:
                 self.dish_verifier = DishVerifier(self.config.root)
             self.inventory.verify = store_hook(self.dish_verifier, self.store)
             self.proofs.check = make_check(self.vision, self.dish_verifier, self.store, lock=self.lock)
+            self.tracer = Tracer(self.journal, lambda: Footage(self.media.buffer), self.dish_verifier.embed,
+                                 lambda: self.areas(self.store.settings()))
         return self.vision
 
     def _clip_saved(self, obligation_id: int, label: str, evidence_id: str, path: Path) -> None:
@@ -214,27 +217,10 @@ class Runtime:
                     seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
                 # Every proof is checked before it is shown; without vision there is nothing to check with.
                 if seeing:
-                    self.proofs.run_once(self._find_putdown, check=self.proofs.check, identify_selected=self._identify_putdown)
+                    self.proofs.run_once(self.tracer, check=self.proofs.check, identify_selected=self._identify_putdown)
             except Exception:
                 # One bad recording or picture must not stop proofs for every later dish.
                 pass
-
-    def _find_putdown(self, box: list[float], logged: float, until: float, *,
-                      earlier_than: float | None = None, deadline: float | None = None) -> dict | str:
-        """The put-down from what the detector recorded, with exact-frame people checks.
-
-        Only a dish older than the journal goes back to the patch search; any other journal
-        refusal (a recording gap, an arrival it cannot resolve) stays a refusal.
-        """
-        def people(jpeg: bytes) -> list[dict]:
-            with self.lock:
-                return self.local_vision().people(jpeg)
-
-        found = find_putdown_journal(self.journal, self.media.buffer, box, logged, until, people=people,
-                                    earlier_than=earlier_than, deadline=deadline)
-        if found == JOURNAL_TOO_NEW:
-            return find_putdown(self.media.buffer, box, logged, until, earlier_than=earlier_than, deadline=deadline)
-        return found
 
     def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at, *, person_box=None) -> list[float] | None:
         """Box of the person putting the dish down, or None if nobody is within reach of it.

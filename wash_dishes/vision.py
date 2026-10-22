@@ -407,7 +407,7 @@ class LocalVision:
         An unrelated lone face elsewhere in a visit is not the handler. At most six nearby frames
         are examined, with gaps, overlapping people and conflicting faces causing abstention.
         """
-        from .putdown import photos, segments
+        from .footage import photos, segments
 
         frames = [frame for segment in segments(buffer) if segment[0] <= at + 6 and segment[1] >= at - 6
                   for frame in photos(segment) if 0.5 < abs(frame[0] - at) <= 6]

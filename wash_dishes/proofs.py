@@ -1,10 +1,10 @@
 """Ready-to-send proof pictures for dishes still out after their deadline, made without anyone asking.
 
 A dish qualifies once the camera has photographed it still there after its deadline. The proof worker
-then finds the moment it was put down in the rolling recording (putdown.py) and keeps four pictures:
-the empty spot, the person putting it down, the dish left there, and the late photo. A proof is shown
-only while the dish is still out: once it is cleared, resolved or no longer seen, someone dealt with it
-and there is nothing left to send.
+then follows it back through the rolling recording to whoever last used it (visits.py) and keeps four
+pictures: the spot before, that person with the dish, the dish left there, and the late photo. A proof
+is shown only while the dish is still out: once it is cleared, resolved or no longer seen, someone dealt
+with it and there is nothing left to send.
 """
 from __future__ import annotations
 
@@ -26,19 +26,14 @@ STILL_OUT = timedelta(minutes=30)    # unseen this long means it was taken away
 FOOTAGE = timedelta(hours=20)        # the recording keeps 24 h; older put-downs are gone
 KEEP = timedelta(days=7)
 RETRY = timedelta(minutes=5)
-# ProofChecker.__call__ exposes exact rejection reasons. Keep this one contract
-# fail-closed: other reasons (including handling/uncovering) never authorize rewind.
-ALREADY_THERE = "dish already there in the before picture"
-ARRIVAL_ATTEMPTS = 3
-# One journal search took 351 s on the Jetson (#977, no inference), and the replay's one
-# recovered retry (#901) needed three. Running out only costs a picture, never adds a
-# wrong one; a longer budget only delays later dishes, and few dishes ever retry.
+# Running out only costs a picture, never adds a wrong one; a longer budget only delays later dishes.
 TRACE_SECONDS = 1200
+# What a trace found besides its pictures, kept so a waiting proof and its collage still know it.
+TRACE_KEYS = ("method", "use", "stay", "moves")
 
 
 class Finder(Protocol):
-    def __call__(self, box: list[float], logged: float, until: float, *,
-                 earlier_than: float | None = None, deadline: float | None = None) -> dict | str: ...
+    def __call__(self, box: list[float], logged: float, until: float, *, deadline: float | None = None) -> dict | str: ...
 
 
 class Proofs:
@@ -118,10 +113,9 @@ class Proofs:
 
     def run_once(self, find: Finder, identify: Callable | None = None, now: datetime | None = None,
                  *, check: Callable | None = None, identify_selected: Callable | None = None) -> int | None:
-        """Trace the oldest waiting dish. `find` binds the recording and supports an exclusive
-        `earlier_than` arrival cutoff and a shared monotonic `deadline`. It is called at most
-        three times, and only an already-present Before warrants an earlier search.
-        `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
+        """Trace the oldest waiting dish. `find(box, logged, until, deadline=)` returns the pictures and the
+        spot (`box`) where its user had it, or why nobody can be named.
+        `identify(obligation_id, jpeg, dish_box, at)` describes whoever is with the dish and
         returns their box, or None when no person is near the dish (then it is not proof of anyone).
         `identify_selected` receives the checker's person_box keyword AFTER the checked
         proof is saved, so immutable identity predictions can read its readiness. Waiting
@@ -137,49 +131,24 @@ class Proofs:
         folder = self.dir / str(oid)
         with self.store.lock:
             previous = self.store.conn.execute("SELECT data FROM proofs WHERE obligation_id=? AND status='waiting'", (oid,)).fetchone()
-        found, trace = None, {}
+        found = None
         if previous:
             saved = json.loads(previous["data"])
             try:
                 found = {k: {"at": saved[f"{k}_at"], "jpeg": (folder / f"{k}.jpg").read_bytes()}
                          for k in ("before", "putting", "left")}
-                # Inventory may have moved the same obligation meanwhile. Its old pictures
-                # still use the original box; only the fresh late photo uses the new one.
-                box = saved["box"]
-                trace = {k: saved[k] for k in ("method", "left_behind") if k in saved}
+                found |= {"box": saved["box"], **{k: saved[k] for k in TRACE_KEYS if k in saved}}
             except (OSError, KeyError):
                 found = None
-        deadline = time.monotonic() + TRACE_SECONDS
-        earlier_than = None
         try:
             late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
             late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
-            for attempt in range(ARRIVAL_ATTEMPTS):
-                if time.monotonic() >= deadline:
-                    checked = "the put-down search reached its time budget"
-                    break
-                if found is None:
-                    found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at,
-                                 earlier_than=earlier_than, deadline=deadline)
-                    if isinstance(found, dict):
-                        trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
-                if not isinstance(found, dict):
-                    checked = found or "no put-down found"
-                    break
-                if earlier_than is not None and any(not p["at"] < earlier_than
-                        for p in [found["putting"], *found.get("candidates", [])]):
-                    checked = "the finder did not return an earlier arrival"
-                    break
-                if time.monotonic() >= deadline:
-                    checked = "the put-down search reached its time budget"
-                    break
-                checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
-                if checked != ALREADY_THERE or attempt + 1 == ARRIVAL_ATTEMPTS:
-                    break
-                # The rejected Before already contains the dish. Its placement must
-                # precede that view, not just precede a different frame of this reach.
-                earlier_than = found["before"]["at"]
-                found = None
+            if found is None:
+                found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at,
+                             deadline=time.monotonic() + TRACE_SECONDS)
+            # The pictures show where its user had the dish, which may be far from where it is now.
+            checked = (found or "no put-down found") if not isinstance(found, dict) else (
+                self.check(oid, found, late_jpeg, found.get("box", box), late_box) if self.check else {})
         except Exception as error:
             # The oldest dish is always tried first: footage or a photo that cannot be read
             # must close its attempt, or every later dish waits behind it for good.
@@ -190,6 +159,8 @@ class Proofs:
             self._save(oid, "untraced", {"reason": checked})
             shutil.rmtree(folder, ignore_errors=True)
             return oid
+        box = found.get("box", box)
+        trace = {k: found[k] for k in TRACE_KEYS if k in found}
         found = found | {k: checked[k] for k in ("before", "putting", "left") if k in checked}
         waiting = checked.get("status") == "waiting"
         person_box = found["putting"].get("person_box")

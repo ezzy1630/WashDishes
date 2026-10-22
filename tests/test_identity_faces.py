@@ -35,10 +35,10 @@ def test_unanchored_visit_clip_never_supplies_a_face(tmp_path):
 
 
 def test_nearby_face_search_ignores_frames_outside_six_seconds(tmp_path, monkeypatch):
-    from wash_dishes import putdown
+    from wash_dishes import footage
     engine = LocalVision(tmp_path)
-    monkeypatch.setattr(putdown, 'segments', lambda _: [(0, 20, tmp_path / 'clip.ts')])
-    monkeypatch.setattr(putdown, 'photos', lambda _: [(2, b'early'), (18, b'late')])
+    monkeypatch.setattr(footage, 'segments', lambda _: [(0, 20, tmp_path / 'clip.ts')])
+    monkeypatch.setattr(footage, 'photos', lambda _: [(2, b'early'), (18, b'late')])
     engine._image = lambda _: SimpleNamespace()
     engine._person_crop = lambda *_: object()
     engine.sighting_face = lambda _: None

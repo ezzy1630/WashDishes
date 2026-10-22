@@ -21,7 +21,7 @@ from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 3
+VERSION = 4
 
 WIDTH, MARGIN, GAP = 1600, 32, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2
@@ -165,8 +165,8 @@ def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
     """2x2 photos with a short caption and time each; the dish marked in yellow in every panel.
 
     Optional meta: `person_box` keeps the person's head in the crop, `late_box` marks the dish where the
-    late photo saw it, and `left_behind` captions the second photo as leaving the dish rather than
-    putting it down (the moment found was them walking off from it)."""
+    late photo saw it, `use` ("cooking"/"using") captions the second photo as using the dish rather than
+    putting it down, and `moves` says it is still out rather than still there."""
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     title, title_font = _title(probe, meta["dish"], name)
     day = datetime.fromtimestamp(meta["putting_at"], utc.utc).astimezone(timezone())
@@ -182,8 +182,10 @@ def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
         aspect = PANEL_W / PANEL_H * first.height / first.width
     x0, y0, x1, y1 = _crop([meta["box"], *([meta["late_box"]] if meta.get("late_box") else [])], meta.get("person_box"), aspect)
     sx, sy = PANEL_W / (x1 - x0), PANEL_H / (y1 - y0)
-    captions = {"before": "Before", "putting": "Leaving it" if meta.get("left_behind") else "Putting it down",
-                "left": "Left there", "late": f"Still there {_later(meta['late_at'] - meta['left_at'])}"}
+    # The second panel shows whoever last used the dish; the last says "out", not "there", once it moved.
+    acting = {"cooking": "Cooking with it", "using": "Using it"}.get(meta.get("use"), "Putting it down")
+    captions = {"before": "Before", "putting": acting, "left": "Left there",
+                "late": f"Still {'out' if meta.get('moves') else 'there'} {_later(meta['late_at'] - meta['left_at'])}"}
     styles = {"before": "dashed", "putting": "corners", "left": "solid", "late": "solid"}
     time_font = _type(46, 450)
     for i, key in enumerate(STAGES):
