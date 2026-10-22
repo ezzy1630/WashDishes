@@ -1,10 +1,11 @@
+import json
 from datetime import timedelta
 
 import numpy as np
 import pytest
 
 from wash_dishes.store import CANT_TELL_NOTE, UNCLAIMED_NOTE, utcnow
-from wash_dishes.verifier import MIN_EXAMPLES, train
+from wash_dishes.verifier import MIN_EXAMPLES, examples, train
 
 pytest.importorskip("cv2")
 from test_inventory import Kitchen  # noqa: E402
@@ -67,3 +68,34 @@ def test_review_answers_become_second_look_labels(store, action, note, label):
     store.link_dish_sample(store.add_dish_sample([0.1] * 4, 0.5), item["id"])
     store.action(item["id"], action, note=note)
     assert [s["label"] for s in store.labeled_dish_samples()] == ([] if label is None else [label])
+
+
+def test_corrected_false_boxes_train_even_when_current_detector_misses_them(store):
+    root = store.root
+    (root/'dataset/labels').mkdir(parents=True)
+    (root/'dataset/images').mkdir()
+    cup, bottle = [.1, .1, .1, .1], [.6, .6, .1, .1]
+    item = {'id': 'frame', 'created_at': utcnow().isoformat(), 'status': 'labeled',
+            'boxes': [{'kind': 'cup', 'box': cup}],
+            'predicted': [{'kind': 'cup', 'box': cup}, {'kind': 'cup', 'box': bottle}]}
+    (root/'dataset/labels/frame.json').write_text(json.dumps(item))
+    (root/'dataset/images/frame.jpg').write_bytes(b'frame')
+    def detect(jpeg):
+        return np.zeros((100, 100, 3), np.uint8), [{'kind': 'cup', 'box': cup}]
+    X, y = examples(root, store, detect, lambda crops: np.zeros((len(crops), 4)))
+    assert X.shape == (2, 4) and list(y) == [1, 0]
+
+
+@pytest.mark.parametrize('holdout', [False, True])
+def test_explicit_not_dish_review_teaches_only_its_box_and_respects_holdout(store, holdout):
+    root = store.root
+    (root/'dataset/labels').mkdir(parents=True)
+    (root/'dataset/images').mkdir()
+    item = {'id': 'frame', 'created_at': utcnow().isoformat(), 'status': 'unlabeled', 'holdout': holdout,
+            'boxes': [], 'review': {'verdict': 'not_dish', 'box': [.6, .6, .1, .1]}}
+    (root/'dataset/labels/frame.json').write_text(json.dumps(item))
+    (root/'dataset/images/frame.jpg').write_bytes(b'frame')
+    def detect(jpeg):
+        return np.zeros((100, 100, 3), np.uint8), [{'kind': 'cup', 'box': [.1, .1, .1, .1]}]
+    _, y = examples(root, store, detect, lambda crops: np.zeros((len(crops), 4)))
+    assert list(y) == ([] if holdout else [0])
