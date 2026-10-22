@@ -18,6 +18,8 @@ colors:
   late: "#ef5f55"
   confirmed-washed: "#4cb782"
   needs-review: "#7aa7ff"
+  needs-review-text: "#a9c4ff"
+  proof-mark: "#ffd400"
 typography:
   headline:
     fontFamily: '"Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
@@ -52,6 +54,23 @@ typography:
     fontSize: "12px"
     fontWeight: 400
     lineHeight: 1.5
+  headline-mobile:
+    fontFamily: '"Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
+    fontSize: "24px"
+    fontWeight: 600
+    lineHeight: 1.2
+    letterSpacing: "-0.025em"
+  intro:
+    fontFamily: '"Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
+    fontSize: "15px"
+    fontWeight: 400
+    lineHeight: 1.5
+  count:
+    fontFamily: '"Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
+    fontSize: "26px"
+    fontWeight: 650
+    lineHeight: 1.2
+    letterSpacing: "-0.02em"
   mono:
     fontFamily: '"Geist Mono", ui-monospace, "SF Mono", Menlo, monospace'
 rounded:
@@ -59,6 +78,8 @@ rounded:
   media: "6px"
   panel: "8px"
   button: "9px"
+  send: "12px"
+  chip: "19px"
   incident: "10px"
   card: "14px"
 spacing:
@@ -77,14 +98,14 @@ spacing:
 
 Dish Watch uses a restrained graphite interface with real camera evidence as its dominant visual material. Mona Sans, compact controls, thin borders and quiet metadata support short kitchen-review sessions. The interface keeps uncertain observations visibly distinct from confirmed responsibility.
 
-This record covers the implemented incident feed and case/review page, with shared controls from the static app. It records the built palette rather than the slightly lighter range in the direction brief. Surface composition remains in `.impeccable/surfaces/wash-dishes-static-index-html.md`; product rules remain in `PRODUCT.md`.
+This record covers Send (the home page), People, and the older incident feed and case/review page, with shared controls from the static app. Send and People are designed for an iPhone first: the proof picture is the page, and one pale Send button is the only loud control. It records the built palette rather than the slightly lighter range in the direction brief. Surface composition remains in `.impeccable/surfaces/wash-dishes-static-index-html.md`; product rules remain in `PRODUCT.md`.
 
 **Key Characteristics:**
 
 - Real full-scene evidence before attribution.
 - Graphite layers, restrained borders and compact native controls.
 - Readable muted metadata and explicit unknown states.
-- A photo and Download action, with corrections and originals in closed disclosures.
+- One finished picture and one Send action; naming and corrections are quiet and below it.
 
 ## Colors
 
@@ -112,12 +133,14 @@ The hierarchy is compact: a page headline, medium incident titles, smaller revie
 - **Headline:** Page titles use the headline role.
 - **Title:** Incident cards use the title role, increasing to (21px) at the mobile breakpoint.
 - **Section:** Review and video-context headings use the section role.
-- **Body:** General interface text uses the body role; page introductions use (15px) and a maximum measure of (72ch).
+- **Body:** General interface text uses the body role; page introductions use the intro role and a maximum measure of (72ch).
+- **Headline (mobile):** Send and People headlines drop to the mobile headline role below 760px.
+- **Count:** People's per-person totals use the count role, proportional figures (Mona Sans's tabular figures have a slashed zero and slab one that read as code).
 - **Field and label:** Review labels and explanatory copy use the field role; card metadata and field hints use the label role. Preserve sentence case.
 
 ## Layout
 
-The Photos page has centered content up to 1240px in two columns: Out now (current cropped camera picture with numbered boxes, then the numbered dish list) at about 60%, and Ready to share (finished photo cards) beside it. At 900px it becomes one column with Out now first. Photo detail is up to 1040px, with Download beside its heading, the image, then closed correction and original-media disclosures. Incomplete detail places the cropped saved view beside the status and stage list, stacking below 900px. A correction form is at most 460px wide. Mobile gutters are 16px. The advanced record remains a secondary route with the earlier two-column review layout.
+Send is up to 1240px: a headline that counts the dishes ("2 dishes left out") with one line on what is still coming, then proof cards in a grid of columns at least 520px wide (one column on a phone, two on a laptop). Each card stacks the picture, Send, "Who put it down?" and the quiet corrections; cards are 48px apart. People is up to 720px: a ruled list of people with named proofs, then one muted line naming everyone else. A person's page reuses the Send grid with their pictures, then an Earlier list for entries whose photos have expired. Mobile gutters are 16px. The older Photos and record pages keep their earlier layouts on secondary routes.
 
 ## Elevation & Depth
 
@@ -127,7 +150,7 @@ Controls have short background and border transitions (120ms); the reduced-motio
 
 ## Shapes
 
-Corners are gently rounded and functional. Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete records use text and one localized saved view, never a placeholder collage.
+Corners are gently rounded and functional. Proof pictures and the Send button use the send radius; name chips are full pills (chip radius). Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete records use text and one localized saved view, never a placeholder collage.
 
 ## Components
 
@@ -137,7 +160,7 @@ Compact, sentence-case actions. Standard and primary buttons are (34px) high wit
 
 ### Cards / Containers
 
-Photo cards are the complete 1200px export (it carries its own title and times) followed by Details and Download; the card heading is screen-reader only. The image keeps its intrinsic aspect ratio. Active records are numbered rows under Out now, not image cards. Numbers are yellow when the dish is boxed in the current picture, outlined when it is not detected there, and neutral when no current picture exists. Photos-surface times are 12-hour local, matching the export. The detail page presents the same image with a single primary Download action. The old review panel exists only on the explicit Detailed record route.
+A Send card is the proof picture (it carries its own title, date and times, so the card adds no caption), a 52px pale Send button (full width on a phone, at most 320px otherwise), name chips and two quiet corrections. Chips are 38px outlined pills in alphabetical order; the camera's guess has a blue outline and fill with a small "guess" tag, and its reason sits under the chips in the review-text blue; the chosen name is a pale filled chip. A named card shows only that chip, Change, and an underlined link to the person's record. Picture boxes reserve the picture's aspect ratio so nothing jumps while it loads; the loading state is a blank card of that shape, never a spinner. On People, a row is a 40px monogram, the name with the day of the latest proof, the count, and a chevron. Times are 12-hour local, matching the picture.
 
 ### Inputs / Fields
 
@@ -145,7 +168,7 @@ Native selects, date-time inputs and textareas pair with visible labels. Review 
 
 ### Navigation
 
-The sticky header exposes Photos, Live and Settings. People, detection checks and Archive are in the secondary menu. No attention-count badge is attached to Photos: incomplete observations must not look like finished results.
+The sticky header exposes Send, People and Live, which fit an iPhone's width; search is hidden there. The menu holds Settings, Housemates (adding people, face samples, personal links), Log dishes by hand and Sign out. Photos, Detection checks and Archive are reachable from search and old links only. Send and People fetch only their own small data; the full history loads when another page or search needs it.
 
 ### Evidence and correction
 
@@ -170,4 +193,4 @@ The normal photo page opens with no review form. Something wrong? exposes one co
 - **Don't** promote the legacy root muted color or ornamental eyebrows into new surfaces.
 - **Don't** add card shadows or continuous decorative animation to these recorded surfaces.
 
-Current share workflow (2026-10-17): only four available, ordered, distinct, localized views with an actual two-hour interval and matching left/later positions enter Photos. Rejected, stale, disputed, clean, archived and continuity-uncertain records are excluded from the share endpoint as well as the grid. Stages that are not attached remain visible in tracking, worded as not attached rather than missing footage; this presentation gate does not recover footage or prove responsibility. Complete exports are 1200px JPEGs with a dish/place header, the left-out-to-later interval, four on-photo labels with source times, dish boxes and one brief observation-limit line. Long dish lists are shortened before the place is. People are named only from recorded identification.
+Proof picture (2026-10-22): a 1600 px JPEG under 600 KB, made to be read as a small image in a group chat. Dark canvas (#101214), white title at 56–84 px ("Sam left this pan out", or "Pan left out"; a long name is shortened, never the part saying what was left), date and place at 44 px, then a 2×2 grid of 4:3 photos with 50 px bold captions and 46 px muted times below each: Before, Putting it down (or Leaving it), Left there, and Still there N hours later in the proof-mark yellow. All four photos share one crop around the dish (always inside) and the head and shoulders of whoever put it down. The dish is marked in proof-mark yellow over a black outline, at least 64 px: dashed in Before, corner brackets while it is being put down, solid after. Setup notes such as "(visible portion)" are dropped from place names. Cached pictures carry the design version in their file name.

@@ -56,7 +56,25 @@ CLIP_MAX_SECONDS = 120
 UNSEEN_GRACE = timedelta(minutes=10)
 MAX_ITEMS = 128
 TEXTURE_WIDTH = 240
+# A normalized view of the dish's own spot survives exposure changes. It only vetoes a
+# disappearance; it cannot supply a fresh sighting or after-deadline evidence.
+APPEARANCE_DISTANCE = .4
 ROLES = ("storage", "clean", "sink", "dirty")
+
+
+def appearance(image: Any, box: list[float]) -> Any:
+    import cv2
+    import numpy as np
+    height, width = image.shape[:2]
+    x, y, w, h = box
+    crop = image[max(0, int((y-.1*h)*height)):min(height, int((y+1.1*h)*height)),
+                 max(0, int((x-.1*w)*width)):min(width, int((x+1.1*w)*width))]
+    if not crop.size:
+        return None
+    grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    grey = cv2.resize(grey, (16, 16), interpolation=cv2.INTER_AREA).astype(np.float32)
+    grey = cv2.GaussianBlur(grey, (3, 3), 0)
+    return (grey-grey.mean()) / (float(grey.std())+5)
 
 
 def texture(image: Any, box: list[float]) -> Any:
@@ -261,6 +279,8 @@ class Inventory:
         """The camera was nudged: dishes moved on screen with it, and every area needs a fresh baseline."""
         for item in self.items.values():
             item["box"] = shift_box(item["box"], dx, dy)
+            if item.get('appearance_box'):
+                item['appearance_box'] = shift_box(item['appearance_box'], dx, dy)
         for zone in self.zones.values():
             zone.baseline = zone.previous = None
         self._save()
@@ -466,7 +486,7 @@ class Inventory:
             elif mask is None or mask.mean() > LIGHTING_CHANGED:
                 self._refresh(zone, here)
             else:
-                arrivals.extend((zone, d) for d in self._compare(zone, here, mask, observed_at))
+                arrivals.extend((zone, d) for d in self._compare(zone, here, mask, observed_at, image=image))
         # Register every pickup before matching arrivals. Area configuration order must
         # not decide whether a sink-to-rack transfer keeps the dish's history.
         for zone, detection in arrivals:
@@ -480,16 +500,20 @@ class Inventory:
     def _initialize(self, zone: Zone, detections: list[dict], jpeg: bytes, observed_at: datetime, *, image: Any = None) -> None:
         """First look after a start or gap: reconcile with the saved inventory; anything else was already there.
 
-        A saved dish not found stays, unconfirmed, and is looked for again; it counts as gone only
-        after UNSEEN_GRACE. Newly discovered objects have unknown deposit time and
+        A saved dish not found stays, unconfirmed, while its spot looks unchanged. Otherwise it
+        is looked for again until UNSEEN_GRACE. Newly discovered objects have unknown deposit time and
         no handler; periodic discovery is not evidence of a new dirty deposit.
         """
         zone.initialized = True
         pairs, missing, extra = pair(self._items_in(zone), detections)
         for item, detection in pairs:
             self._update(item, detection, observed_at)
+            self._remember(item, image)
             self._record_seen(item, jpeg, observed_at)
         for item in missing:
+            if self._unchanged(item, image):
+                item.pop('unseen_since', None)
+                continue
             if item.get('background') or item.get('ignored'):
                 # A detector miss is not an observed removal of a background object.
                 since = parse_stamp(item.setdefault('unseen_since', stamp(observed_at)))
@@ -513,7 +537,7 @@ class Inventory:
                 verdict = self.verify(image, detection["box"]) if self.verify and image is not None else None
                 self._add(zone, detection, observed_at, jpeg, placed_at=None,
                           ignored=verdict if verdict and not verdict["dish"] else None,
-                          verdict=verdict if verdict and verdict["dish"] else None)
+                          verdict=verdict if verdict and verdict["dish"] else None, image=image)
 
     def _refresh(self, zone: Zone, detections: list[dict]) -> None:
         """The light or the view changed: follow dishes that are clearly still there, believe nothing new."""
@@ -521,7 +545,7 @@ class Inventory:
         for item, detection in pairs:
             item["box"] = detection["box"]
 
-    def _compare(self, zone: Zone, detections: list[dict], mask: Any, observed_at: datetime) -> list[dict]:
+    def _compare(self, zone: Zone, detections: list[dict], mask: Any, observed_at: datetime, *, image: Any = None) -> list[dict]:
         existing = self._items_in(zone)
         for item in existing:
             # A physical change in a long-empty background spot can be a new dish.
@@ -535,10 +559,11 @@ class Inventory:
         pairs, missing, extra = pair(self._items_in(zone), detections)
         for item, detection in pairs:
             self._update(item, detection, observed_at)
+            self._remember(item, image)
         for item in missing:
             if any(box_iou(item['box'], d['box']) >= .3 for d in extra):
                 continue
-            if self._touched(zone, mask, item["box"]) >= TOUCHED:
+            if self._touched(zone, mask, item["box"]) >= TOUCHED and not self._unchanged(item, image):
                 self._pick_up(zone, item, observed_at)
         return [d for d in sorted(extra, key=lambda d: -d["score"])
                 if not any(box_iou(d['box'], old['box']) >= .3 for old in missing)
@@ -559,6 +584,21 @@ class Inventory:
         votes = item.setdefault("kind_votes", {})
         votes[detection["kind"]] = round(votes.get(detection["kind"], 0) + detection["score"], 3)
         item.update(box=detection["box"], score=round(detection["score"], 3), kind=max(votes, key=votes.get), last_seen_at=stamp(observed_at))
+
+    @staticmethod
+    def _remember(item: dict, image: Any) -> None:
+        if image is not None and (patch := appearance(image, item['box'])) is not None:
+            # Saved with the scene so a restart does not turn detector flicker into a new clock.
+            item['appearance'] = patch.round(3).tolist()
+            item['appearance_box'] = list(item['box'])
+
+    @staticmethod
+    def _unchanged(item: dict, image: Any) -> bool:
+        import numpy as np
+        if image is None or 'appearance' not in item:
+            return False
+        patch = appearance(image, item.get('appearance_box', item['box']))
+        return patch is not None and float(np.abs(patch-np.asarray(item['appearance'])).mean()) < APPEARANCE_DISTANCE
 
     @staticmethod
     def _handling_dishes(visitor: dict, box: list[float], kind: str) -> list[dict]:
@@ -620,10 +660,10 @@ class Inventory:
             # Only a brand-new box gets a second look; a dish seen being carried here is already known.
             verdict = self.verify(image, detection["box"]) if self.verify and image is not None else None
             if verdict and not verdict["dish"]:
-                self._add(zone, detection, observed_at, jpeg, placed_at=None, ignored=verdict)
+                self._add(zone, detection, observed_at, jpeg, placed_at=None, ignored=verdict, image=image)
                 return
             self._log("added", zone, detection["kind"], observed_at, verdict["score"] if verdict else None)
-            self._add(zone, detection, observed_at, jpeg, placed_at=zone.active_at or observed_at, handler=handler, verdict=verdict)
+            self._add(zone, detection, observed_at, jpeg, placed_at=zone.active_at or observed_at, handler=handler, verdict=verdict, image=image)
             return
         self._log("added", zone, detection["kind"], observed_at)
         item, origin = source["item"], source["from"]
@@ -665,7 +705,7 @@ class Inventory:
         return chosen
 
     def _add(self, zone: Zone, detection: dict, observed_at: datetime, jpeg: bytes, *, placed_at: datetime | None, handler: dict | None = None,
-             verdict: dict | None = None, ignored: dict | None = None) -> None:
+             verdict: dict | None = None, ignored: dict | None = None, image: Any = None) -> None:
         if len(self.items) >= MAX_ITEMS:
             self.capacity_warning = True
             return
@@ -675,6 +715,7 @@ class Inventory:
                            "placed_at": stamp(placed_at) if placed_at else None, "timing_known": placed_at is not None,
                            "background": placed_at is None,
                            "sink_seen": zone.area["role"] == "sink", "last_seen_at": stamp(observed_at), "first_seen_at": stamp(observed_at)}
+        self._remember(self.items[key], image)
         if ignored:
             # Judged not a dish: remembered where it sits, so the same thing isn't "new" at every look.
             self.items[key].update(ignored=True, dish_score=ignored["score"])

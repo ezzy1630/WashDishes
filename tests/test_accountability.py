@@ -73,9 +73,18 @@ def test_reopening_a_cleared_dish_keeps_it_open(store):
 
 # Camera naming owners once its guesses are measured
 
+def ready_card(store, item):
+    # Independent captures on ready cards are the denominator, not unseen predictions.
+    store.add_person_sample(item["id"], [float(item["id"]), 1.0], at=utcnow() - timedelta(minutes=31 * item["id"]))
+    with store.conn:
+        store.conn.execute("CREATE TABLE IF NOT EXISTS proofs(obligation_id INTEGER PRIMARY KEY,status TEXT,created_at TEXT,data TEXT)")
+        store.conn.execute("INSERT INTO proofs VALUES(?,'ready',?,'{}')", (item["id"], utcnow().isoformat(timespec="seconds")))
+
+
 def checked_guesses(store, resident, count):
     for _ in range(count):
         item = candidate(store)
+        ready_card(store, item)
         store.set_suggestion(item["id"], resident, 3.0)
         store.action(item["id"], "confirm", resident_id=resident)
 
@@ -129,6 +138,7 @@ def test_spot_checks_inaccurate_guesses_and_the_setting_keep_a_person_deciding(s
     wrong = 0
     while wrong < 4:
         item = candidate(store)
+        ready_card(store, item)
         store.set_suggestion(item["id"], alex, 3.0)
         if store.obligation(item["id"])["confidence"] == "candidate":
             store.action(item["id"], "confirm", resident_id=sam)

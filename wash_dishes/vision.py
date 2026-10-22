@@ -29,11 +29,6 @@ ARCFACE_NAME = "face_recognition_arcface_r50.onnx"
 ARCFACE_TEMPLATE = ((38.2946, 51.6963), (73.5318, 51.5014), (56.0252, 71.7366), (41.5493, 92.3655), (70.7299, 92.2041))
 # Faces seen from the ceiling camera score 0.6-0.9 with YuNet; enrollment photos keep the stricter 0.9.
 SIGHTING_FACE_SCORE = 0.7
-# A put-down clip is sampled about twice a second, and the clearest faces are averaged. Measured on 50
-# named sightings (2026-10-13): a face for 52 of 53 instead of 29, and the right person ranked first
-# twice as often as from the one zoomed photo. Frames with two faces are skipped: either could be the handler.
-CLIP_FACE_STEP = 12
-CLIP_FACES = 5
 MAX_ENROLLMENT_SAMPLES = 20
 MAX_JPEG_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
@@ -402,42 +397,79 @@ class LocalVision:
         return _unit_vector(embedding)
 
     def clip_face(self, path: Path) -> list[float] | None:
-        """The handler's face from a put-down clip: the clearest lone faces, averaged."""
-        self._load_faces()
-        cv, np = self._cv, self._np
-        video = cv.VideoCapture(str(path))
-        found: list[tuple[float, list[float]]] = []
-        index = 0
-        try:
-            while video.grab():
-                index += 1
-                if index % CLIP_FACE_STEP:
+        """Legacy whole-visit clips lack a person anchor; they cannot supply identity evidence."""
+        return None
+
+    def putdown_face(self, buffer: Path, at: float, jpeg: bytes, person_box: Sequence[float],
+                     outfit: list[float]) -> list[float] | None:
+        """Look six seconds either side, requiring the same body and outfit in every used frame.
+
+        An unrelated lone face elsewhere in a visit is not the handler. At most six nearby frames
+        are examined, with gaps, overlapping people and conflicting faces causing abstention.
+        """
+        from .putdown import photos, segments
+
+        frames = [frame for segment in segments(buffer) if segment[0] <= at + 6 and segment[1] >= at - 6
+                  for frame in photos(segment) if 0.5 < abs(frame[0] - at) <= 6]
+        chosen = {}
+        for offset in (-6, -4, -2, 2, 4, 6):
+            frame = min(frames, key=lambda f: abs(f[0] - at - offset), default=None)
+            if frame and abs(frame[0] - at - offset) <= 1.2:
+                chosen[frame[0]] = frame[1]
+        faces = []
+        # Include the anchor's face so a different person's clearer face cannot replace it.
+        anchor = self._person_crop(self._image(jpeg), person_box)
+        face = self.sighting_face(anchor)
+        if face is not None:
+            faces.append(face)
+        for frame in chosen.values():
+            people = self.people(frame)
+            candidates = []
+            for person in people:
+                if box_iou(person_box, person["box"]) < 0.35:
                     continue
-                ok, frame = video.retrieve()
-                if not ok:
+                # Overlapping bodies defeat a crop-based association; do not choose the larger face.
+                if any(other is not person and box_iou(other["box"], person["box"]) > 0.15 for other in people):
                     continue
-                self._clip_faces.setInputSize((frame.shape[1], frame.shape[0]))
-                _, faces = self._clip_faces.detect(frame)
-                if faces is None or len(faces) != 1 or not np.isfinite(faces[0]).all() or min(faces[0][2], faces[0][3]) < 40:
-                    continue
-                found.append((float(faces[0][-1] * faces[0][2]), self._embedding(frame, faces[0])))
-        finally:
-            video.release()
-        if not found:
-            return None
-        best = [vector for _, vector in sorted(found, key=lambda f: f[0], reverse=True)[:CLIP_FACES]]
-        return _unit_vector([sum(values) / len(best) for values in zip(*best)])
+                crop = self._person_crop(self._image(frame), person["box"])
+                vector = self._appearance(crop, ((0.12, 0.55), (0.55, 1.0)), 256)
+                if len(vector) == len(outfit):
+                    candidates.append((sum(a * b for a, b in zip(vector, outfit)), crop))
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            if not candidates or candidates[0][0] < 0.94 or (len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.055):
+                continue
+            face = self.sighting_face(candidates[0][1])
+            if face is not None:
+                if any(sum(a * b for a, b in zip(face, previous)) < 0.55 for previous in faces):
+                    return None
+                faces.append(face)
+        return _unit_vector([sum(values) for values in zip(*faces)]) if faces else None
+
+    @staticmethod
+    def _person_crop(image: Any, box: Sequence[float]) -> Any:
+        height, width = image.shape[:2]
+        if len(box) != 4 or not all(math.isfinite(v) for v in box):
+            raise VisionError("Invalid person box.")
+        x, y, w, h = box
+        if w <= 0 or h <= 0:
+            raise VisionError("Invalid person box.")
+        crop = image[max(0, int(y * height)):min(height, int((y + h) * height)),
+                     max(0, int(x * width)):min(width, int((x + w) * width))]
+        if crop.size == 0 or crop.shape[0] < 32 or crop.shape[1] < 16:
+            raise VisionError("The person is too small to describe.")
+        return crop
 
     def sighting_face(self, crop: Any) -> list[float] | None:
         """The face of the person in a sighting crop, if one is clear enough to compare.
 
         The camera looks down, so the face sits in the upper half of the body box and is often only
-        50 px wide; small crops are enlarged before detection. The likeliest face wins when a second
-        person overlaps the box.
+        50 px wide. Multiple faces are ambiguous; never select another person's larger face.
         """
         self._load_faces()
         cv = self._cv
-        upper = crop[:max(1, int(crop.shape[0] * 0.55))]
+        # At the bottom frame edge a person box can contain just head and shoulders. A fixed half
+        # would cut that face in two. Width bounds the plausible head region of a truncated body.
+        upper = crop[:max(1, int(max(crop.shape[0] * 0.55, crop.shape[1] * 0.9)))]
         scale = max(1.0, 640 / max(crop.shape[:2]))
         if scale > 1:
             upper = cv.resize(upper, None, fx=scale, fy=scale, interpolation=cv.INTER_CUBIC)
@@ -445,10 +477,35 @@ class LocalVision:
             return None
         self._sighting_faces.setInputSize((upper.shape[1], upper.shape[0]))
         _, faces = self._sighting_faces.detect(upper)
-        usable = [f for f in ([] if faces is None else faces) if self._np.isfinite(f).all() and f[2] >= 40 * scale and f[3] >= 40 * scale]
-        if not usable:
+        usable = [f for f in ([] if faces is None else faces) if self._usable_sighting_face(upper, f, scale)]
+        if len(usable) != 1:
             return None
-        return self._embedding(upper, max(usable, key=lambda f: f[2] * f[3] * f[-1]))
+        return self._embedding(upper, usable[0])
+
+    def _usable_sighting_face(self, head: Any, face: Any, scale: float = 1.0) -> bool:
+        """Reject hand-shaped false detections, profiles and dark patches inside the head crop."""
+        if len(face) != 15 or not self._np.isfinite(face).all() or face[-1] < 0.85:
+            return False
+        x, y, w, h = map(float, face[:4])
+        if min(w, h) < 40 * scale or x < 0 or y < 0 or x + w > head.shape[1] or y + h > head.shape[0]:
+            return False
+        points = self._np.asarray(face[4:14]).reshape(5, 2)
+        if any(not (x <= px <= x + w and y <= py <= y + h) for px, py in points):
+            return False
+        eyes = sorted(points[:2], key=lambda p: p[0])
+        mouth = sorted(points[3:], key=lambda p: p[0])
+        nose = points[2]
+        eye_gap = eyes[1][0] - eyes[0][0]
+        eye_y = (eyes[0][1] + eyes[1][1]) / 2
+        mouth_y = (mouth[0][1] + mouth[1][1]) / 2
+        if (eye_gap < w * 0.2 or abs(eyes[0][1] - eyes[1][1]) > h * 0.2
+                or abs(nose[0] - (eyes[0][0] + eyes[1][0]) / 2) > eye_gap * 0.35
+                or not eye_y < nose[1] < mouth_y or mouth_y - eye_y < h * 0.2
+                or mouth[1][0] - mouth[0][0] < w * 0.15):
+            return False
+        patch = head[int(y):int(y + h), int(x):int(x + w)]
+        grey = self._cv.cvtColor(patch, self._cv.COLOR_BGR2GRAY)
+        return bool(grey.mean() >= 40 and grey.std() >= 12)
 
     def enroll(self, resident_id: int, jpeg: bytes) -> int:
         _resident_id(resident_id)
@@ -643,6 +700,12 @@ class LocalVision:
         deep = _unit_vector(features.float().cpu().reshape(-1).tolist())
         return _unit_vector([0.75 * v for v in deep] + [0.66 * v for v in self._colour(crop, bands)])
 
+    def people(self, jpeg: bytes) -> list[dict[str, Any]]:
+        """Person detections in any saved picture, without touching live tracking state."""
+        image = self._image(jpeg)
+        self._load_detector()
+        return [d for d in self._detect(image) if d["kind"] == "person"]
+
     def describe_person(self, jpeg: bytes, box: Sequence[float]) -> tuple[dict[str, list[float]], bytes]:
         """Identity cues for one sighting, plus a JPEG crop for review.
 
@@ -650,17 +713,11 @@ class LocalVision:
         lasts. face: only when one is large and frontal enough. stature: where the top of the head was,
         comparable between sightings at the same area.
         """
-        cv = self._cv
         image = self._image(jpeg)
+        cv = self._cv
         self._load_detector()
-        height, width = image.shape[:2]
         x, y, w, h = box
-        pad = 0.04
-        left, top = int(max(0, x - pad * w) * width), int(max(0, y - pad * h) * height)
-        right, bottom = int(min(1, x + w * (1 + pad)) * width), int(min(1, y + h * (1 + pad)) * height)
-        crop = image[top:bottom, left:right]
-        if crop.size == 0 or crop.shape[0] < 32 or crop.shape[1] < 16:
-            raise VisionError("The person is too small to describe.")
+        crop = self._person_crop(image, box)
         cues = {"outfit": self._appearance(crop, ((0.12, 0.55), (0.55, 1.0)), 256)}
         head = crop[:max(16, int(crop.shape[0] * 0.24))]
         if head.shape[0] >= 16 and head.shape[1] >= 16:

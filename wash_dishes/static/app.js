@@ -5,6 +5,8 @@ import { openIncident, logDishes } from "./js/incident.js";
 import { kitchenPage } from "./js/pages/kitchen.js";
 import { livePage } from "./js/pages/live.js";
 import { feedPage } from "./js/pages/feed.js";
+import { proofPage } from "./js/pages/proof.js";
+import { ledgerPage } from "./js/pages/ledger.js";
 import { incidentDetailPage } from "./js/pages/incident-detail.js";
 import { reviewPage } from "./js/pages/review.js";
 import { incidentsPage } from "./js/pages/incidents.js";
@@ -13,21 +15,30 @@ import { modelPage } from "./js/pages/model.js";
 import { setupPage } from "./js/pages/setup.js";
 
 
-// `tab` names the nav item a page lives under; Train sits inside Settings.
+// `tab` names the nav item a page lives under; Train sits inside Settings. `hidden` pages stay
+// reachable from the menu, search and old links but are not in the top bar: phones get Send, People
+// and Live, and the older photo and review pages confused more than they helped.
+// `standalone` pages load their own data and open without waiting for /api/dashboard.
 const PAGES = {
-  feed: { label: "Photos", mount: feedPage },
+  proof: { label: "Send", mount: proofPage, standalone: true },
+  people: { label: "People", mount: ledgerPage, standalone: true },
+  feed: { label: "Photos", mount: feedPage, hidden: true },
   incident: { label: "Incident", mount: incidentDetailPage, tab: "feed" },
   kitchen: { label: "Overview", mount: kitchenPage, tab: "feed" },
   live: { label: "Live", mount: livePage },
   evidence: { label: "Evidence", mount: feedPage, tab: "feed" },
   review: { label: "Checks", mount: reviewPage, tab: "setup" },
   incidents: { label: "History", mount: incidentsPage, tab: "feed" },
-  people: { label: "People", mount: peoplePage, tab: "setup" },
+  housemates: { label: "Housemates", mount: peoplePage, tab: "setup" },
   person: { label: "Person", mount: feedPage, tab: "feed" },
-  setup: { label: "Settings", mount: setupPage },
+  setup: { label: "Settings", mount: setupPage, hidden: true },
   model: { label: "Train the detector", mount: modelPage, tab: "setup" },
 };
-const DASHBOARD_MS = 8000, HISTORY_MS = 60000;
+const DASHBOARD_MS = 8000, HISTORY_MS = 60000, QUIET_MS = 60000;
+// Send and People load their own small data. There the dashboard summary only feeds the top bar,
+// and the full history (over a megabyte) only other pages and search, so a phone left on Send
+// does not pull both every few seconds.
+const lean = () => Boolean(PAGES[state.route.page]?.standalone);
 const app = document.querySelector("#app");
 let page = null, timers = [], refreshing = null, historyToken = 0;
 
@@ -61,7 +72,10 @@ function showLogin(message = "") {
     state.csrf = result.csrf_token || ""; state.session = { ...state.session, authenticated: true };
     await enter();
   }, { submit: "Sign in" });
-  f.append(field("Access key", h("input", { name: "password", type: "password", required: true, autocomplete: "current-password", maxlength: 256, autofocus: true }), "It's printed on the Jetson. You'll stay signed in on this browser for 12 hours."));
+  // There is no account name, but password managers (iCloud Passwords especially) file a key under a
+  // username and ask for one when the form has none. A fixed hidden name gives them something to save.
+  f.append(h("input", { name: "username", type: "text", autocomplete: "username", value: "Dish Watch", readonly: true, tabindex: "-1", "aria-hidden": "true", class: "sr-only" }));
+  f.append(field("Access key", h("input", { name: "password", type: "password", required: true, autocomplete: "current-password", maxlength: 256, autofocus: true }), "It's printed on the Jetson. You'll stay signed in on this browser."));
   f.finish();
   fill(app, h("main", { id: "main", class: "login" },
     h("section", { class: "login-box", "aria-labelledby": "login-title" },
@@ -75,23 +89,24 @@ function showLogin(message = "") {
 
 async function enter() {
   buildShell();
-  await Promise.all([refresh(), loadHistory()]);
+  // Send and People open at once and the summary follows their own data; other pages open when
+  // the summary arrives (route asks for it). History is never waited for.
   route();
   startLoops();
+  if (lean()) setTimeout(refresh, 1200);
 }
 
 // ---- Shell
 const shell = {};
 function buildShell() {
-  shell.nav = h("nav", { class: "nav", "aria-label": "Pages" }, Object.entries(PAGES).filter(([, p]) => !p.tab).map(([key, p]) =>
-    h("a", { href: `#/${key}`, "data-page": key }, p.label, ["review", "feed"].includes(key) ? h("b", { class: "nav-count", hidden: true }) : null)));
+  shell.nav = h("nav", { class: "nav", "aria-label": "Pages" }, Object.entries(PAGES).filter(([, p]) => !p.tab && !p.hidden).map(([key, p]) =>
+    h("a", { href: `#/${key}`, "data-page": key }, p.label)));
   shell.status = h("span", { class: "status" });
   shell.find = h("button", { type: "button", class: "find", onclick: openPalette, "aria-label": "Search", title: "Search (⌘K)", "aria-keyshortcuts": "Meta+K Control+K" }, icon("search", 15), h("kbd", {}, navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K"));
   shell.menu = h("div", { class: "menu", hidden: true, role: "menu" },
+    h("a", { href: "#/setup", role: "menuitem", onclick: closeMenu }, icon("setup", 15), h("span", {}, "Settings")),
+    h("a", { href: "#/housemates", role: "menuitem", onclick: closeMenu }, icon("people", 15), h("span", {}, "Housemates")),
     h("button", { type: "button", role: "menuitem", onclick: () => { closeMenu(); logDishes(); } }, icon("plus", 15), h("span", {}, "Log dishes by hand")),
-    h("a", {href:"#/people", role:"menuitem", onclick:closeMenu}, "People"),
-    h("a", {href:"#/review", role:"menuitem", onclick:closeMenu}, "Detection checks"),
-    h("a", {href:"#/feed?filter=archive", role:"menuitem", onclick:closeMenu}, "Archive"),
     h("div", { class: "menu-sep" }),
     h("button", { type: "button", role: "menuitem", onclick: signOut }, icon("logout", 15), h("span", {}, "Sign out")));
   shell.menuBtn = h("button", { type: "button", class: "icon-btn", "aria-label": "More", "aria-haspopup": "menu", "aria-expanded": "false", onclick: e => { e.stopPropagation(); shell.menu.hidden ? openMenu() : closeMenu(); } }, icon("more", 18));
@@ -99,7 +114,7 @@ function buildShell() {
   shell.main = h("main", { id: "main", tabindex: "-1" });
   fill(app, h("header", { class: "top" },
     h("div", { class: "top-in" },
-      h("a", { class: "brand", href: "#/feed", "aria-label": "Dish Watch incidents" }, brandMark(22), h("span", {}, "Dish Watch")),
+      h("a", { class: "brand", href: "#/proof", "aria-label": "Dish Watch home" }, brandMark(22), h("span", {}, "Dish Watch")),
       shell.nav,
       h("div", { class: "top-r" }, shell.status, shell.find, h("div", { class: "menu-wrap" }, shell.menuBtn, shell.menu)))),
     shell.banner, shell.main);
@@ -119,11 +134,6 @@ async function signOut() {
 
 function renderHeader() {
   if (!shell.nav || !state.data) return;
-  const needs = (state.data.checks || []).filter(c => c.status === 'pending' && Date.now() - Date.parse(c.at) < 36 * 3600e3).length;
-  const count = shell.nav.querySelector('[data-page="review"] .nav-count');
-  if (count) { count.hidden = !needs; count.textContent = String(needs); }
-  const evidence = shell.nav.querySelector('[data-page="feed"] .nav-count');
-  evidence.hidden = true;
   document.title = `${PAGES[state.route.page]?.label || "Now"} · Dish Watch`;
   shell.banner.hidden = !state.error;
   fill(shell.banner, ...(state.error ? [icon("alert", 14), h("span", {}, `Lost contact with the household server. Showing data from ${when(new Date(state.lastSync).toISOString())}.`), h("button", { type: "button", class: "link", onclick: () => refresh() }, "Retry")] : []));
@@ -159,7 +169,7 @@ async function refresh() {
     } catch (e) {
       if (e.status === 401) return;
       state.error = e.message;
-      if (!state.data) showFatal(e.message); else renderHeader();
+      if (!state.data && !PAGES[state.route.page]?.standalone) showFatal(e.message); else renderHeader();
     } finally { refreshing = null; }
   })();
   return refreshing;
@@ -183,22 +193,22 @@ function showFatal(message) {
 
 function startLoops() {
   stopLoops();
-  timers.push(setInterval(() => { if (!document.hidden) refresh(); }, DASHBOARD_MS));
-  timers.push(setInterval(() => { if (!document.hidden) loadHistory(); }, HISTORY_MS));
+  timers.push(setInterval(() => { if (!document.hidden && (!lean() || Date.now() - state.lastSync > QUIET_MS)) refresh(); }, DASHBOARD_MS));
+  timers.push(setInterval(() => { if (!document.hidden && !lean()) loadHistory(); }, HISTORY_MS));
 }
 function stopLoops() { for (const t of timers) clearInterval(t); timers = []; }
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || !state.session?.authenticated || !shell.main?.isConnected) return;
-  if (Date.now() - state.lastSync > DASHBOARD_MS) refresh();
-  if (Date.now() - state.historyAt > HISTORY_MS) loadHistory();
+  if (Date.now() - state.lastSync > (lean() ? QUIET_MS : DASHBOARD_MS)) refresh();
+  if (!lean() && Date.now() - state.historyAt > HISTORY_MS) loadHistory();
 });
 
 subscribe(kind => {
   if (kind === "data") { renderHeader(); page?.update("data"); }
   else if (kind === "history") page?.update("history");
   else if (kind === "live") renderStatus();
-  else if (kind === "changed") { refresh(); loadHistory(); }
+  else if (kind === "changed") { refresh(); if (!lean()) loadHistory(); }
   else if (kind === "unauthorized" && state.session?.authenticated) { state.session.authenticated = false; showLogin("Your session ended. Sign in again to continue."); }
 });
 
@@ -206,12 +216,17 @@ subscribe(kind => {
 function parseHash() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const [name, sub] = path.split("/");
-  return { page: PAGES[name] ? name : "feed", sub: sub || null, query: Object.fromEntries(new URLSearchParams(query)) };
+  return { page: PAGES[name] ? name : "proof", sub: sub || null, query: Object.fromEntries(new URLSearchParams(query)) };
 }
 
 function route() {
-  if (!state.session?.authenticated || !shell.main || !state.data) return;
+  if (!state.session?.authenticated || !shell.main) return;
   const next = parseHash(), first = !page;
+  if (!state.data && !PAGES[next.page].standalone) {
+    page?.destroy(); page = null; fill(shell.main, h("div", { class: "full-state boot" }, h("p", {}, "Loading…")));
+    refresh().then(() => { if (state.data && !page) route(); });
+    return;
+  }
   if (page?.beforeLeave && !page.beforeLeave()) {
     const old = state.route;
     history.replaceState(null, '', `#/${old.page}${old.sub ? '/' + old.sub : ''}?${new URLSearchParams(old.query)}`);
@@ -227,6 +242,7 @@ function route() {
   try { page = PAGES[next.page].mount(shell.main, next); }
   catch (e) { console.error(e); fill(shell.main, h("div", { class: "full-state" }, icon("alert", 28), h("h1", {}, "This page hit an error"), h("p", {}, e.message), h("button", { type: "button", class: "btn", onclick: route }, "Reload page"))); }
   renderHeader();
+  if (!lean() && Date.now() - state.historyAt > HISTORY_MS) loadHistory();
   if (!first) { scrollTo(0, 0); document.querySelector("#page-title")?.focus({ preventScroll: true }); }
 }
 addEventListener("hashchange", route);
@@ -241,7 +257,7 @@ function commands(q) {
   for (const [id, label] of [["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]]) add("Go to", `Settings · ${label}`, () => { location.hash = `#/setup/${id}`; }, { iconName: "setup" });
   add("Do", "Log dishes by hand", logDishes, { iconName: "plus", keywords: "add manual" });
   add("Do", "Sign out", signOut, { iconName: "logout" });
-  for (const r of activeResidents()) add("People", r.name, () => { location.hash = `#/person/${r.id}`; }, { hint: "history", iconName: "people" });
+  for (const r of activeResidents()) add("People", r.name, () => { location.hash = `#/people/${r.id}`; }, { hint: "named pictures", iconName: "people" });
   const seen = new Set(), incidents = [...(state.data?.obligations || []), ...(state.history || [])].filter(o => !seen.has(o.id) && seen.add(o.id));
   for (const o of incidents.slice(0, 400)) add("Dishes", dishText(o, { short: true }), () => openIncident(o.id), { hint: [person(o.resident_id)?.name || "unknown", when(o.created_at), isOpen(o) ? "still out" : o.status === "resolved" ? "washed" : o.status, incId(o.id)].join(" · "), iconName: "dish", keywords: `${o.id} ${o.location || ""} ${o.note || ""}` });
   const terms = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -251,6 +267,7 @@ function commands(q) {
 
 function openPalette() {
   if (!state.session?.authenticated || palette.open) return;
+  if (Date.now() - state.historyAt > HISTORY_MS) loadHistory();
   const input = h("input", { type: "search", placeholder: "Find a page, a person or a dish…", "aria-label": "Search", autocomplete: "off", spellcheck: "false", role: "combobox", "aria-controls": "palette-list", "aria-expanded": "true" });
   const list = h("ul", { id: "palette-list", role: "listbox" });
   const render = () => {

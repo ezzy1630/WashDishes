@@ -14,15 +14,10 @@ from zoneinfo import ZoneInfo
 from .config import DEFAULT_SETTINGS, validate_settings
 from .evidence import evidence_timeline
 
-# Identity cues: (similarity that is neutral evidence, weight). Uncalibrated starting points; the
-# suggestion-accuracy figure on the dashboard is the real measure. Faces are ArcFace embeddings: on this
-# camera, different housemates averaged 0.14 and the same one 0.25-0.58 (2026-10-13). Outfits only
-# identify someone on the day they wear them.
+# Legacy ranking features remain useful for fit diagnostics. Displaying a guess additionally requires
+# an absolute visual match and separation from the next resident; clothing never crosses local dates.
 IDENTITY_CUES = {"face": (0.25, 8.0), "head": (0.78, 10.0), "outfit_today": (0.75, 10.0), "outfit": (0.88, 1.5)}
-OUTFIT_HOURS = 16
 STATURE_SPREAD = 0.02
-SUGGEST_MIN_EVIDENCE = 1.0
-SUGGEST_MIN_MARGIN = 0.75
 IDENTITY_WEIGHTS_FILE = "identity-weights.json"
 # A dismissal with one of these notes means "the camera saw something that isn't a dish". Other
 # dismissals (already there at startup, a different dish, system cleanups) say nothing about that.
@@ -32,9 +27,9 @@ UNCLAIMED_NOTE = "Gone before anyone knew whose it was"
 CANT_TELL_NOTE = "Can't tell whose it was"
 # A dish picked up and not put down again in view within this time was carried away (inventory.MOVE_WINDOW).
 CARRY_WINDOW = timedelta(minutes=30)
-# An unnamed dish with no photo after its deadline, unseen this long, can never be held against anyone.
+# An unnamed dish the camera has not seen for this long is gone; nobody names the owner of a dish that is no longer out.
 UNPROVABLE_AFTER = timedelta(hours=24)
-UNPROVABLE_NOTE = "Can't be proven: nobody was named and the camera has no photo of it after its deadline"
+UNPROVABLE_NOTE = "Gone before anyone named whose it was"
 # Closed by the camera after the deadline: the dish is no longer out, but it was out late.
 TAKEN_LATE_NOTE = "Taken away after its deadline and not put down again in view. Still late; whether it was washed was not observed."
 WASHED_LATE_NOTE = "Seen going through the sink onto a clean rack after its deadline. Still late; washing itself was not verified."
@@ -428,7 +423,7 @@ class Store:
             description = "Dish event reopened"
         else:
             raise ValueError("Choose resolve, confirm, reassign, dispute, dismiss, reopen, or start_timer.")
-        self._event(obligation_id, action, description, {"before": previous, "note": note.strip()}, now)
+        self._event(obligation_id, action, description, {"before": previous, "note": note.strip(), "resident_id": resident_id}, now)
         if action == "dispute" or (action == "resolve" and late):
             self._retain_review_evidence(obligation_id, now)
         if action in ("confirm", "reassign", "dispute", "dismiss"):
@@ -477,15 +472,15 @@ class Store:
             return len(rows)
 
     def _retire_unprovable(self, now: datetime) -> int:
-        """Close unnamed dishes that were never photographed after their deadline and are long gone.
+        """Close unnamed dishes that have been gone for a day.
 
-        They can never count against anyone, and on 2026-10-15 thirty of them buried the few late
-        dishes that could. Appearance labels are kept (no dismiss event, so nothing is learned as
-        "not a dish"), and a person can still reopen or name one.
+        Naming only happens while a dish is still out (household decision, 2026-10-20: nobody cares about a dish
+        from days ago that is no longer there), so an unnamed one that is gone will never count.
+        On 2026-10-15 thirty of them buried the few that could. Appearance labels are kept (no
+        dismiss event, so nothing is learned as "not a dish"), and a person can still reopen or name one.
         """
         rows = self.conn.execute("""SELECT o.id FROM obligations o WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.resident_id IS NULL AND o.timing_known=1
-            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?
-            AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.obligation_id=o.id AND e.label LIKE 'Matching dish still visible after the deadline%' AND e.created_at>=o.due_at)""",
+            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?""",
             (stamp(now), stamp(now - UNPROVABLE_AFTER))).fetchall()
         for row in rows:
             self.conn.execute("UPDATE obligations SET lifecycle='dismissed',review_pending=0,reason=? WHERE id=?", (UNPROVABLE_NOTE, row["id"]))
@@ -773,9 +768,29 @@ class Store:
     def add_person_sample(self, obligation_id: int, embedding: list[float], evidence_id: str | None = None, *, at: datetime | None = None,
                           cue: str = "outfit", context: str | None = None) -> int:
         with self.lock, self.conn:
+            proof = self.conn.execute("""SELECT 1 FROM person_samples s JOIN evidence e ON e.id=s.evidence_id
+                WHERE s.obligation_id=? AND e.label='Who put it down (from footage)' AND s.evidence_id IS NOT ?""",
+                                     (obligation_id, evidence_id)).fetchone()
+            if proof:
+                raise ValueError("A proof's person sample can only be replaced by its put-down picture.")
             cursor = self.conn.execute("INSERT INTO person_samples(obligation_id,resident_id,created_at,embedding,evidence_id,cue,context) VALUES(?,NULL,?,?,?,?,?)",
                                        (obligation_id, stamp(at), json.dumps([round(v, 5) for v in embedding]), evidence_id, cue, context))
             return cursor.lastrowid
+
+    def replace_putdown_samples(self, obligation_id: int, cues: dict[str, list[float]], evidence_id: str,
+                               *, at: datetime, context: str | None = None) -> None:
+        """Replace the capture atomically. A name on an older picture cannot label a new person."""
+        rows = [(obligation_id, stamp(at), json.dumps([round(v, 5) for v in vector]), evidence_id, cue, context)
+                for cue, vector in cues.items()]
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM person_samples WHERE obligation_id=?", (obligation_id,))
+            self.conn.executemany("""INSERT INTO person_samples(obligation_id,resident_id,created_at,embedding,evidence_id,cue,context)
+                VALUES(?,NULL,?,?,?,?,?)""", rows)
+
+    def clear_unlabeled_samples(self, obligation_id: int) -> None:
+        """Drop the camera's own captures for a dish when better ones (from the put-down footage) replace them."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM person_samples WHERE obligation_id=? AND resident_id IS NULL", (obligation_id,))
 
     def merge_sighting_face(self, obligation_id: int, embedding: list[float], evidence_id: str) -> bool:
         """Join a face from a clip to the sighting's latest capture, averaged with a face already there.
@@ -784,6 +799,12 @@ class Store:
         False when the sighting has no capture or this clip was already used.
         """
         with self.lock, self.conn:
+            clip = self.conn.execute("SELECT kind FROM evidence WHERE id=?", (evidence_id,)).fetchone()
+            if clip and clip["kind"] == "clip":
+                return False
+            # Old whole-visit clips have no link to the depicted handler. Never contaminate a proof.
+            if self.conn.execute("SELECT 1 FROM evidence WHERE obligation_id=? AND label='Who put it down (from footage)'", (obligation_id,)).fetchone():
+                return False
             capture = self.conn.execute("SELECT * FROM person_samples WHERE obligation_id=? AND cue!='face' ORDER BY id DESC LIMIT 1", (obligation_id,)).fetchone()
             if not capture:
                 return False
@@ -806,39 +827,64 @@ class Store:
             return True
 
     def hint_samples(self, obligation_id: int, resident_id: int) -> None:
-        """A strong face match names this sighting provisionally, so the same outfit later today can be recognised."""
-        with self.lock, self.conn:
-            self.conn.execute("UPDATE person_samples SET hint_resident_id=? WHERE obligation_id=? AND resident_id IS NULL", (resident_id, obligation_id))
+        """Compatibility for older callers: predictions are never teaching labels."""
 
     def suggest_identity(self, cues: dict[str, list[float]], *, at: datetime | None = None, context: str | None = None,
-                         enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000) -> tuple[int | None, float | None, float | None, dict]:
-        """Combine every cue into one ranking of housemates. Returns (resident, evidence, margin, per-cue similarity)."""
+                         enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
+                         exclude_obligation: int | None = None, before: datetime | None = None) -> tuple[int | None, float | None, float | None, dict]:
+        """Return a discriminating visual match, ranking diagnostics and its supported basis."""
         weights = self.identity_weights()
-        ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in features.items()), resident, seen)
-                         for resident, features, seen in self.cue_features(cues, at=at or utcnow(), context=context, enrolled_faces=enrolled_faces, limit=limit)),
+        features = self.cue_features(cues, at=at or utcnow(), context=context, enrolled_faces=enrolled_faces,
+                                    limit=limit, exclude_obligation=exclude_obligation, before=before)
+        ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in values.items()), resident, seen)
+                         for resident, values, seen in features),
                         key=lambda r: r[0], reverse=True)
         if not ranked:
             return None, None, None, {}
         evidence, resident, seen = ranked[0]
         margin = evidence - ranked[1][0] if len(ranked) > 1 else None
-        if evidence < SUGGEST_MIN_EVIDENCE or (margin is not None and margin < SUGGEST_MIN_MARGIN):
+        # A sum of weak, correlated cues is not independent evidence. Require a discriminating
+        # visual match in its own right; a contradictory strong cue forces abstention.
+        supported = {}
+        for cue, minimum, separation in (("face", 0.55, 0.12), ("outfit_today", 0.94, 0.055), ("head", 0.96, 0.06)):
+            scores = sorted(((s[cue], r) for r, _, s in features if cue in s), reverse=True)
+            if scores and scores[0][0] >= minimum and (len(scores) == 1 or scores[0][0] - scores[1][0] >= separation):
+                best_seen = next(s for r, _, s in features if r == scores[0][1])
+                if cue == "outfit_today" and best_seen.get("outfit_colour", 1.0) < 0.94:
+                    continue
+                supported[cue] = scores[0][1]
+        if not supported or len(set(supported.values())) != 1:
             return None, round(evidence, 3), None if margin is None else round(margin, 3), seen
+        resident = next(iter(supported.values()))
+        evidence, _, seen = next(row for row in ranked if row[1] == resident)
+        other = [row[0] for row in ranked if row[1] != resident]
+        margin = evidence - max(other) if other else None
+        seen = {cue: seen[cue] for cue in supported}
+        if "outfit_today" in supported:
+            reference = self._outfit_reference(resident, cues["outfit"], at or utcnow(), exclude_obligation, before)
+            if reference:
+                seen["basis"] = reference
         return resident, round(evidence, 3), None if margin is None else round(margin, 3), seen
 
     def cue_features(self, cues: dict[str, list[float]], *, at: datetime, context: str | None = None,
                      enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
-                     exclude_obligation: int | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
+                     exclude_obligation: int | None = None, before: datetime | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
         """How strongly each cue points at each housemate, before weighting: (resident, features, similarities).
 
         Face and head carry across days. An outfit is strong evidence only against sightings from the
-        same day; confirmed sightings count fully and face-hinted ones partly. Stature compares how high
+        same day; only human-labelled sightings teach. Stature compares how high
         a head was when standing at the same area. exclude_obligation leaves one sighting's own samples
         out, so it can be scored as if new.
         """
         with self.lock:
-            rows = self.conn.execute("""SELECT coalesce(s.resident_id, s.hint_resident_id) who, s.resident_id IS NULL hinted, s.cue, s.context, s.created_at, s.embedding
-                FROM person_samples s JOIN residents r ON r.id=coalesce(s.resident_id, s.hint_resident_id)
-                WHERE r.active=1 AND (? IS NULL OR s.obligation_id IS NOT ?) ORDER BY s.id DESC LIMIT ?""", (exclude_obligation, exclude_obligation, limit)).fetchall()
+            rows = self.conn.execute("""SELECT s.resident_id who, s.cue, s.context, s.created_at, s.embedding
+                FROM person_samples s JOIN residents r ON r.id=s.resident_id JOIN obligations o ON o.id=s.obligation_id
+                LEFT JOIN evidence e ON e.id=s.evidence_id
+                WHERE r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.attribution IS NOT 'camera'
+                AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip')
+                AND (? IS NULL OR s.obligation_id IS NOT ?) AND (? IS NULL OR s.created_at<?)
+                ORDER BY s.id DESC LIMIT ?""", (exclude_obligation, exclude_obligation, stamp(before) if before else None,
+                                               stamp(before) if before else None, limit)).fetchall()
         samples: dict[int, list] = {}
         for row in rows:
             samples.setdefault(row["who"], []).append(row)
@@ -846,11 +892,13 @@ class Store:
             samples.setdefault(resident, [])
 
         def similarity(vector: list[float], other: list[float]) -> float | None:
-            return sum(a * b for a, b in zip(vector, other)) if len(vector) == len(other) else None
+            if len(vector) != len(other) or not all(math.isfinite(v) for v in (*vector, *other)):
+                return None
+            norm = math.sqrt(sum(v * v for v in vector) * sum(v * v for v in other))
+            return sum(a * b for a, b in zip(vector, other)) / norm if norm else None
 
         def top(vector: list[float], candidates: list[list[float]]) -> float | None:
-            scores = sorted((s for s in (similarity(vector, c) for c in candidates) if s is not None), reverse=True)[:3]
-            return sum(scores) / len(scores) if scores else None
+            return max((s for s in (similarity(vector, c) for c in candidates) if s is not None), default=None)
 
         result = []
         for resident, own in samples.items():
@@ -862,7 +910,7 @@ class Store:
                     neutral, strength = IDENTITY_CUES[cue]
                     features[cue] = factor * max(floor, min(6.0, strength * (value - neutral)))
                     seen[cue] = round(value, 3)
-            confirmed = [r for r in own if not r["hinted"]]
+            confirmed = own
             if cues.get("face"):
                 faces = [json.loads(r["embedding"]) for r in confirmed if r["cue"] == "face"] + list((enrolled_faces or {}).get(resident, []))
                 add("face", max((s for s in (similarity(cues["face"], f) for f in faces) if s is not None), default=None))
@@ -870,16 +918,20 @@ class Store:
                 add("head", top(cues["head"], [json.loads(r["embedding"]) for r in confirmed if r["cue"] == "head"]))
             if cues.get("outfit"):
                 # Reviewing older footage can supply labels from later sightings.
-                recent = lambda r: abs((at - parse_stamp(r["created_at"])).total_seconds()) <= OUTFIT_HOURS * 3600  # noqa: E731
-                today = top(cues["outfit"], [json.loads(r["embedding"]) for r in confirmed if r["cue"] == "outfit" and recent(r)])
-                hinted = top(cues["outfit"], [json.loads(r["embedding"]) for r in own if r["hinted"] and r["cue"] == "outfit" and recent(r)])
+                tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
+                recent = lambda r: at.astimezone(tz).date() == parse_stamp(r["created_at"]).astimezone(tz).date()  # noqa: E731
+                outfits = [json.loads(r["embedding"]) for r in confirmed if r["cue"] == "outfit" and recent(r)]
+                today = top(cues["outfit"], outfits)
                 if today is not None:
                     add("outfit_today", today)
-                elif hinted is not None:
-                    add("outfit_today", hinted, 0.8)
-                else:
-                    # A repeated outfit is a small hint; a different one says nothing, since clothes change.
-                    add("outfit", top(cues["outfit"], [json.loads(r["embedding"]) for r in confirmed if r["cue"] == "outfit"]), floor=0.0)
+                    # The saved 592-value descriptor is 512 detector features plus two 40-bin
+                    # colour histograms. Similar pose/background must not outweigh different clothes.
+                    if len(cues["outfit"]) == 592:
+                        closest = max((v for v in outfits if len(v) == 592),
+                                      key=lambda v: similarity(cues["outfit"], v) or -1, default=None)
+                        if closest is not None:
+                            colour = similarity(cues["outfit"][-80:], closest[-80:])
+                            seen["outfit_colour"] = colour if colour is not None else 0.0
             if cues.get("stature") and context:
                 heights = [json.loads(r["embedding"])[0] for r in confirmed if r["cue"] == "stature" and r["context"] == context]
                 if heights:
@@ -889,6 +941,29 @@ class Store:
             if seen:
                 result.append((resident, features, seen))
         return result
+
+    def _outfit_reference(self, resident_id: int, vector: list[float], at: datetime,
+                          exclude_obligation: int | None, before: datetime | None) -> str | None:
+        tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
+        with self.lock:
+            rows = self.conn.execute("""SELECT s.*, o.dishes FROM person_samples s JOIN obligations o ON o.id=s.obligation_id
+                WHERE s.resident_id=? AND s.cue='outfit' AND o.lifecycle NOT IN ('dismissed','disputed')
+                AND o.attribution IS NOT 'camera' AND s.obligation_id IS NOT ?""", (resident_id, exclude_obligation)).fetchall()
+        candidates = []
+        for row in rows:
+            when = parse_stamp(row["created_at"])
+            other = json.loads(row["embedding"])
+            if when.astimezone(tz).date() != at.astimezone(tz).date() or (before and when >= before) or len(vector) != len(other):
+                continue
+            norm = math.sqrt(sum(v * v for v in vector) * sum(v * v for v in other))
+            if norm:
+                candidates.append((sum(a * b for a, b in zip(vector, other)) / norm, row["id"], row))
+        if not candidates:
+            return None
+        row = max(candidates)[2]
+        time = parse_stamp(row["created_at"]).astimezone(tz).strftime("%I:%M %p").lstrip("0")
+        dish = json.loads(row["dishes"])[0]["kind"]
+        return f"same outfit as the {time} {dish}"
 
     def identity_weights(self) -> dict[str, float]:
         """Per-cue weights learned from confirmed answers (identity_fit), or 1.0 for every cue."""
@@ -907,7 +982,8 @@ class Store:
     def sighting_cues(self, obligation_id: int) -> tuple[dict[str, list[float]], str | None, datetime] | None:
         """The cues from one sighting's latest capture, as they were when it was suggested."""
         with self.lock:
-            samples = self.conn.execute("SELECT * FROM person_samples WHERE obligation_id=? ORDER BY id DESC", (obligation_id,)).fetchall()
+            samples = self.conn.execute("""SELECT s.* FROM person_samples s LEFT JOIN evidence e ON e.id=s.evidence_id
+                WHERE s.obligation_id=? AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip') ORDER BY s.id DESC""", (obligation_id,)).fetchall()
         if not samples:
             return None
         latest = samples[0]
@@ -929,8 +1005,9 @@ class Store:
         """
         with self.lock:
             rows = self.conn.execute("""SELECT s.*, o.suggested_resident_id, o.suggestion_score
-                FROM person_samples s JOIN obligations o ON o.id=s.obligation_id
-                WHERE o.archived_at IS NULL AND o.source='vision' AND o.lifecycle='open' AND o.confidence='candidate'
+                FROM person_samples s JOIN obligations o ON o.id=s.obligation_id LEFT JOIN evidence e ON e.id=s.evidence_id
+                WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.confidence='candidate'
+                AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip')
                 AND o.resident_id IS NULL ORDER BY s.id DESC""").fetchall()
             sightings: dict[int, list] = {}
             for row in rows:
@@ -942,7 +1019,8 @@ class Store:
                 for sample in samples:
                     if sample["created_at"] == latest["created_at"] and sample["context"] == latest["context"]:
                         cues.setdefault(sample["cue"], json.loads(sample["embedding"]))
-                resident, evidence, _, seen = self.suggest_identity(cues, at=parse_stamp(latest["created_at"]), context=latest["context"])
+                resident, evidence, _, seen = self.suggest_identity(cues, at=parse_stamp(latest["created_at"]), context=latest["context"],
+                                                                  exclude_obligation=obligation_id)
                 if (resident, evidence) != (latest["suggested_resident_id"], latest["suggestion_score"]):
                     self._set_suggestion(obligation_id, resident, evidence, seen)
                     updated += 1
@@ -957,19 +1035,79 @@ class Store:
         # atomic decision as the human label that caused them.
         labels = {"face": "face", "head": "hair and head", "outfit_today": "today's outfit", "outfit": "a past outfit", "stature": "height"}
         self.conn.execute("UPDATE obligations SET suggested_resident_id=?, suggestion_score=? WHERE id=?", (resident_id, score, obligation_id))
+        capture = self.sighting_cues(obligation_id)
+        fingerprint = hashlib.sha256(json.dumps(capture[0], sort_keys=True).encode()).hexdigest() if capture else None
+        # Unlike the mutable obligation fields this survives refreshes and corrections. Empty guesses
+        # are recorded too, so an earlier visible guess cannot be credited after it was withdrawn.
+        self._event(obligation_id, "identity_prediction", "Appearance guess recorded", {
+            "resident_id": resident_id, "score": score, "fingerprint": fingerprint,
+            "captured_at": stamp(capture[2]) if capture else None,
+            "basis": (cues or {}).get("basis") or ", ".join(labels[c] for c in (cues or {}) if c in labels)})
         if resident_id is not None:
             name = self._resident(resident_id)["name"]
-            basis = ", ".join(labels[cue] for cue in (cues or {}) if cue in labels) or "appearance"
+            basis = (cues or {}).get("basis") or ", ".join(labels[cue] for cue in (cues or {}) if cue in labels) or "appearance"
             self._event(obligation_id, "owner_suggested", f"Looks like {name} from {basis}; needs confirmation", {"resident_id": resident_id, "score": score, "cues": cues or {}})
             self._auto_attribute(obligation_id, resident_id, name)
 
-    def attribution_gate(self) -> dict:
-        """Whether the camera may name owners itself, from the latest human-checked suggestions.
+    def suggestion_basis(self, ids: list[int]) -> dict[int, str]:
+        """The basis of the current guess, never an old reason left after an abstention."""
+        if not ids:
+            return {}
+        with self.lock:
+            rows = self.conn.execute(f"""SELECT e.obligation_id, e.data, o.suggested_resident_id
+                FROM events e JOIN obligations o ON o.id=e.obligation_id
+                WHERE e.obligation_id IN ({','.join('?' for _ in ids)}) AND e.event='identity_prediction'
+                AND e.id=(SELECT max(x.id) FROM events x WHERE x.obligation_id=e.obligation_id AND x.event='identity_prediction')""", ids).fetchall()
+        return {r["obligation_id"]: d["basis"] for r in rows if (d := json.loads(r["data"])).get("basis")
+                and d["resident_id"] is not None and d["resident_id"] == r["suggested_resident_id"]}
 
-        Camera-named records are left out: their corrections are not a fair sample.
+    def attribution_gate(self) -> dict:
+        """Measure immutable guesses that appeared on ready cards before a human named them.
+
+        Neither retrospective rescoring nor multiple dishes in the same person's visit can unlock
+        automatic naming. Legacy suggestion_correct rows without a prediction snapshot are unproven.
         """
         with self.lock:
-            recent = [row[0] for row in self.conn.execute("SELECT suggestion_correct FROM obligations WHERE suggestion_correct IS NOT NULL AND attribution IS NULL ORDER BY id DESC LIMIT ?", (AUTO_WINDOW,))]
+            has_proofs = self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='proofs'").fetchone()
+            rows = self.conn.execute("""SELECT e.*, p.created_at ready_at FROM events e
+                JOIN obligations o ON o.id=e.obligation_id JOIN proofs p ON p.obligation_id=o.id
+                WHERE e.event IN ('confirm','reassign','person_identified') AND o.attribution IS NULL
+                AND o.lifecycle NOT IN ('dismissed','disputed') AND p.status='ready'
+                AND e.created_at>=? ORDER BY e.id DESC""", (stamp(utcnow() - timedelta(days=30)),)).fetchall() if has_proofs else []
+            cases, visited = [], set()
+            for row in rows:
+                oid = row["obligation_id"]
+                if oid in visited:
+                    continue
+                visited.add(oid)
+                truth = json.loads(row["data"]).get("resident_id")
+                first = self.conn.execute("""SELECT min(id) FROM events WHERE obligation_id=?
+                    AND event IN ('confirm','reassign','person_identified')""", (oid,)).fetchone()[0]
+                prediction = self.conn.execute("""SELECT * FROM events WHERE obligation_id=? AND event='identity_prediction'
+                    AND id<? ORDER BY id DESC LIMIT 1""", (oid, first)).fetchone()
+                if not prediction or truth is None or row["ready_at"] > row["created_at"]:
+                    continue
+                data = json.loads(prediction["data"])
+                if data.get("resident_id") is None or not data.get("fingerprint") or not data.get("captured_at"):
+                    continue
+                # It must have been a ready card during this prediction's lifetime, before the first label.
+                first_time = self.conn.execute("SELECT created_at FROM events WHERE id=?", (first,)).fetchone()[0]
+                if row["ready_at"] > first_time or parse_stamp(data["captured_at"]) < utcnow() - timedelta(days=30):
+                    continue
+                cases.append({"truth": truth, "correct": int(data["resident_id"] == truth),
+                              "fingerprint": data["fingerprint"], "at": parse_stamp(data["captured_at"]), "checked": row["created_at"]})
+            groups = []
+            for case in sorted(cases, key=lambda c: c["at"]):
+                group = next((g for g in reversed(groups) if case["fingerprint"] in g["fingerprints"]
+                              or (case["truth"] == g["truth"] and case["at"] - g["at"] < timedelta(minutes=30))), None)
+                if group:
+                    group["correct"] = min(group["correct"], case["correct"])
+                    group["fingerprints"].add(case["fingerprint"])
+                    group["at"] = case["at"]
+                    group["checked"] = max(group["checked"], case["checked"])
+                else:
+                    groups.append(case | {"fingerprints": {case["fingerprint"]}})
+            recent = [g["correct"] for g in sorted(groups, key=lambda g: g["checked"], reverse=True)[:AUTO_WINDOW]]
             enabled = self.settings()["auto_attribute"]
         accuracy = sum(recent) / len(recent) if recent else None
         ready = len(recent) >= AUTO_MIN_CHECKED and accuracy is not None and accuracy >= AUTO_MIN_ACCURACY

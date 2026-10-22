@@ -124,7 +124,7 @@ export function kitchenPage(main) {
     const { rows, nobody } = ledger(range);
     const sig = JSON.stringify([range, rows.map(x => [x.r.id, x.r.name, x.mine.length, x.late, x.out, x.guesses.length]), nobody.length]);
     if (sig === whoSig) return; whoSig = sig;
-    if (!rows.length) { fill(whoBody, empty("No one added yet", "Add the people who use the kitchen. Then every dish can be put down to someone.", h("a", { class: "btn", href: "#/people" }, "Add people"))); return; }
+    if (!rows.length) { fill(whoBody, empty("No one added yet", "Add the people who use the kitchen. Then every dish can be put down to someone.", h("a", { class: "btn", href: "#/housemates" }, "Add people"))); return; }
     const max = Math.max(1, ...rows.map(x => x.mine.length + x.guesses.length));
     const period = range === "7d" ? "this week" : "this month";
     const asks = needsYou().length;

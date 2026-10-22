@@ -7,7 +7,7 @@ related_targets: []
 
 # Dish Watch dashboard
 
-Scope: the authenticated dashboard (Incidents, Live, Checks, History, People, Settings) plus sign-in. Mode: Operate. Laptop browser over Tailscale, sessions of a few minutes.
+Scope: the authenticated dashboard (Send, People, Live, Settings, Housemates, and the older Photos, Checks and History pages) plus sign-in. Mode: Operate. Send and People are used on an iPhone over Tailscale in sessions of under a minute; setup and Live on a laptop.
 
 ## Direction contract
 
@@ -15,9 +15,9 @@ THESIS: A kitchen accountability console. A dish left out is an incident with ev
 
 OWN-WORLD: Graphite surfaces (#0c0e11 to #21262c), 12–14px radii, one-pixel inset rules. Mona Sans (wide numerals) with Geist Mono for times and IDs. Area colours amber/blue/green/violet mean place; resident accents mean person; red means past grace. Square-ish monograms, transit-line dish flow, dwell bars.
 
-STORY: See every dish out now and when its next photo arrives; open complete dish photos, compare four genuine views, download one image for the household chat. Missing owners or earlier views never hide a current dish. Corrections and original media are available without turning the default view into a review form. Identity and responsibility remain separate.
+STORY: Open the dashboard, see the proof picture of each dish left out past two hours, tap who put it down if known, press Send and pick the house chat. Click into a person to see every picture named as theirs. Corrections (Not a dish, Wrong photos) are quiet and undoable. Identity and responsibility remain separate: a guess is outlined, never counted until someone taps the name.
 
-FIRST VIEWPORT: Out now title and camera health, Live kitchen link. Left: one recent analysed picture cropped to the counters with numbered candidate boxes, then every active dish as a numbered row (tracked since, next photo, photos not attached). Right: Ready to share with complete photo cards and Download. No placeholder collage is a result; raw box counts are never presented as verified dish counts. A photo opens a single-column image page with Download, followed by closed Something wrong? and Original photos & video disclosures. The advanced review form is reachable only through Detailed record. Export panels share a crop with dish boxes; full originals are preserved. Clean rack and storage detections remain excluded upstream.
+FIRST VIEWPORT (Send, 390×844): top bar with Send, People and Live; "N dishes left out" and one line on what is still coming; the first proof picture full width; the pale Send button. Names and corrections follow just below the fold. With nothing to send, one panel says how many dishes are being checked or are still under two hours. People: a ranked, ruled list of named totals; one tap into a person's pictures. The older Photos feed and record pages remain on secondary routes.
 
 FORM: Hybrid of mockups E/G/H refined to J (user-directed, after seed ebbd449a); Needs you moved to its own page by the user.
 

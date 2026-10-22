@@ -79,7 +79,7 @@ class Embedder:
             return torch.nn.functional.normalize(features, dim=-1).cpu().numpy()
 
 
-def fit_probe(X: np.ndarray, y: np.ndarray, *, l2: float = 1e-2, steps: int = 25) -> tuple[np.ndarray, float]:
+def fit_probe(X: np.ndarray, y: np.ndarray, *, l2: float = 3e-3, steps: int = 25) -> tuple[np.ndarray, float]:
     """L2-regularized logistic regression by Newton's method; small enough to solve exactly."""
     A = np.c_[X, np.ones(len(X))]
     w = np.zeros(A.shape[1])
@@ -201,7 +201,9 @@ def examples(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list
     """Every label there is, as (features, dish or not), in time order.
 
     Hand-labeled frames: the detector runs on each, and a box a person also drew is a dish, one
-    nowhere near any is a mistake. Review answers and kitchen checks add the boxes people judged.
+    nowhere near any is a mistake. Keep original false boxes the labeler removed too: a bottle
+    missed on this training pass is still a useful negative for the next lighting change.
+    An explicit Review answer labels just that box, even before the whole frame is annotated.
     Frames held out for evaluation, and anything inside a holdout window, stay out.
     """
     from .vision import box_iou
@@ -216,7 +218,9 @@ def examples(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list
         except (OSError, ValueError):
             continue
         at = datetime.fromisoformat(item["created_at"])
-        if item.get("status") != "labeled" or item.get("holdout") or any(start <= at <= end for start, end in holdout):
+        review = item.get('review', {})
+        reviewed = review.get('verdict') in ('dish', 'not_dish') and review.get('box')
+        if (item.get("status") != "labeled" and not reviewed) or item.get("holdout") or any(start <= at <= end for start, end in holdout):
             continue
         image_path = Path(root) / "dataset" / "images" / f"{item['id']}.jpg"
         if not image_path.exists():
@@ -224,10 +228,22 @@ def examples(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list
         truth = [b["box"] for b in item["boxes"] if b["kind"] != "person"]
         image, found = detect(image_path.read_bytes())
         judged = []
-        for detection in found:
-            overlap = max((box_iou(detection["box"], t) for t in truth), default=0.0)
-            if overlap >= 0.3 or overlap < 0.1:
-                judged.append((detection["box"], int(overlap >= 0.3)))
+        if item.get('status') != 'labeled':
+            # The rest of an unfinished frame is unknown, not negative training data.
+            judged.append((review['box'], int(review['verdict'] == 'dish')))
+        else:
+            for detection in found:
+                if detection['kind'] == 'person':
+                    continue
+                overlap = max((box_iou(detection["box"], t) for t in truth), default=0.0)
+                if overlap >= 0.3 or overlap < 0.1:
+                    judged.append((detection["box"], int(overlap >= 0.3)))
+            for original in item.get('predicted', []):
+                box = original['box']
+                if (original['kind'] != 'person'
+                        and max((box_iou(box, t) for t in truth), default=0.0) < .1
+                        and max((box_iou(box, b) for b, _ in judged), default=0.0) < .3):
+                    judged.append((box, 0))
         if judged:
             vectors = embed([context_crop(image, box) for box, _ in judged])
             rows.extend((item["created_at"], vector, label) for vector, (_, label) in zip(vectors, judged))

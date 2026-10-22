@@ -14,13 +14,13 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import checks, demo
+from . import checks, demo, ledger
 from .config import Config, camera_url
 from .incidents import ReviewConflict
 from .media import Media
 from .proof import proof_archive
 from .runtime import Runtime
-from .security import Access
+from .security import SESSION_SECONDS, Access
 from .store import NOT_A_DISH_NOTES, Store, parse_stamp, stamp, utcnow
 from .vision import VisionError
 
@@ -58,6 +58,10 @@ class ResidentPatch(BaseModel):
 
 class Dispute(BaseModel):
     note: str = Field(min_length=1, max_length=1000)
+
+
+class ProofReject(BaseModel):
+    reason: Literal["not_a_dish", "wrong_photos"] | None = None
 
 
 class CameraSettings(BaseModel):
@@ -193,7 +197,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         if request.url.path.startswith("/api"):
-            response.headers["Cache-Control"] = "no-store"
+            # Versioned proof pictures set their own caching; everything else is live data.
+            response.headers.setdefault("Cache-Control", "no-store")
         elif request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache"
         return response
@@ -236,7 +241,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from None
         response = JSONResponse({"csrf_token": csrf})
-        response.set_cookie("dish_session", token, max_age=12 * 3600, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/")
+        response.set_cookie("dish_session", token, max_age=SESSION_SECONDS, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/")
         return response
 
     @app.post("/api/logout", dependencies=[Depends(authenticated)])
@@ -311,6 +316,42 @@ def create_app(config: Config | None = None) -> FastAPI:
             image = render_share(manifest, pictures)
         return Response(image, media_type='image/jpeg', headers={
             'Content-Disposition': f'attachment; filename="dish-{obligation_id}.jpg"', 'Cache-Control': 'no-store'})
+
+    # ---- Send (home) and People: proof pictures, and who has been named on them.
+    @app.get("/api/proofs", dependencies=[Depends(authenticated)])
+    def proofs():
+        # The home page reads only this, so it stays small and fast whatever else the dashboard holds.
+        learning = store.learning()
+        # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
+        items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
+        return {"items": items, **runtime.proofs.progress(), "people": ledger.tally(store),
+                "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
+
+    @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])
+    def proof_image(obligation_id: int):
+        # Served while the photos are kept, so a named proof stays on its person's page after the dish
+        # is gone. The URL changes with the name and the design, so a cached copy is never stale.
+        return Response(ledger.picture(store, obligation_id), media_type="image/jpeg", headers={
+            "Content-Disposition": f'inline; filename="dish-{obligation_id}.jpg"', "Cache-Control": "private, max-age=604800"})
+
+    @app.post("/api/proofs/{obligation_id}/reject", dependencies=[Depends(authenticated)])
+    def proof_reject(obligation_id: int, body: ProofReject | None = None):
+        reason = (body.reason if body else None) or "wrong_photos"
+        # Proofs.reject remembers the thing's look at that spot so it is never sent again; for
+        # "Not a dish" it also closes the record.
+        runtime.proofs.reject(obligation_id, reason)
+        if reason == "not_a_dish":
+            # As anywhere else, "Not a dish" also teaches the detector.
+            learn_from_review(store.obligation(obligation_id), "dismiss", "Not a dish")
+        return {"ok": True}
+
+    @app.get("/api/people", dependencies=[Depends(authenticated)])
+    def people():
+        return {"people": ledger.tally(store)}
+
+    @app.get("/api/people/{resident_id}", dependencies=[Depends(authenticated)])
+    def person(resident_id: int):
+        return ledger.person(store, resident_id)
 
     @app.get("/api/sequences/{obligation_id}/image", dependencies=[Depends(authenticated)])
     def sequence_image(obligation_id: int):

@@ -8,13 +8,28 @@ import threading
 import time
 from pathlib import Path
 
+# Long enough that nobody is asked for the key again on their own laptop; the dashboard is only
+# reachable inside the household's tailnet. Logging out still ends a session immediately.
+SESSION_SECONDS = 365 * 24 * 3600
+
+
+def _key(token: str) -> str:
+    # Only token hashes are written to disk, so a copied sessions file cannot sign anyone in.
+    return hashlib.sha256(token.encode()).hexdigest()
+
 
 class Access:
-    """Random, expiring sessions; the household key never travels in a cookie."""
+    """Random, expiring sessions that survive restarts; the household key never travels in a cookie."""
 
     def __init__(self, root: Path, password: str | None = None, demo: bool = False):
         self.root = root
+        self.saved = root / "sessions.json"
         self.sessions: dict[str, tuple[float, str]] = {}
+        if self.saved.exists():
+            try:
+                self.sessions = {key: (float(expiry), csrf) for key, (expiry, csrf) in json.loads(self.saved.read_text()).items()}
+            except (OSError, ValueError, TypeError):
+                self.sessions = {}
         self.failures: dict[str, list[float]] = {}
         self.lock = threading.RLock()
         path = root / "access.json"
@@ -38,6 +53,12 @@ class Access:
     def _hash(self, value: str) -> bytes:
         return hashlib.scrypt(value.encode(), salt=self.salt, n=16384, r=8, p=1)
 
+    def _save(self) -> None:
+        temporary = self.saved.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.sessions))
+        temporary.chmod(0o600)
+        temporary.replace(self.saved)
+
     def login(self, password: str, client: str) -> tuple[str, str]:
         now = time.time()
         with self.lock:
@@ -53,17 +74,22 @@ class Access:
                 oldest = min(self.sessions, key=lambda key: self.sessions[key][0])
                 self.sessions.pop(oldest)
             token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
-            self.sessions[token] = (now + 12 * 3600, csrf)
+            self.sessions[_key(token)] = (now + SESSION_SECONDS, csrf)
+            self._save()
             return token, csrf
 
     def session(self, token: str | None) -> str | None:
+        if not token:
+            return None
         with self.lock:
-            saved = self.sessions.get(token or "")
+            saved = self.sessions.get(_key(token))
             if saved and saved[0] > time.time():
                 return saved[1]
-            self.sessions.pop(token or "", None)
+            if self.sessions.pop(_key(token), None):
+                self._save()
             return None
 
     def logout(self, token: str | None) -> None:
         with self.lock:
-            self.sessions.pop(token or "", None)
+            if token and self.sessions.pop(_key(token), None):
+                self._save()

@@ -35,7 +35,7 @@ kbd, pre, code { font-family: var(--mono); }
 .tx2 { color: var(--tx2); } .tx3 { color: var(--tx3); }
 .late { color: var(--late); } .out { color: var(--out); } .ok, .done { color: var(--done); }
 .grow { flex: 1; min-width: 0; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .icon { flex: none; }
 kbd { display: inline-block; min-width: 18px; height: 18px; padding: 0 5px; font-size: 11px; line-height: 16px; text-align: center; color: var(--tx3); border: 1px solid var(--ln2); border-radius: 5px; background: rgba(255, 255, 255, .03); }
 .skip-link { position: fixed; left: 8px; top: -40px; z-index: 100; padding: 6px 10px; background: var(--tx); color: var(--bg); border-radius: 8px; font-weight: 600; }
@@ -105,7 +105,6 @@ kbd { display: inline-block; min-width: 18px; height: 18px; padding: 0 5px; font
 .nav a { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border-radius: 9px; color: var(--tx2); font-weight: 500; white-space: nowrap; }
 .nav a:hover { color: var(--tx); }
 .nav a[aria-current="page"] { background: var(--s2); color: var(--tx); }
-.nav-count { min-width: 19px; height: 19px; padding: 0 6px; border-radius: 10px; background: var(--ask); color: #0a1328; font-size: 11.5px; font-weight: 650; line-height: 19px; text-align: center; }
 .top-r { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .status { display: inline-flex; align-items: center; gap: 8px; margin-right: 8px; font-size: 13px; color: var(--tx2); white-space: nowrap; }
 .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--tx3); }
@@ -667,6 +666,71 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .photo-disclosure{border-top:1px solid var(--ln);padding:18px 0}.photo-disclosure>summary{cursor:pointer;font-size:14px}
 .photo-correction{max-width:460px;padding-top:12px}.photo-correction .incident-field{margin-top:12px}
 .photo-disclosure video{max-width:100%;max-height:520px;margin-top:20px}.record-tools{display:inline-block;margin-top:24px;font-size:13px;color:var(--tx2)}
-.menu>a{display:block;padding:10px 14px;font-size:13px}.menu>a:hover{background:var(--s2)}
 @media(max-width:900px){.home-grid,.pending-view{grid-template-columns:minmax(0,1fr);gap:36px}.pending-view{gap:20px}}
 @media(max-width:760px){.photo-home .page-head,.photo-detail .page-head{align-items:flex-start}.photo-detail .page-head{flex-wrap:wrap}.watch-row{gap:12px}}
+
+/* ---- Send (home): one proof picture per dish still out. The picture is the page; Send is the one
+   loud button. Names and corrections sit below it, quiet until touched. */
+.send-page { max-width: 1240px; }
+.people-page { max-width: 720px; }
+.send-head { margin-bottom: 20px; }
+.send-head h1 { font-size: 27px; line-height: 1.2; letter-spacing: -.025em; outline: 0; }
+.send-sub { margin-top: 4px; font-size: 15px; color: var(--tx2); }
+.send-sub:empty { display: none; }
+.record-head { display: flex; align-items: center; gap: 14px; }
+.send-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 48px 32px; align-items: start; }
+.send-card { display: grid; gap: 16px; min-width: 0; }
+.send-photo { display: block; aspect-ratio: 1600 / 1590; border-radius: 12px; overflow: hidden; background: var(--s2); }
+.send-photo img { width: 100%; height: 100%; object-fit: contain; }
+.send-bar { display: flex; align-items: center; gap: 12px; }
+.send-bar .btn { height: 44px; padding: 0 18px; border-radius: 12px; font-size: 15px; }
+.send-bar .btn.primary { flex: 1; max-width: 320px; height: 52px; font-size: 17px; font-weight: 600; gap: 9px; }
+.send-when { flex: 1; color: var(--tx2); }
+.send-who { display: grid; gap: 10px; }
+.send-label { font-size: 13.5px; color: var(--tx2); }
+.name-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.name-chip { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 15px; border-radius: 19px; border: 1px solid var(--ln2); color: var(--tx); font-weight: 500; text-transform: capitalize; transition: background .12s, border-color .12s; }
+.name-chip:hover:not(:disabled) { background: var(--s2); border-color: var(--ln3); }
+.name-chip.guess { border-color: var(--ask); background: var(--ask-bg); }
+.name-chip small { font-size: 11.5px; color: #a9c4ff; text-transform: none; }
+.name-chip.on { background: var(--tx); border-color: var(--tx); color: var(--bg); cursor: default; }
+.send-guess { font-size: 14px; color: #a9c4ff; }
+.send-record { display: inline-flex; align-items: center; gap: 4px; justify-self: start; font-size: 14px; color: var(--tx2); text-decoration: underline; text-decoration-color: var(--ln3); text-underline-offset: 3px; }
+.send-record:hover { color: var(--tx); }
+.send-more { display: flex; gap: 4px; margin: -6px 0 0 -10px; }
+.send-more .btn { color: var(--tx3); }
+.send-foot { margin-top: 40px; font-size: 13px; color: var(--tx3); }
+.send-foot:empty { display: none; }
+.send-card.placeholder .send-bar i { flex: 1; max-width: 320px; height: 52px; border-radius: 12px; background: var(--s2); }
+
+.send-empty { display: grid; gap: 14px; justify-items: start; max-width: 560px; padding: 24px; border: 1px solid var(--ln); border-radius: 14px; background: var(--s1); color: var(--tx2); }
+.send-coming { display: grid; gap: 6px; font-size: 17px; color: var(--tx); }
+.send-coming b { font-weight: 650; }
+
+/* ---- People: a ranked list; each row opens that person's pictures. */
+.tally { display: grid; border-top: 1px solid var(--ln); }
+.tally:empty { display: none; }
+.tally li { border-bottom: 1px solid var(--ln); }
+.tally-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto 16px; align-items: center; gap: 14px; min-height: 68px; padding: 10px 8px; color: var(--tx3); }
+.tally-row:hover { background: var(--s1); }
+.tally-row.placeholder { min-height: 68px; }
+.tally-name { display: grid; gap: 1px; min-width: 0; font-size: 16.5px; font-weight: 600; color: var(--tx); }
+.tally-name small { font-size: 13px; font-weight: 400; color: var(--tx3); }
+.tally-count { font-size: 26px; font-weight: 650; letter-spacing: -.02em; color: var(--tx); }
+.tally-note { display: grid; gap: 8px; margin-top: 20px; font-size: 14px; color: var(--tx3); }
+.record-older { margin-top: 44px; max-width: 720px; }
+.record-older h2 { font-size: 17px; }
+.record-older ul { margin-top: 12px; border-top: 1px solid var(--ln); }
+.record-older li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; padding: 12px 0; border-bottom: 1px solid var(--ln); }
+.record-older li span { grid-row: 2; font-size: 13px; color: var(--tx3); }
+.record-older time { grid-row: 1 / 3; grid-column: 2; align-self: center; color: var(--tx2); }
+
+@media (max-width: 760px) {
+  .find { display: none; }
+  .nav a { padding: 0 11px; font-size: 15px; }
+  .send-head h1 { font-size: 24px; }
+  .send-list { gap: 44px; }
+  .send-photo { border-radius: 10px; }
+  .send-bar .btn.primary { max-width: none; }
+  .send-card.placeholder .send-bar i { max-width: none; }
+}

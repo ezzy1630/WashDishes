@@ -13,8 +13,11 @@ from .config import Config, monitoring_areas
 from .dataset import Dataset
 from .incidents import Incidents
 from .inventory import PUT_DOWN_CLIP, Inventory, area_for, in_area
+from .journal import Journal
 from .media import Media
 from .notify import Notifier
+from .proofs import Proofs
+from .putdown import JOURNAL_TOO_NEW, find_putdown, find_putdown_journal
 from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
@@ -29,6 +32,7 @@ class Runtime:
         self.stop_event = threading.Event()
         self.pending: tuple[bytes, str, str] | None = None
         self.vision = None
+        self.dish_verifier = None
         self.vision_path: str | None = None
         self.vision_generation: str | None = None
         self.vision_message = "Local vision is off. Manual events and review are available."
@@ -38,6 +42,10 @@ class Runtime:
         self.sequences = SequenceCollection(store, media)
         self.recovery = EvidenceRecovery(store, media, self.dataset)
         self.incidents = Incidents(store, media, self.sequences)
+        self.proofs = Proofs(config.root, store, media)
+        # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
+        self.journal = Journal(config.root / "journal.db")
+        self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
         self.notifier = Notifier(config.root, store)
@@ -108,8 +116,13 @@ class Runtime:
             self.inventory.describe = self.vision.describe_person
             self.inventory.enrolled_faces = self.vision.enrolled_faces
             self.media.clip_saved = self._clip_saved
+            from .proof_checks import make_check
             from .verifier import DishVerifier, store_hook
-            self.inventory.verify = store_hook(DishVerifier(self.config.root), self.store)
+            # One CLIP for both the second look at new dishes and the proof checks: memory is tight.
+            if self.dish_verifier is None:
+                self.dish_verifier = DishVerifier(self.config.root)
+            self.inventory.verify = store_hook(self.dish_verifier, self.store)
+            self.proofs.check = make_check(self.vision, self.dish_verifier, self.store, lock=self.lock)
         return self.vision
 
     def _clip_saved(self, obligation_id: int, label: str, evidence_id: str, path: Path) -> None:
@@ -145,14 +158,18 @@ class Runtime:
             # Network sends must never stall frame analysis; the demo's fictional people send nothing.
             self.notify_thread = threading.Thread(target=self._notify_worker, name="notify-worker", daemon=True)
             self.notify_thread.start()
+            # Searching footage takes up to a minute per dish; it gets its own low-priority thread.
+            self.proof_thread = threading.Thread(target=self._proof_worker, name="proof-worker", daemon=True)
+            self.proof_thread.start()
 
     def stop(self) -> None:
         self.stop_event.set()
         self.traces.stop()
         self.camera.stop()
-        for thread in (self.thread, self.media_thread, self.notify_thread):
+        for thread in (self.thread, self.media_thread, self.notify_thread, self.proof_thread):
             if thread:
                 thread.join(timeout=30)
+        self.journal.close()
 
     def _media_worker(self) -> None:
         try:
@@ -179,6 +196,90 @@ class Runtime:
             except Exception:
                 # A transient file problem must not end retention or clip export for good.
                 next_cleanup = time.monotonic() + 60
+
+    def _proof_worker(self) -> None:
+        try:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        except (AttributeError, OSError):
+            pass
+        next_cleanup = 0.0
+        while not self.stop_event.wait(20):
+            try:
+                if time.monotonic() >= next_cleanup:
+                    self.proofs.cleanup()
+                    self.journal.prune(time.time(), self.store.settings()["buffer_hours"])
+                    next_cleanup = time.monotonic() + 3600
+                with self.lock:
+                    seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
+                # Every proof is checked before it is shown; without vision there is nothing to check with.
+                if seeing:
+                    self.proofs.run_once(self._find_putdown, check=self.proofs.check, identify_selected=self._identify_putdown)
+            except Exception:
+                # One bad recording or picture must not stop proofs for every later dish.
+                pass
+
+    def _find_putdown(self, box: list[float], logged: float, until: float) -> dict | str:
+        """The put-down from what the detector recorded, with exact-frame people checks.
+
+        Only a dish older than the journal goes back to the patch search; any other journal
+        refusal (a recording gap, an arrival it cannot resolve) stays a refusal.
+        """
+        def people(jpeg: bytes) -> list[dict]:
+            with self.lock:
+                return self.local_vision().people(jpeg)
+
+        found = find_putdown_journal(self.journal, self.media.buffer, box, logged, until, people=people)
+        if found == JOURNAL_TOO_NEW:
+            return find_putdown(self.media.buffer, box, logged, until)
+        return found
+
+    def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at, *, person_box=None) -> list[float] | None:
+        """Box of the person putting the dish down, or None if nobody is within reach of it.
+
+        Their appearance replaces whatever the camera captured when it logged the dish (often a
+        while later and of someone else), so naming this proof trains on the right person and the
+        guess shown next to it is about them.
+        """
+        x, y, w, h = dish_box
+        cx, cy = x + w / 2, y + h / 2
+        def reach(person: dict) -> float:
+            px, py, pw, ph = person["box"]
+            return max(px - cx, 0, cx - px - pw) + max(py - cy, 0, cy - py - ph)
+        with self.lock:
+            engine = self.local_vision()
+            supplied = {"box": person_box} if person_box is not None else None
+            if supplied and (len(person_box) != 4 or any(not 0 <= v <= 1 for v in person_box)
+                             or person_box[2] <= 0 or person_box[3] <= 0):
+                supplied = None
+            person = supplied if supplied and reach(supplied) <= 0.1 else min(engine.people(jpeg), key=reach, default=None)
+            if person is None or reach(person) > 0.1:
+                self.store.replace_putdown_samples(obligation_id, {}, "", at=at)
+                self.store.set_suggestion(obligation_id, None, None)
+                return None
+            try:
+                cues, crop = engine.describe_person(jpeg, person["box"])
+                faces = engine.enrolled_faces()
+            except Exception:
+                self.store.replace_putdown_samples(obligation_id, {}, "", at=at)
+                self.store.set_suggestion(obligation_id, None, None)
+                return person["box"]
+            try:
+                face = engine.putdown_face(self.media.buffer, at.timestamp(), jpeg, person["box"], cues["outfit"])
+                if face is not None:
+                    cues["face"] = face
+            except Exception:
+                # Missing/expired recordings must not discard the valid anchor crop.
+                pass
+        settings = self.store.settings()
+        location = self.store.obligation(obligation_id)["location"]
+        context = next((a["id"] for a in monitoring_areas(settings) if a.get("name") == location), None)
+        evidence_id = self.media.save_snapshot(obligation_id, crop, "Who put it down (from footage)", at=at,
+                                               capture={"person_box": person["box"], "identity_source": "putdown"})
+        self.store.replace_putdown_samples(obligation_id, cues, evidence_id, at=at, context=context)
+        resident, evidence, _, seen = self.store.suggest_identity(cues, at=at, context=context, enrolled_faces=faces,
+                                                                exclude_obligation=obligation_id)
+        self.store.set_suggestion(obligation_id, resident, evidence, seen)
+        return person["box"]
 
     def _notify_worker(self) -> None:
         while not self.stop_event.wait(30):
@@ -230,6 +331,10 @@ class Runtime:
                     self.reset_observations()
                     continue
                 try:
+                    self.journal.record(observed_at.timestamp(), analysis["detections"])
+                except Exception:
+                    pass  # History helps find put-downs later; it must never stop live tracking.
+                try:
                     self._align(frame[0], sum(d["kind"] == "person" for d in analysis["detections"]))
                 except Exception:
                     pass
@@ -242,6 +347,12 @@ class Runtime:
                                                    getattr(engine, "detect_area", lambda area: []))
                             self._kitchen_check(engine, frame[0], analysis, areas, observed_at)
                         inventory = self.inventory.listing()
+                        if self.alignment.settled:
+                            try:
+                                # A proof waiting for someone to step away from the dish gets its newer photo here.
+                                self.proofs.refresh_waiting(frame[0], inventory, observed_at)
+                            except Exception:
+                                pass  # A retry photo is optional; the observation itself must still be saved.
                         people = [d["box"] for d in analysis["detections"] if d["kind"] == "person" and d["score"] >= 0.35]
                         analysis["fullness"] = engine.occupancy(areas, people)
                 except Exception:
