@@ -254,3 +254,12 @@ def test_a_picked_up_dish_leaves_the_page_at_once_and_returns_if_seen_again(stor
     assert proofs.items() == []
     seen(store, item["id"], -1)   # an arm over the cup read as a pickup; the camera sees it there again
     assert [p["id"] for p in proofs.items()] == [item["id"]]
+
+
+def test_only_a_dish_older_than_the_journal_goes_back_to_the_patch_search(authenticated, monkeypatch):
+    from wash_dishes import runtime as module
+    runtime = authenticated.app.state.runtime
+    monkeypatch.setattr(module, 'find_putdown', lambda *args: 'patch search')
+    for journal, expected in ((module.JOURNAL_TOO_NEW, 'patch search'), ('a recording gap', 'a recording gap')):
+        monkeypatch.setattr(module, 'find_putdown_journal', lambda *args, **kwargs: journal)
+        assert runtime._find_putdown(BOX, 0.0, 1.0) == expected
