@@ -106,7 +106,8 @@ class Proofs:
         """Trace the oldest waiting dish. `find(box, logged, until)` is putdown.find_putdown bound to the
         recording; `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
         returns their box, or None when no person is near the dish (then it is not proof of anyone).
-        `identify_selected` also receives the checker's person_box keyword. Waiting
+        `identify_selected` receives the checker's person_box keyword AFTER the checked
+        proof is saved, so immutable identity predictions can read its readiness. Waiting
         retains the trace and needs both the retry interval and a newer matching late photo."""
         now = now or utcnow()
         if check is not None:
@@ -145,9 +146,9 @@ class Proofs:
         found = found | {k: checked[k] for k in ("before", "putting", "left") if k in checked}
         waiting = checked.get("status") == "waiting"
         person_box = found["putting"].get("person_box")
-        if (identify is not None or identify_selected is not None) and not waiting:
-            args = (oid, found["putting"]["jpeg"], box, datetime.fromtimestamp(found["putting"]["at"], utc.utc))
-            identified = identify_selected(*args, person_box=person_box) if identify_selected else identify(*args)
+        args = (oid, found["putting"]["jpeg"], box, datetime.fromtimestamp(found["putting"]["at"], utc.utc))
+        if identify is not None and identify_selected is None and not waiting:
+            identified = identify(*args)
             if identified is None:
                 self._save(oid, "untraced", {"reason": "nobody near the dish in the put-down picture"})
                 return oid
@@ -161,6 +162,16 @@ class Proofs:
         if waiting:
             data.update(reason=checked["reason"], retry_at=stamp(now + RETRY))
         self._save(oid, "waiting" if waiting else "ready", data)
+        if identify_selected is not None and not waiting:
+            # Identity is optional to a checked proof. If describing someone fails, keep the
+            # valid unnamed pictures; the prediction must observe their actual ready state.
+            identified = identify_selected(*args, person_box=person_box)
+            if identified is None:
+                self._save(oid, "untraced", {"reason": "nobody near the dish in the put-down picture"})
+                shutil.rmtree(folder, ignore_errors=True)
+            elif person_box is None:
+                data["person_box"] = identified
+                self._save(oid, "ready", data)
         return oid
 
     def items(self, now: datetime | None = None) -> list[dict]:

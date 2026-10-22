@@ -109,6 +109,10 @@ def test_selected_picture_and_person_reach_identity_and_collage_metadata(store, 
     candidate = {'at': utcnow().timestamp() - 8000, 'jpeg': jpeg((10, 80, 120)), 'person_box': [.1, .2, .3, .4]}
     calls = []
     def identify(*args, person_box=None):
+        # Lane I freezes readiness in its prediction when this callback runs.
+        row = store.conn.execute('SELECT status,data FROM proofs WHERE obligation_id=?', (item['id'],)).fetchone()
+        assert row['status'] == 'ready' and json.loads(row['data'])['checks'] == {'probe': .85}
+        assert (proofs.dir / str(item['id']) / 'putting.jpg').read_bytes() == candidate['jpeg']
         calls.append((*args, person_box))
         return candidate['person_box']
     proofs.run_once(found, check=lambda *_: {'putting': candidate, 'checks': {'probe': .85}}, identify_selected=identify)
@@ -116,6 +120,20 @@ def test_selected_picture_and_person_reach_identity_and_collage_metadata(store, 
     data = json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])
     assert data['checks'] == {'probe': .85} and data['person_box'] == candidate['person_box']
     assert (proofs.dir / str(item['id']) / 'putting.jpg').read_bytes() == candidate['jpeg']
+    assert proofs.image(item['id']).startswith(b'\xff\xd8')
+
+
+def test_selected_identity_absence_withdraws_proof_but_description_failure_keeps_checked_pictures(store, media):
+    proofs = Proofs(store.root, store, media)
+    missing = late_dish(store, media)
+    proofs.run_once(found, check=lambda *_: {}, identify_selected=lambda *args, **kwargs: None)
+    assert proofs.items() == [] and not (proofs.dir / str(missing['id'])).exists()
+    item = late_dish(store, media)
+    def broken(*args, **kwargs):
+        raise OSError('identity description unavailable')
+    with pytest.raises(OSError):
+        proofs.run_once(found, check=lambda *_: {'checks': {'person_verified': True}}, identify_selected=broken)
+    assert [p['id'] for p in proofs.items()] == [item['id']]
     assert proofs.image(item['id']).startswith(b'\xff\xd8')
 
 
