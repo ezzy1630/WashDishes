@@ -22,6 +22,9 @@ from .verifier import DishVerifier, context_crop
 from .vision import box_iou
 
 POSITIVE = ("plate", "bowl", "cup", "mug", "drinking glass", "cooking pot", "frying pan", "fork", "knife", "spoon")
+# Detector kinds and second-look labels. The detector called #917's frying pan a bowl.
+COOKWARE = ("pan", "pot", "cooking pot", "frying pan")
+STOVE_WORDS = ("stove", "hob", "cooktop", "burner")
 NEGATIVE = ("soda can", "bottle", "jar", "plastic food container", "spice container", "cardboard box", "towel", "sponge", "cutting board")
 
 
@@ -176,6 +179,13 @@ class ProofChecker:
                 return f"looks like the thing marked not a dish at {when}"
         return None
 
+    def _kinds(self, obligation_id: int) -> list[str]:
+        if self.store is None:
+            return []
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT dishes FROM obligations WHERE id=?", (obligation_id,)).fetchone()
+        return [d["kind"] for d in json.loads(row["dishes"])] if row else []
+
     def __call__(self, obligation_id: int, found: dict, late_jpeg: bytes, box: list, late_box: list | None) -> dict | str:
         result = self.evaluate(obligation_id, found, late_jpeg, box, late_box)
         return result["reason"] if result.get("status") == "rejected" else result
@@ -242,6 +252,15 @@ class ProofChecker:
         checks["before"] |= {"around": around, "around_visible": visible}
         if visible >= self.thresholds.around_visible and around >= self.thresholds.around_change:
             reasons.append("things around the dish changed too: it was uncovered, not put down")
+        # A dish belongs to whoever used it, not whoever later moved it. Every pan or pot the
+        # 2026-10-22 review saw put down off the stove (#917 into the sink, the rack-side stack) was
+        # carried there by someone other than its cook. Putting one on the stove starts cooking.
+        # Judged after the arrival checks: at a moment the dish was already there, a pan look
+        # (#901's bowl read as a frying pan once) must not stop the search for its real arrival.
+        cookware = negative.get("looks_like") in COOKWARE or any(k in COOKWARE for k in self._kinds(obligation_id))
+        if cookware and not any(rests_in(box, a) for a in areas
+                                if any(w in f"{a.get('id', '')} {a.get('name', '')}".lower() for w in STOVE_WORDS)):
+            reasons.append("a pan or pot set down off the stove was likely moved there after cooking; who cooked with it isn't shown")
 
         choices = []
         hidden_frames = 0
