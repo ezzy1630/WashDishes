@@ -219,7 +219,8 @@ class Runtime:
                 # One bad recording or picture must not stop proofs for every later dish.
                 pass
 
-    def _find_putdown(self, box: list[float], logged: float, until: float) -> dict | str:
+    def _find_putdown(self, box: list[float], logged: float, until: float, *,
+                      earlier_than: float | None = None, deadline: float | None = None) -> dict | str:
         """The put-down from what the detector recorded, with exact-frame people checks.
 
         Only a dish older than the journal goes back to the patch search; any other journal
@@ -229,9 +230,10 @@ class Runtime:
             with self.lock:
                 return self.local_vision().people(jpeg)
 
-        found = find_putdown_journal(self.journal, self.media.buffer, box, logged, until, people=people)
+        found = find_putdown_journal(self.journal, self.media.buffer, box, logged, until, people=people,
+                                    earlier_than=earlier_than, deadline=deadline)
         if found == JOURNAL_TOO_NEW:
-            return find_putdown(self.media.buffer, box, logged, until)
+            return find_putdown(self.media.buffer, box, logged, until, earlier_than=earlier_than, deadline=deadline)
         return found
 
     def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at, *, person_box=None) -> list[float] | None:

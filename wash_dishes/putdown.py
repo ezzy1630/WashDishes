@@ -11,9 +11,11 @@ threshold, keeps day/night lighting and contrasty counters from reading as a per
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
+import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -31,6 +33,17 @@ STEADY_RUN = 3            # consecutive alike samples that are not the dish: the
 MAX_GAP = 120             # seconds from the last "before" view to the dish being there: longer means the
                           # spot was hidden while it arrived, and the picture would only show who stood in front
 SIDE = 32
+SEARCH_SECONDS = 480
+SEARCH_TIMEOUT = "the put-down search reached its time budget"
+
+
+class _SearchTimeout(Exception):
+    pass
+
+
+def _check_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise _SearchTimeout
 
 
 @dataclass
@@ -48,7 +61,7 @@ def segments(buffer: Path) -> list[tuple[float, float, Path]]:
 
 
 def _ffmpeg(path: Path, output: list[str], first_only: bool) -> tuple[list[float], bytes]:
-    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-threads", "1", "-skip_frame", "nokey", "-i", str(path),
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-threads", "1", "-filter_threads", "1", "-skip_frame", "nokey", "-i", str(path),
                *(["-frames:v", "1"] if first_only else []), "-fps_mode", "passthrough", *output, "-"]
     try:
         run = subprocess.run(command, capture_output=True, timeout=60, preexec_fn=lambda: os.nice(15))
@@ -119,7 +132,24 @@ def _distance(a, b) -> float:
     return float(np.mean(np.abs(a - b)))
 
 
-def find_putdown(buffer: Path, box: list[float], logged: float, present_until: float) -> dict | str:
+def find_putdown(buffer: Path, box: list[float], logged: float, present_until: float, *,
+                 earlier_than: float | None = None, deadline: float | None = None) -> dict | str:
+    deadline = time.monotonic() + SEARCH_SECONDS if deadline is None else deadline
+    try:
+        _check_deadline(deadline)
+        result = _find_putdown(buffer, box, logged, present_until, deadline=deadline)
+        _check_deadline(deadline)
+        # The legacy finder has no episode cursor. Preserve its original anchor and
+        # refuse a repeated/later result rather than silently treating another dish
+        # at a fabricated logging time as this one.
+        if isinstance(result, dict) and earlier_than is not None and not result["putting"]["at"] < earlier_than:
+            return "the patch search did not find an earlier arrival"
+        return result
+    except _SearchTimeout:
+        return SEARCH_TIMEOUT
+
+
+def _find_putdown(buffer: Path, box: list[float], logged: float, present_until: float, *, deadline: float) -> dict | str:
     """Unix times of the spot before the dish ("before"), the person putting it down ("putting") and the
     dish left there ("left"), each with its JPEG; or, when the footage does not show it, why not.
 
@@ -128,10 +158,15 @@ def find_putdown(buffer: Path, box: list[float], logged: float, present_until: f
     """
     import numpy as np
     segs = segments(buffer)
+    def patches(seg, *, first_only=False):
+        _check_deadline(deadline)
+        result = samples(seg, box, first_only=first_only)
+        _check_deadline(deadline)
+        return result
     # The dish's own look: the per-pixel median over samples after logging is robust to someone
     # briefly standing over it; the typical distance from that median is the noise floor.
     after = [seg for seg in segs if logged <= seg[0] <= min(present_until, logged + PRESENT_MINUTES * 60)]
-    present = [s for seg in after[::5] for s in samples(seg, box, first_only=True)]
+    present = [s for seg in after[::5] for s in patches(seg, first_only=True)]
     if len(present) < 3:
         return "not enough footage of the dish after the camera logged it"
     dish = np.median(np.stack([s.patch for s in present]), axis=0)
@@ -144,7 +179,7 @@ def find_putdown(buffer: Path, box: list[float], logged: float, present_until: f
         step = 30 if logged - seg[0] < DENSE_MINUTES * 60 else 120
         if last is not None and last - seg[0] < step:
             continue
-        for s in samples(seg, box, first_only=True):
+        for s in patches(seg, first_only=True):
             last = s.at
             if _distance(s.patch, dish) <= threshold:
                 run = []
@@ -168,7 +203,7 @@ def find_putdown(buffer: Path, box: list[float], logged: float, present_until: f
         if seg[1] < steady[0].at - 2 or seg[0] > logged + 60:
             continue
         used.append(seg)
-        for s in samples(seg, box):
+        for s in patches(seg):
             if s.at >= steady[0].at - 2:
                 s.diff = min(_distance(s.patch, dish), _distance(s.patch, empty))
                 s.state = "dish" if _distance(s.patch, dish) <= threshold else "before" if _distance(s.patch, empty) <= empty_threshold else "covered"
@@ -196,6 +231,7 @@ def find_putdown(buffer: Path, box: list[float], logged: float, present_until: f
     pictures = {}
     for seg in used:
         if any(seg[0] - 1 <= s.at <= seg[1] + 1 for s in chosen.values()):
+            _check_deadline(deadline)
             pictures.update(photos(seg))
     result = {"threshold": threshold, "method": "patch"}
     for key, s in chosen.items():
@@ -381,7 +417,29 @@ def _jpeg_patch(jpeg: bytes, box: list[float]):
 
 
 def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logged: float, present_until: float,
-                         *, kind: str | None = None, people: Callable[[bytes], list[dict]] | None = None) -> dict | str:
+                         *, kind: str | None = None, people: Callable[[bytes], list[dict]] | None = None,
+                         earlier_than: float | None = None, deadline: float | None = None) -> dict | str:
+    """Find an arrival strictly before `earlier_than`, with one shared wall-time budget.
+
+    The cutoff re-anchors appearance to an earlier clear view; it does not move the
+    dish's logging time or its history limit. Every alternate Putting frame obeys it.
+    """
+    if earlier_than is not None and not math.isfinite(earlier_than):
+        raise ValueError("The arrival cutoff must be finite.")
+    deadline = time.monotonic() + SEARCH_SECONDS if deadline is None else deadline
+    try:
+        _check_deadline(deadline)
+        result = _find_putdown_journal(journal, buffer, box, logged, present_until,
+                                      kind=kind, people=people, earlier_than=earlier_than, deadline=deadline)
+        _check_deadline(deadline)
+        return result
+    except _SearchTimeout:
+        return SEARCH_TIMEOUT
+
+
+def _find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logged: float, present_until: float,
+                          *, kind: str | None, people: Callable[[bytes], list[dict]] | None,
+                          earlier_than: float | None, deadline: float) -> dict | str:
     """Journal arrival plus a full-frame-rate view of the final reach/departure.
 
     `people` rechecks two clear views and up to twelve short-listed pictures per
@@ -393,21 +451,35 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
     if bounds is None or bounds[0] >= logged:
         return JOURNAL_TOO_NEW
     # Infer a coarse family from the best nearby match when the caller only knows a box.
-    near = list(journal.frames(max(bounds[0], logged - 30), min(present_until, logged + 180)))
-    choices = [(box_iou(box, d["box"]) * d["score"] / (1 + abs(f["at"] - logged) / 60), f["at"], d["kind"])
-               for f in near for d in f["detections"] if _matches(d, box, FAMILIES.get(kind))]
+    if earlier_than is not None and kind is None:
+        logged_matches = [(box_iou(box, d["box"]) * d["score"] / (1 + abs(f["at"] - logged) / 60), d["kind"])
+                          for f in journal.frames(max(bounds[0], logged - 30), min(present_until, logged + 180))
+                          for d in f["detections"] if _matches(d, box, None)]
+        # Rewind the appearance, not the kind of dish we are looking for.
+        kind = max(logged_matches)[1] if logged_matches else None
+    search_at = logged if earlier_than is None else min(logged, math.nextafter(earlier_than, -math.inf))
+    search_end = min(present_until, logged + 180) if earlier_than is None else min(present_until, search_at)
+    def usable(frame):
+        # The rejected Before can sit beside a long handling sequence. A retry
+        # needs the last clear match, not a crop of the person covering the dish.
+        return earlier_than is None or not any(_overlap(box, p["box"]) > .15
+                                               for p in _spot(frame, box, FAMILIES.get(kind))[1])
+    near = list(journal.frames(max(bounds[0], search_at - 30), search_end))
+    choices = [(box_iou(box, d["box"]) * d["score"] / (1 + abs(f["at"] - search_at) / 60), f["at"], d["kind"])
+               for f in near if usable(f) for d in f["detections"] if _matches(d, box, FAMILIES.get(kind))]
     if not choices:
         # A dish can be logged long after placement, then hidden by a stack.
         # Its last actual detection is a better anchor than inventing absence.
         last_match = None
-        for frame in journal.frames(max(bounds[0], logged - SEARCH_HOURS * 3600), logged):
-            if any(_matches(d, box, FAMILIES.get(kind)) for d in frame["detections"]):
+        for frame in journal.frames(max(bounds[0], logged - SEARCH_HOURS * 3600), search_at):
+            _check_deadline(deadline)
+            if usable(frame) and any(_matches(d, box, FAMILIES.get(kind)) for d in frame["detections"]):
                 last_match = frame["at"]
         if last_match is None:
             return "the journal detector did not see this dish in the available history"
-        near = list(journal.frames(max(bounds[0], last_match - 30), last_match + 5))
+        near = list(journal.frames(max(bounds[0], last_match - 30), min(search_end, last_match + 5)))
         choices = [(box_iou(box, d["box"]) * d["score"] / (1 + abs(f["at"] - last_match) / 60), f["at"], d["kind"])
-                   for f in near for d in f["detections"] if _matches(d, box, FAMILIES.get(kind))]
+                   for f in near if usable(f) for d in f["detections"] if _matches(d, box, FAMILIES.get(kind))]
     _, anchor, detected_kind = max(choices)
     family = FAMILIES.get(kind or detected_kind)
     segs = segments(buffer)
@@ -416,7 +488,10 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
 
     @lru_cache(maxsize=12)
     def segment_patches(index):
-        return samples(segs[index], box)
+        _check_deadline(deadline)
+        result = samples(segs[index], box)
+        _check_deadline(deadline)
+        return result
 
     def patch_at(at):
         index = bisect_right(ends, at)
@@ -451,7 +526,7 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
         return None if patch is None else _distance(patch, continuity_patch) > continuity_threshold
 
     # Include enough following samples to establish a run, but never jump to a later replacement.
-    anchor = min(present_until, anchor + 5)
+    anchor = min(present_until if earlier_than is None else search_end, anchor + 5)
     arrival = journal_arrival(journal.frames(max(bounds[0], logged - SEARCH_HOURS * 3600), anchor), box, anchor,
                               family=family, absence_is_clear=absence_is_clear, minimum_detections=1)
     rewind_checks = 0
@@ -463,6 +538,7 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
         at = start - 4
         lower = max(segs[0][0], logged - SEARCH_HOURS * 3600) if segs else start
         while at >= lower:
+            _check_deadline(deadline)
             if rewind_checks >= 800:
                 return "the dish's appearance needs more backwards tracing than this proof attempt allows"
             rewind_checks += 1
@@ -492,6 +568,7 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
     if isinstance(arrival, str):
         return arrival
     def refine(arrival):
+        _check_deadline(deadline)
         if arrival.clear < bounds[0]:
             return JOURNAL_TOO_NEW
         covered_until = arrival.before
@@ -529,7 +606,9 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
         for t0, t1 in merged:
             for seg in segs:
                 if seg[1] > t0 and seg[0] < t1:
+                    _check_deadline(deadline)
                     pictures.update(decoded_photos(seg, t0=t0, t1=t1))
+                    _check_deadline(deadline)
         states = []
         for at, jpeg in sorted(pictures.items()):
             frame = observation(at)
@@ -610,16 +689,30 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
             return "the dish spot looked the same before and after the journal detection"
         ranked = []
         for at, jpeg, _, nearby, _ in states:
+            if earlier_than is not None and at >= earlier_than:
+                continue
             earliest = arrival.clear - 8 if arrival.left_behind else settled_at - 3
             latest = left[0] if arrival.left_behind else min(left[0], settled_at + .5)
             # Candidates may be selected by a later checker. Keep every alternative
             # near the refined arrival, not an earlier approach with a visible arm.
             if not arrival.left_behind:
                 earliest = max(earliest, left[0] - 5)
-            if not max(before[0], earliest) < at < latest or len(nearby) != 1:
+            if not max(before[0], earliest) < at < latest:
+                continue
+            exact_retry = earlier_than is not None and people is not None
+            if len(nearby) != 1 and exact_retry:
+                # An earlier episode's 1-fps journal can miss a sub-second release.
+                # A neighboring observation only schedules an exact-frame check;
+                # it cannot supply the person for the returned picture. Preserve
+                # the first search's narrower candidate set.
+                neighbors = around[bisect_left(times, at - 1.25):bisect_right(times, at + 1.25)]
+                hint = min((f for f in neighbors if len(_spot(f, box, None)[1]) == 1),
+                           key=lambda f: abs(f["at"] - at), default=None)
+                nearby = _spot(hint, box, None)[1] if hint else []
+            if len(nearby) != 1:
                 continue
             person = nearby[0]["box"]
-            if _body_cover(box, person) > .3:
+            if not exact_retry and _body_cover(box, person) > .3:
                 continue
             patch = patches[at]
             # Prefer a visible dish/spot at the edge of a person's reach over an opaque body.
@@ -627,6 +720,7 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
             ranked.append((rank, at, jpeg, person))
         candidates, attempted = [], []
         for _, at, jpeg, person in sorted(ranked):
+            _check_deadline(deadline)
             # Resolve a quick hand release more finely than the 1–4 fps journal.
             # Earlier approaches need fewer checks; inference remains bounded.
             spacing = .12 if abs(settled_at - at) <= 1 else .4
@@ -650,6 +744,12 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
             # Continue from the previous clear look instead of treating late
             # recognition as an unobservable deposit.
             return _EarlierPatch(before[0], [before[0]])
+        # Patch rewinding can join separate clear views across a long handling
+        # sequence. Apply the same arrival-gap limit as the legacy finder to the
+        # final proposal, after any further appearance rewind. Only a journal-
+        # supported long occlusion may use the departure path.
+        if not arrival.left_behind and settled_at - before[0] > MAX_GAP:
+            return "the put-down is hidden across too long a gap"
         found = {"method": "journal", "before": {"at": before[0], "jpeg": before[1]}, "putting": candidates[0],
                 "left": {"at": left[0], "jpeg": left[1]}, "candidates": candidates,
                 "arrival_anchor_at": arrival.appeared, "arrival_window": [before[0], left[0]], "settled_at": settled_at,

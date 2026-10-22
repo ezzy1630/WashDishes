@@ -25,7 +25,7 @@ def seen(store, obligation_id, minutes_ago):
         store.conn.execute("UPDATE obligations SET last_seen_at=? WHERE id=?", (stamp(utcnow() - timedelta(minutes=minutes_ago)), obligation_id))
 
 
-def found(box, logged, until):
+def found(box, logged, until, **kwargs):
     return {key: {"at": logged - 60 + i * 10, "diff": 1.0, "jpeg": jpeg((40 + i * 60, 40, 40))}
             for i, key in enumerate(("before", "putting", "left"))}
 
@@ -57,7 +57,7 @@ def test_dishes_first_seen_already_out_are_searched_too_and_progress_is_counted(
 def test_dishes_without_a_visible_put_down_are_never_shown_or_retried(store, media):
     proofs = Proofs(store.root, store, media)
     untraced, nobody = late_dish(store, media), late_dish(store, media)
-    assert proofs.run_once(lambda *_: None) == untraced["id"]
+    assert proofs.run_once(lambda *args, **kwargs: None) == untraced["id"]
     assert proofs.run_once(found, identify=lambda *_: None) == nobody["id"]
     assert proofs.run_once(found) is None
     assert proofs.items() == []
@@ -95,10 +95,10 @@ def test_check_rejection_stores_reason_and_never_calls_identity(store, media):
     proofs = Proofs(store.root, store, media)
     item = late_dish(store, media)
     calls = []
-    proofs.run_once(found, identify=lambda *args: calls.append(args), check=lambda *_: "dish already there in the before picture")
+    proofs.run_once(found, identify=lambda *args: calls.append(args), check=lambda *_: "the spot is hidden in the before picture")
     row = store.conn.execute('SELECT * FROM proofs').fetchone()
     assert row['status'] == 'untraced'
-    assert json.loads(row['data'])['reason'] == 'dish already there in the before picture'
+    assert json.loads(row['data'])['reason'] == 'the spot is hidden in the before picture'
     assert calls == [] and proofs.items() == []
     assert not (proofs.dir / str(item['id'])).exists()
 
@@ -126,7 +126,7 @@ def test_selected_picture_and_person_reach_identity_and_collage_metadata(store, 
 def test_a_dish_whose_footage_cannot_be_read_does_not_hold_up_the_next(store, media):
     proofs = Proofs(store.root, store, media)
     stuck, nxt = late_dish(store, media), late_dish(store, media)
-    def find(box, logged, until):
+    def find(box, logged, until, **kwargs):
         if not tried:
             tried.append(1)
             raise OSError('segment unreadable')
@@ -157,7 +157,7 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     item = late_dish(store, media)
     now = utcnow()
     traces, identities, checked = [], [], []
-    def find(*args):
+    def find(*args, **kwargs):
         traces.append(args)
         return found(*args) | {'method': 'journal', 'putting_action': 'left it behind'}
     def check(oid, trace, late, box, late_box):
@@ -259,7 +259,162 @@ def test_a_picked_up_dish_leaves_the_page_at_once_and_returns_if_seen_again(stor
 def test_only_a_dish_older_than_the_journal_goes_back_to_the_patch_search(authenticated, monkeypatch):
     from wash_dishes import runtime as module
     runtime = authenticated.app.state.runtime
-    monkeypatch.setattr(module, 'find_putdown', lambda *args: 'patch search')
+    monkeypatch.setattr(module, 'find_putdown', lambda *args, **kwargs: 'patch search')
     for journal, expected in ((module.JOURNAL_TOO_NEW, 'patch search'), ('a recording gap', 'a recording gap')):
         monkeypatch.setattr(module, 'find_putdown_journal', lambda *args, **kwargs: journal)
         assert runtime._find_putdown(BOX, 0.0, 1.0) == expected
+
+
+def test_already_there_retries_before_rejected_before_and_checks_the_new_trace(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    calls, checked = [], []
+    def find(box, logged, until, *, earlier_than=None, deadline=None):
+        calls.append((logged, until, earlier_than, deadline))
+        return found(box, logged if earlier_than is None else earlier_than - 100, until) | {'method': 'journal'}
+    def check(oid, trace, *args):
+        checked.append(trace)
+        return 'dish already there in the before picture' if len(checked) == 1 else {'checks': {'verified': True}}
+    proofs.run_once(find, check=check)
+    assert len(calls) == len(checked) == 2
+    assert calls[1][:2] == calls[0][:2]  # Logging and late evidence stay anchored to this dish.
+    assert calls[1][2] == checked[0]['before']['at']
+    assert calls[1][3] == calls[0][3]
+    data = json.loads(store.conn.execute('SELECT data FROM proofs WHERE obligation_id=?', (item['id'],)).fetchone()[0])
+    assert data['putting_at'] == checked[1]['putting']['at']
+    assert data['checks'] == {'verified': True} and data['method'] == 'journal'
+    assert len(proofs.items()) == 1
+
+
+@pytest.mark.parametrize('reason', [
+    'someone is handling something over the spot in the before picture',
+    'things around the dish changed too: it was uncovered, not put down',
+    'no picture shows a person at the dish without their body hiding it',
+    'a different dish is in that spot later',
+    'dish already there in the before picture (uncertain)',
+])
+def test_other_rejections_never_retry(store, media, reason):
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    calls = []
+    def find(*args, **kwargs):
+        calls.append(kwargs)
+        return found(*args)
+    proofs.run_once(find, check=lambda *_: reason)
+    assert len(calls) == 1 and proofs.items() == []
+    assert json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason'] == reason
+
+
+def test_already_there_stops_after_three_earlier_attempts(store, media):
+    from wash_dishes.proofs import ALREADY_THERE
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    calls, checks = [], []
+    def find(box, logged, until, *, earlier_than=None, deadline=None):
+        calls.append(earlier_than)
+        return found(box, logged if earlier_than is None else earlier_than, until)
+    def check(*args):
+        checks.append(args)
+        return ALREADY_THERE
+    proofs.run_once(find, check=check, identify=lambda *_: pytest.fail('Rejected proof cannot identify someone'))
+    assert len(calls) == len(checks) == 3
+    assert calls[2] < calls[1]
+    assert proofs.items() == []
+    assert json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason'] == ALREADY_THERE
+
+
+@pytest.mark.parametrize('candidate_only', [False, True])
+def test_retry_cannot_reuse_same_or_later_arrival_even_as_an_alternate(store, media, candidate_only):
+    from wash_dishes.proofs import ALREADY_THERE
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    checks = []
+    def find(box, logged, until, *, earlier_than=None, deadline=None):
+        trace = found(box, logged if earlier_than is None else earlier_than, until)
+        if earlier_than is not None:
+            repeated = trace['putting'] | {'at': earlier_than}  # Exclusive, including exact equality.
+            if candidate_only:
+                trace['candidates'] = [repeated]
+            else:
+                trace['putting'] = repeated
+        return trace
+    def check(*args):
+        checks.append(args)
+        return ALREADY_THERE if len(checks) == 1 else {}
+    proofs.run_once(find, check=check)
+    assert len(checks) == 1 and proofs.items() == []
+    assert json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason'] == 'the finder did not return an earlier arrival'
+
+
+@pytest.mark.parametrize('expires_in', ['finder', 'checker'])
+def test_shared_deadline_stops_work_and_never_saves_an_unchecked_trace(store, media, monkeypatch, expires_in):
+    from wash_dishes import proofs as module
+    clock = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    calls, checks = [], []
+    def find(*args, deadline=None, **kwargs):
+        calls.append(deadline)
+        if expires_in == 'finder':
+            clock[0] = deadline
+        return found(*args)
+    def check(*args):
+        checks.append(args)
+        clock[0] = calls[-1]
+        return module.ALREADY_THERE
+    proofs.run_once(find, check=check)
+    assert len(calls) == 1 and len(checks) == (expires_in == 'checker')
+    assert proofs.items() == []
+    assert 'time budget' in json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason']
+
+
+def test_retry_waiting_keeps_earlier_trace_and_reuses_it_with_new_late_photo(store, media):
+    from wash_dishes.proofs import ALREADY_THERE
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    now = utcnow()
+    calls, checks = [], []
+    def find(box, logged, until, *, earlier_than=None, **kwargs):
+        calls.append(earlier_than)
+        return found(box, logged if earlier_than is None else earlier_than, until) | {'method': 'journal', 'putting_action': 'left it behind'}
+    def check(oid, trace, *args):
+        checks.append(trace)
+        return ALREADY_THERE if len(checks) == 1 else {'status': 'waiting', 'reason': 'still busy'}
+    proofs.run_once(find, check=check, now=now)
+    assert len(calls) == 2 and proofs.items() == []
+    media.save_snapshot(item['id'], jpeg((9, 8, 7)), LATE, at=now + timedelta(minutes=1), capture={'box': BOX})
+    proofs = Proofs(store.root, store, media)
+    proofs.run_once(find, check=lambda *_: {}, now=now + timedelta(minutes=6))
+    assert len(calls) == 2 and len(proofs.items(now + timedelta(minutes=6))) == 1
+    data = json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])
+    assert data['putting_at'] == checks[1]['putting']['at']
+    assert data['method'] == 'journal' and data['left_behind'] is True
+
+
+def test_runtime_passes_cutoff_and_shared_budget_through_journal_and_only_allowed_fallback(authenticated, monkeypatch):
+    from wash_dishes import runtime as module
+    runtime = authenticated.app.state.runtime
+    calls = []
+    def journal(*args, **kwargs):
+        calls.append(('journal', args, kwargs))
+        return module.JOURNAL_TOO_NEW
+    def patch(*args, **kwargs):
+        calls.append(('patch', args, kwargs))
+        return 'no earlier patch arrival'
+    monkeypatch.setattr(module, 'find_putdown_journal', journal)
+    monkeypatch.setattr(module, 'find_putdown', patch)
+    assert runtime._find_putdown(BOX, 100, 200, earlier_than=50, deadline=999) == 'no earlier patch arrival'
+    assert [call[0] for call in calls] == ['journal', 'patch']
+    assert all(call[2]['earlier_than'] == 50 and call[2]['deadline'] == 999 for call in calls)
+
+
+def test_retry_reason_matches_the_real_checker_contract():
+    from test_proof_checks import BOX, FOUND, LATE, LEFT, PERSON, PUTTING, Verifier
+
+    from wash_dishes.proof_checks import ProofChecker
+    from wash_dishes.proofs import ALREADY_THERE
+    check = ProofChecker(lambda raw, box: [{'kind': 'person', 'box': PERSON}] if raw == PUTTING else [],
+                         Verifier(), lambda _: {'label': 'soda can', 'margin': -.1})
+    already = FOUND | {'before': {'at': 10, 'jpeg': LEFT}}
+    assert check(1, already, LATE, BOX, None) == ALREADY_THERE

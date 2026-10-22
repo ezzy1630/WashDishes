@@ -361,3 +361,127 @@ def test_long_occlusion_finder_selects_departure_and_preserves_caption(tmp_path,
         assert result["before"]["at"] < 20
         assert 398 <= result["putting"]["at"] < 400
         assert result["left"]["at"] >= 400
+
+
+@pytest.mark.parametrize("earlier_kind", ["pan", "cup"])
+def test_earlier_cutoff_searches_previous_episode_and_excludes_all_later_candidates(tmp_path, monkeypatch, earlier_kind):
+    person = PERSON | {'box': [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    def present(t):
+        return 20 <= t < 45 or t >= 90
+    with Journal(tmp_path / 'journal.db') as journal:
+        for t in range(140):
+            detections = frame(t, present(t), [person] if 18 <= t <= 20 or 88 <= t <= 90 else [])['detections']
+            if t < 90:
+                detections = [d | {'kind': earlier_kind} if d['kind'] == 'pan' else d for d in detections]
+            journal.record(t, detections)
+        monkeypatch.setattr(putdown, 'segments', lambda _: [(0, 140, tmp_path / 'clip.ts')])
+        monkeypatch.setattr(putdown, 'samples', lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if present(t) else empty, BOX)) for t in range(140)])
+        monkeypatch.setattr(putdown, 'decoded_photos', lambda _, **kw: [(t / 4, dish if present(t / 4) else empty)
+                                                                     for t in range(560) if kw['t0'] <= t / 4 <= kw['t1']])
+        latest = putdown.find_putdown_journal(journal, tmp_path, BOX, 120, 139)
+        assert isinstance(latest, dict), latest
+        assert abs(latest['putting']['at'] - 90) < 3
+        cutoff = latest['before']['at']
+        earlier = putdown.find_putdown_journal(journal, tmp_path, BOX, 120, 139, earlier_than=cutoff)
+        if earlier_kind == 'cup':
+            assert isinstance(earlier, str)  # A previous cup cannot be this pan's arrival.
+            return
+        assert isinstance(earlier, dict), earlier
+        assert abs(earlier['putting']['at'] - 20) < 3
+        assert all(c['at'] < cutoff for c in [earlier['putting'], *earlier['candidates']])
+        assert isinstance(putdown.find_putdown_journal(journal, tmp_path, BOX, 120, 139,
+                                                     earlier_than=earlier['before']['at']), str)
+
+
+@pytest.mark.parametrize('finder', ['journal', 'patch'])
+def test_expired_finder_budget_does_not_decode(tmp_path, monkeypatch, finder):
+    monkeypatch.setattr(putdown.time, 'monotonic', lambda: 50)
+    monkeypatch.setattr(putdown, 'segments', lambda *_: pytest.fail('Expired search must not decode'))
+    with Journal(tmp_path / 'journal.db') as journal:
+        if finder == 'journal':
+            result = putdown.find_putdown_journal(journal, tmp_path, BOX, 100, 200, deadline=50)
+        else:
+            result = putdown.find_putdown(tmp_path, BOX, 100, 200, deadline=50)
+        assert result == putdown.SEARCH_TIMEOUT
+
+
+def test_patch_fallback_cannot_return_a_later_arrival_on_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr(putdown, '_find_putdown', lambda *args, **kwargs: {'putting': {'at': 50}})
+    assert isinstance(putdown.find_putdown(tmp_path, BOX, 100, 200, earlier_than=50), str)
+    assert putdown.find_putdown(tmp_path, BOX, 100, 200, earlier_than=51)['putting']['at'] == 50
+
+
+def test_finder_stops_between_decodes_when_shared_budget_expires(tmp_path, monkeypatch):
+    clock, decoded = [0.0], []
+    monkeypatch.setattr(putdown.time, 'monotonic', lambda: clock[0])
+    with Journal(tmp_path / 'journal.db') as journal:
+        for t in range(60):
+            journal.record(t, frame(t, t >= 20)['detections'])
+        monkeypatch.setattr(putdown, 'segments', lambda _: [(i, i + 3, tmp_path / f'{i}.ts') for i in range(0, 60, 3)])
+        def samples(seg, box):
+            decoded.append(seg[0])
+            clock[0] += 6
+            return [putdown.Sample(seg[0] + 1, putdown._jpeg_patch(scene(True), BOX))]
+        monkeypatch.setattr(putdown, 'samples', samples)
+        monkeypatch.setattr(putdown, 'decoded_photos', lambda *args, **kwargs: pytest.fail('Budget expired before refinement'))
+        assert putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 59, deadline=10) == putdown.SEARCH_TIMEOUT
+        assert len(decoded) == 2 and clock[0] == 12  # At most the in-flight decode may overrun.
+
+
+@pytest.mark.parametrize("detection_every", [1, 5])
+def test_retry_reanchors_before_a_long_person_occlusion(tmp_path, monkeypatch, detection_every):
+    person = PERSON | {'box': [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    with Journal(tmp_path / 'journal.db') as journal:
+        for t in range(140):
+            journal.record(t, frame(t, t >= 20 and t % detection_every == 0, [person] if 18 <= t <= 20 or 35 <= t < 80 else [])['detections'])
+        monkeypatch.setattr(putdown, 'segments', lambda _: [(0, 140, tmp_path / 'clip.ts')])
+        monkeypatch.setattr(putdown, 'samples', lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(140)])
+        monkeypatch.setattr(putdown, 'decoded_photos', lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(560) if kw['t0'] <= t / 4 <= kw['t1']])
+        earlier = putdown.find_putdown_journal(journal, tmp_path, BOX, 120, 139, earlier_than=70)
+        assert isinstance(earlier, dict), earlier
+        assert abs(earlier['putting']['at'] - 20) < 3
+
+
+def test_exact_person_check_can_resolve_a_coarse_miss_or_body_box(tmp_path, monkeypatch):
+    person = PERSON | {'box': [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    with Journal(tmp_path / 'journal.db') as journal:
+        for t in range(50):
+            journal.record(t, frame(t, t >= 20, [PERSON] if 18 <= t <= 19 else [])['detections'])
+        monkeypatch.setattr(putdown, 'segments', lambda _: [(0, 50, tmp_path / 'clip.ts')])
+        monkeypatch.setattr(putdown, 'samples', lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(50)])
+        monkeypatch.setattr(putdown, 'decoded_photos', lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(200) if kw['t0'] <= t / 4 <= kw['t1']])
+        assert isinstance(putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 49, people=lambda _: [person]), str)
+        result = putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 49, earlier_than=29, people=lambda _: [person])
+        assert isinstance(result, dict), result
+        assert abs(result['putting']['at'] - 20) < 3
+        assert all(c['person_box'] == person['box'] for c in result['candidates'])
+        # A journal hint never bypasses the exact-frame body/absence veto.
+        for actual in ([], [PERSON]):
+            assert isinstance(putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 49, earlier_than=29,
+                                                          people=lambda _: actual), str)
+
+
+@pytest.mark.parametrize('clear_at', [60, 180])
+def test_refined_putdown_obeys_the_arrival_gap_limit(tmp_path, monkeypatch, clear_at):
+    person = PERSON | {'box': [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    end = clear_at + 30
+    with Journal(tmp_path / 'journal.db') as journal:
+        for t in range(end):
+            journal.record(t, frame(t, t >= 20, [person] if 18 <= t <= clear_at - 5 else [])['detections'])
+        monkeypatch.setattr(putdown, 'journal_arrival', lambda *args, **kwargs: putdown.Arrival(17, 20, clear_at, False, 'vessel'))
+        monkeypatch.setattr(putdown, 'segments', lambda _: [(0, end, tmp_path / 'clip.ts')])
+        monkeypatch.setattr(putdown, 'samples', lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(end)])
+        monkeypatch.setattr(putdown, 'decoded_photos', lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(end * 4) if kw['t0'] <= t / 4 <= kw['t1']])
+        result = putdown.find_putdown_journal(journal, tmp_path, BOX, end - 15, end - 1)
+        if clear_at > putdown.MAX_GAP:
+            assert result == 'the put-down is hidden across too long a gap'
+        else:
+            assert isinstance(result, dict), result
+            assert result['putting']['at'] < clear_at
