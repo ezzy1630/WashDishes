@@ -31,6 +31,7 @@ class Runtime:
         self.stop_event = threading.Event()
         self.pending: tuple[bytes, str, str] | None = None
         self.vision = None
+        self.dish_verifier = None
         self.vision_path: str | None = None
         self.vision_generation: str | None = None
         self.vision_message = "Local vision is off. Manual events and review are available."
@@ -112,8 +113,13 @@ class Runtime:
             self.inventory.describe = self.vision.describe_person
             self.inventory.enrolled_faces = self.vision.enrolled_faces
             self.media.clip_saved = self._clip_saved
+            from .proof_checks import make_check
             from .verifier import DishVerifier, store_hook
-            self.inventory.verify = store_hook(DishVerifier(self.config.root), self.store)
+            # One CLIP for both the second look at new dishes and the proof checks: memory is tight.
+            if self.dish_verifier is None:
+                self.dish_verifier = DishVerifier(self.config.root)
+            self.inventory.verify = store_hook(self.dish_verifier, self.store)
+            self.proofs.check = make_check(self.vision, self.dish_verifier, self.store, lock=self.lock)
         return self.vision
 
     def _clip_saved(self, obligation_id: int, label: str, evidence_id: str, path: Path) -> None:
@@ -200,8 +206,10 @@ class Runtime:
                     next_cleanup = time.monotonic() + 3600
                 with self.lock:
                     seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
-                self.proofs.run_once(lambda box, logged, until: find_putdown(self.media.buffer, box, logged, until),
-                                     self._identify_putdown if seeing else None)
+                # Every proof is checked before it is shown; without vision there is nothing to check with.
+                if seeing:
+                    self.proofs.run_once(lambda box, logged, until: find_putdown(self.media.buffer, box, logged, until),
+                                         check=self.proofs.check, identify_selected=self._identify_putdown)
             except Exception:
                 # One bad recording or picture must not stop proofs for every later dish.
                 pass
@@ -316,6 +324,12 @@ class Runtime:
                                                    getattr(engine, "detect_area", lambda area: []))
                             self._kitchen_check(engine, frame[0], analysis, areas, observed_at)
                         inventory = self.inventory.listing()
+                        if self.alignment.settled:
+                            try:
+                                # A proof waiting for someone to step away from the dish gets its newer photo here.
+                                self.proofs.refresh_waiting(frame[0], inventory, observed_at)
+                            except Exception:
+                                pass  # A retry photo is optional; the observation itself must still be saved.
                         people = [d["box"] for d in analysis["detections"] if d["kind"] == "person" and d["score"] >= 0.35]
                         analysis["fullness"] = engine.occupancy(areas, people)
                 except Exception:

@@ -226,3 +226,14 @@ def test_reject_validates_reason_and_not_a_dish_uses_review_dismissal(store, med
     assert json.loads(event[0])['note'] == 'Not a dish'
     with pytest.raises(LookupError):
         proofs.reject(item['id'])
+
+
+def test_a_picked_up_dish_leaves_the_page_at_once_and_returns_if_seen_again(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    proofs.run_once(found)
+    assert [p["id"] for p in proofs.items()] == [item["id"]]
+    store.event("dish_picked_up", "Cup picked up from Dining table", item["id"])
+    assert proofs.items() == []
+    seen(store, item["id"], -1)   # an arm over the cup read as a pickup; the camera sees it there again
+    assert [p["id"] for p in proofs.items()] == [item["id"]]

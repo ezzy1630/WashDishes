@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hmac
-import inspect
 import json
 import os
 from contextlib import asynccontextmanager
@@ -337,16 +336,13 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     @app.post("/api/proofs/{obligation_id}/reject", dependencies=[Depends(authenticated)])
     def proof_reject(obligation_id: int, body: ProofReject | None = None):
-        reason = body.reason if body else None
-        reject = runtime.proofs.reject
-        # Proofs.reject keeps the reason once it accepts one; the older version takes only the dish.
-        if reason and "reason" in inspect.signature(reject).parameters:
-            reject(obligation_id, reason)
-        else:
-            reject(obligation_id)
+        reason = (body.reason if body else None) or "wrong_photos"
+        # Proofs.reject remembers the thing's look at that spot so it is never sent again; for
+        # "Not a dish" it also closes the record.
+        runtime.proofs.reject(obligation_id, reason)
         if reason == "not_a_dish":
-            # As anywhere else, "Not a dish" closes the record and teaches the detector.
-            learn_from_review(store.action(obligation_id, "dismiss", note="Not a dish"), "dismiss", "Not a dish")
+            # As anywhere else, "Not a dish" also teaches the detector.
+            learn_from_review(store.obligation(obligation_id), "dismiss", "Not a dish")
         return {"ok": True}
 
     @app.get("/api/people", dependencies=[Depends(authenticated)])

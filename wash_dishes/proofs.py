@@ -182,7 +182,12 @@ class Proofs:
                     o.suggested_resident_id, r.name resident_name, g.name guess_name
                 FROM proofs p JOIN obligations o ON o.id=p.obligation_id
                 LEFT JOIN residents r ON r.id=o.resident_id LEFT JOIN residents g ON g.id=o.suggested_resident_id
-                WHERE p.status='ready' AND o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?""",
+                WHERE p.status='ready' AND o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?
+                  -- A dish picked up and not seen since is gone from the counter: someone dealt with it, so
+                  -- its card goes now, not when the record closes. Seen again, it comes back.
+                  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id
+                      AND event IN ('dish_picked_up','dish_moved')) AND e.event='dish_picked_up'
+                      AND e.created_at>=coalesce(o.last_seen_at,o.created_at))""",
                 (stamp(now - STILL_OUT),)).fetchall()
         out = []
         basis = self.store.suggestion_basis([r["id"] for r in rows]) if hasattr(self.store, "suggestion_basis") else {}

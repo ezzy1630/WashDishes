@@ -73,17 +73,17 @@ def test_a_new_design_is_never_hidden_behind_a_picture_cached_before_it(authenti
     assert client.get(item["image_url"]).content.startswith(b"\xff\xd8")
 
 
-def test_reject_passes_its_reason_and_not_a_dish_closes_the_record(authenticated, monkeypatch):
+def test_reject_passes_its_reason_and_not_a_dish_closes_the_record(authenticated):
     client, runtime = authenticated, authenticated.app.state.runtime
-    reasons = []
-    monkeypatch.setattr(runtime.proofs, "reject", lambda obligation_id, reason=None: reasons.append((obligation_id, reason)))
     wrong, not_dish = proof(runtime.store, runtime.media, runtime.proofs), proof(runtime.store, runtime.media, runtime.proofs)
+    assert client.post(f"/api/proofs/{wrong}/reject", json={"reason": "bored"}).status_code == 422
     assert client.post(f"/api/proofs/{wrong}/reject", json={"reason": "wrong_photos"}).status_code == 200
     assert client.post(f"/api/proofs/{not_dish}/reject", json={"reason": "not_a_dish"}).status_code == 200
-    assert reasons == [(wrong, "wrong_photos"), (not_dish, "not_a_dish")]
+    reasons = dict(runtime.store.conn.execute("SELECT obligation_id, json_extract(data,'$.reason') FROM proofs").fetchall())
+    assert reasons == {wrong: "wrong_photos", not_dish: "not_a_dish"}
     assert runtime.store.obligation(not_dish)["lifecycle"] == "dismissed"
     assert runtime.store.obligation(wrong)["lifecycle"] == "open"
-    assert client.post(f"/api/proofs/{wrong}/reject", json={"reason": "bored"}).status_code == 422
+    assert client.get("/api/proofs").json()["items"] == []
 
 
 def render(meta=None, name=None):
