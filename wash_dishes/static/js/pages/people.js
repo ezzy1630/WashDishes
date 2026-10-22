@@ -10,7 +10,7 @@ export function peoplePage(main) {
   const guesses = h("div");
   const archived = h("div");
   fill(main, h("div", { class: "page" },
-    h("header", { class: "page-head" }, h("div", {}, h("h1", { id: "page-title", tabindex: "-1" }, "People"), lede),
+    h("header", { class: "page-head" }, h("div", {}, h("h1", { id: "page-title", tabindex: "-1" }, "Housemates"), lede),
       h("div", { class: "page-tools" }, segmented(Object.entries(RANGES), range, r => { range = r; localStorage.setItem("dw-people-range", r); render(); }, "Period"),
         h("button", { type: "button", class: "btn", onclick: addPerson }, icon("plus", 15), h("span", {}, "Add person")))),
     grid, guesses, archived));
