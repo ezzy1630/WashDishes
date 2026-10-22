@@ -112,3 +112,14 @@ def test_captions_say_what_happened_in_plain_words():
     assert collage.dish_name(one, "bowl") == "bowl" and collage.dish_name(one, "frying pan") == "dish"
     assert collage.dish_name([{"kind": "cup", "quantity": 1}], "drinking glass") == "cup"
     assert collage.dish_name([{"kind": "cup", "quantity": 2}], "bowl") == "2 cups"
+
+
+def test_panels_leave_out_the_camera_clock_and_logo_when_the_dish_and_person_still_fit():
+    aspect = collage.PANEL_W / collage.PANEL_H * 9 / 16
+    def marked(crop):
+        return any(crop[0] < x + w and x < crop[2] and crop[1] < y + h and y < crop[3] for x, y, w, h in collage.CAMERA_MARKS)
+    beside_logo, person = [.20, .82, .05, .06], [.25, .45, .1, .45]
+    for crop in (collage._crop([beside_logo], None, aspect), collage._crop([beside_logo], person, aspect)):
+        assert not marked(crop) and crop[0] <= .20 and crop[2] >= .25 and crop[1] <= .82 and crop[3] >= .88
+    # Under the logo itself, the dish wins.
+    assert marked(collage._crop([[.02, .90, .05, .05]], None, aspect))
