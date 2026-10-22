@@ -199,6 +199,7 @@ class ProofChecker:
         negative = self.negatives(vectors[1])
         remembered = self._remembered(obligation_id, left, box)
         checks = {"left_embedding": left.tolist(), "probe": score[0] if score else None, "negative": negative,
+                  "looks_like": negative.get("looks_like"),
                   "remembered": remembered, "thresholds": vars(self.thresholds)}
         reasons = []
         if remembered:
@@ -327,7 +328,8 @@ def make_check(engine, verifier: DishVerifier, store: Store, *, lock, thresholds
                 text_features = torch.nn.functional.normalize(features, dim=-1).cpu().numpy()
         scores = text_features @ vector
         negative = int(np.argmax(scores[len(POSITIVE):]))
-        return {"label": NEGATIVE[negative], "margin": float(scores[len(POSITIVE)+negative] - scores[:len(POSITIVE)].max())}
+        return {"label": NEGATIVE[negative], "margin": float(scores[len(POSITIVE)+negative] - scores[:len(POSITIVE)].max()),
+                "looks_like": POSITIVE[int(np.argmax(scores[:len(POSITIVE)]))]}
 
     def areas():
         return [*monitoring_areas(store.settings()), *(drying_areas() if drying_areas else [])]

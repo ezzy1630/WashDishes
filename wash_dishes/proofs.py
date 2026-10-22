@@ -11,12 +11,14 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import timezone as utc
 from pathlib import Path
+from typing import Protocol
 
-from .collage import STAGES, render
+from .collage import STAGES, dish_name, render
 from .store import Store, parse_stamp, stamp, utcnow
 
 LATE_LABEL = "Matching dish still visible after the deadline%"
@@ -24,6 +26,16 @@ STILL_OUT = timedelta(minutes=30)    # unseen this long means it was taken away
 FOOTAGE = timedelta(hours=20)        # the recording keeps 24 h; older put-downs are gone
 KEEP = timedelta(days=7)
 RETRY = timedelta(minutes=5)
+# ProofChecker.__call__ exposes exact rejection reasons. Keep this one contract
+# fail-closed: other reasons (including handling/uncovering) never authorize rewind.
+ALREADY_THERE = "dish already there in the before picture"
+ARRIVAL_ATTEMPTS = 3
+TRACE_SECONDS = 480
+
+
+class Finder(Protocol):
+    def __call__(self, box: list[float], logged: float, until: float, *,
+                 earlier_than: float | None = None, deadline: float | None = None) -> dict | str: ...
 
 
 class Proofs:
@@ -101,10 +113,12 @@ class Proofs:
             self.store.conn.execute("INSERT OR REPLACE INTO proofs(obligation_id,status,created_at,data) VALUES(?,?,?,?)",
                                     (obligation_id, status, stamp(), json.dumps(data)))
 
-    def run_once(self, find: Callable, identify: Callable | None = None, now: datetime | None = None,
+    def run_once(self, find: Finder, identify: Callable | None = None, now: datetime | None = None,
                  *, check: Callable | None = None, identify_selected: Callable | None = None) -> int | None:
-        """Trace the oldest waiting dish. `find(box, logged, until)` is putdown.find_putdown bound to the
-        recording; `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
+        """Trace the oldest waiting dish. `find` binds the recording and supports an exclusive
+        `earlier_than` arrival cutoff and a shared monotonic `deadline`. It is called at most
+        three times, and only an already-present Before warrants an earlier search.
+        `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
         returns their box, or None when no person is near the dish (then it is not proof of anyone).
         `identify_selected` receives the checker's person_box keyword AFTER the checked
         proof is saved, so immutable identity predictions can read its readiness. Waiting
@@ -132,19 +146,37 @@ class Proofs:
                 trace = {k: saved[k] for k in ("method", "left_behind") if k in saved}
             except (OSError, KeyError):
                 found = None
+        deadline = time.monotonic() + TRACE_SECONDS
+        earlier_than = None
         try:
-            if found is None:
-                found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
-                if isinstance(found, dict):
-                    # A dish that appeared while someone stood over it for a long time was not seen
-                    # being put down; the picture says they left it rather than claiming the moment.
-                    trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
-            if not isinstance(found, dict):
-                self._save(oid, "untraced", {"reason": found or "no put-down found"})
-                return oid
             late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
             late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
-            checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
+            for attempt in range(ARRIVAL_ATTEMPTS):
+                if time.monotonic() >= deadline:
+                    checked = "the put-down search reached its time budget"
+                    break
+                if found is None:
+                    found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at,
+                                 earlier_than=earlier_than, deadline=deadline)
+                    if isinstance(found, dict):
+                        trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
+                if not isinstance(found, dict):
+                    checked = found or "no put-down found"
+                    break
+                if earlier_than is not None and any(not p["at"] < earlier_than
+                        for p in [found["putting"], *found.get("candidates", [])]):
+                    checked = "the finder did not return an earlier arrival"
+                    break
+                if time.monotonic() >= deadline:
+                    checked = "the put-down search reached its time budget"
+                    break
+                checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
+                if checked != ALREADY_THERE or attempt + 1 == ARRIVAL_ATTEMPTS:
+                    break
+                # The rejected Before already contains the dish. Its placement must
+                # precede that view, not just precede a different frame of this reach.
+                earlier_than = found["before"]["at"]
+                found = None
         except Exception as error:
             # The oldest dish is always tried first: footage or a photo that cannot be read
             # must close its attempt, or every later dish waits behind it for good.
@@ -206,7 +238,7 @@ class Proofs:
         for row in rows:
             data = json.loads(row["data"])
             named = row["confidence"] == "confirmed" and row["resident_id"] is not None
-            out.append({"id": row["id"], "dish": _singular(self.store.dish_description(json.loads(row["dishes"]))), "location": row["location"],
+            out.append({"id": row["id"], "dish": dish_name(json.loads(row["dishes"]), data.get("checks", {}).get("looks_like")), "location": row["location"],
                         "put_down_at": stamp(datetime.fromtimestamp(data["putting_at"], utc.utc)),
                         "late_at": stamp(datetime.fromtimestamp(data["late_at"], utc.utc)),
                         "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
@@ -264,8 +296,3 @@ class Proofs:
             old = [r[0] for r in self.store.conn.execute("SELECT obligation_id FROM proofs WHERE created_at<?", (stamp(now - KEEP),))]
         for oid in old:
             shutil.rmtree(self.dir / str(oid), ignore_errors=True)
-
-
-def _singular(description: str) -> str:
-    # "1 cup" reads as data; one dish is just "cup".
-    return description[2:] if description.startswith("1 ") and "," not in description else description

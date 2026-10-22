@@ -17,10 +17,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .notify import timezone
 from .sequences import _font
+from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 2
+VERSION = 3
 
 WIDTH, MARGIN, GAP = 1600, 32, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2
@@ -29,6 +30,9 @@ CAPTION_H = 92
 PAPER, INK, MUTED, DISH, SHADE = "#101214", "#f3f4f6", "#a7aeb6", "#ffd400", "#000000"
 MIN_MARK = 64          # px; a cup across the room still gets a mark you can see on a phone
 MIN_CROP = 0.36        # of the frame width, so the spot stays recognisable
+# The camera's own clock and "tapo" logo (x, y, w, h of the frame). Each panel already says when it
+# was taken, so the crop leaves these out whenever the dish and the person still fit.
+CAMERA_MARKS = ((0.0, 0.0, 0.41, 0.05), (0.0, 0.89, 0.12, 0.10))
 MONA = Path(__file__).parent / "static" / "fonts" / "MonaSans.woff2"
 
 
@@ -50,6 +54,20 @@ def _clock(at: float) -> str:
 def _later(seconds: float) -> str:
     hours, minutes = int(seconds // 3600), int(seconds // 60)
     return f"{hours} hour{'s' * (hours != 1)} later" if hours else f"{minutes} min later"
+
+
+# The dish check's words for the detector's cup, pot and pan.
+SAME_KIND = {"mug": "cup", "drinking glass": "cup", "cooking pot": "pot", "frying pan": "pan"}
+
+
+def dish_name(dishes: list[dict], looks_like: str | None = None) -> str:
+    """"pan" for one pan, "2 cups, bowl" for several. One dish is named only if the dish check's
+    second look agrees with the detector: in the sink the detector calls pans and lids "bowl", and a
+    wrong word undermines the whole picture, so a disagreement just says "dish"."""
+    if len(dishes) == 1 and dishes[0]["quantity"] == 1:
+        kind = dishes[0]["kind"]
+        return kind if looks_like is None or SAME_KIND.get(looks_like, looks_like) == kind else "dish"
+    return Store.dish_description(dishes)
 
 
 def place(location: str | None) -> str:
@@ -100,6 +118,26 @@ def _crop(dish: list[list[float]], person: list[float] | None, aspect: float) ->
     left = max(min(left, dx0 - 0.02), dx1 + 0.02 - w)
     top = max(min(top, dy0 - 0.02), dy1 + 0.02 - h)
     left, top = min(max(left, 0.0), 1 - w), min(max(top, 0.0), 1 - h)
+    return _clear_of_marks(left, top, w, h, boxes)
+
+
+def _clear_of_marks(left: float, top: float, w: float, h: float, boxes: list[list[float]]) -> tuple[float, float, float, float]:
+    """Slide the region the least distance that leaves out the camera's clock and logo, keeping
+    everything it showed of the dish and the person; if no slide does, the marks stay in."""
+    def shows(x0, y0, box):
+        return x0 <= box[0] and y0 <= box[1] and box[0] + box[2] <= x0 + w and box[1] + box[3] <= y0 + h
+
+    def marked(x0, y0):
+        return any(x0 < x + mw and x < x0 + w and y0 < y + mh and y < y0 + h for x, y, mw, mh in CAMERA_MARKS)
+
+    kept = [box for box in boxes if shows(left, top, box)]
+    moves = [(0.0, 0.0)] + [move for x, y, mw, mh in CAMERA_MARKS
+                            for move in ((x + mw - left, 0.0), (x - left - w, 0.0), (0.0, y + mh - top), (0.0, y - top - h))]
+    for dx, dy in sorted(moves, key=lambda m: abs(m[0]) + abs(m[1])):
+        x0, y0 = left + dx, top + dy
+        if (-1e-9 <= x0 <= 1 - w + 1e-9 and -1e-9 <= y0 <= 1 - h + 1e-9 and not marked(x0, y0)
+                and all(shows(x0, y0, box) for box in kept)):
+            return x0, y0, x0 + w, y0 + h
     return left, top, left + w, top + h
 
 

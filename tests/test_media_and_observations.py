@@ -92,6 +92,22 @@ def test_frame_mailbox_remains_available_while_model_lock_is_held(store, media):
     assert runtime.pending[:2] == (b"jpeg", "one")
 
 
+def test_a_frame_is_journaled_with_the_closer_area_looks_made_for_it(store, media):
+    # The full-room pass misses small sink dishes; only the area look saw this cup.
+    runtime = Runtime(Config(store.root, workers=False), store, media)
+    sink = {"id": "sink", "role": "sink", "box": [.5, .5, .4, .4]}
+    person = {"kind": "person", "score": .9, "box": [.1, .1, .2, .6]}
+    # The room pass is kept as it was, including two names for one pot.
+    pot, bowl = {"kind": "pot", "score": .4, "box": [.7, .7, .1, .1]}, {"kind": "bowl", "score": .3, "box": [.7, .7, .1, .1]}
+    cup = {"kind": "cup", "score": .5, "box": [.6, .6, .05, .05]}
+    stray = {"kind": "bowl", "score": .6, "box": [.1, .8, .05, .05], "detail_area": "sink"}  # outside its area
+    at = utcnow()
+    runtime._remember_frame(at, [person, pot, bowl], [cup, dict(cup), stray, dict(pot)], [sink])
+    runtime.journal.flush()
+    [frame] = runtime.journal.frames(at.timestamp() - 1, at.timestamp() + 1)
+    assert sorted(d["kind"] for d in frame["detections"]) == ["bowl", "cup", "person", "pot"]
+
+
 @pytest.mark.parametrize("change", ["pause", "reconnect"])
 def test_inflight_observation_is_discarded_when_camera_changes(store, media, monkeypatch, change):
     runtime = Runtime(Config(store.root, workers=False), store, media)
