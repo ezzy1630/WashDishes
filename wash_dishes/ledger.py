@@ -14,7 +14,7 @@ from datetime import datetime
 from datetime import timezone as utc
 from pathlib import Path
 
-from .collage import STAGES, VERSION, place, render
+from .collage import STAGES, VERSION, dish_name, place, render
 from .store import Store, stamp
 
 COUNTS = "o.confidence='confirmed' AND o.lifecycle NOT IN ('disputed','dismissed')"
@@ -46,7 +46,7 @@ def person(store: Store, resident_id: int) -> dict:
     for row in rows:
         data = json.loads(row["data"])
         kept = all((folder / str(row["id"]) / f"{key}.jpg").exists() for key in STAGES)
-        items.append({"id": row["id"], "dish": _dish(store, row["dishes"]), "location": place(row["location"]),
+        items.append({"id": row["id"], "dish": _dish(row["dishes"], data), "location": place(row["location"]),
                       "put_down_at": _at(data["putting_at"]), "late_at": _at(data["late_at"]),
                       "image_url": image_url(row["id"], resident_id) if kept else None})
     items.sort(key=lambda p: p["put_down_at"], reverse=True)
@@ -70,7 +70,8 @@ def picture(store: Store, obligation_id: int) -> bytes:
     cached = folder / f"collage-v{VERSION}-{row['resident_id'] or 0}.jpg"
     with _render_lock:
         if not cached.exists():
-            meta = json.loads(row["data"]) | {"dish": _dish(store, row["dishes"]), "location": place(row["location"])}
+            data = json.loads(row["data"])
+            meta = data | {"dish": _dish(row["dishes"], data), "location": place(row["location"])}
             tmp = cached.with_suffix(".tmp")
             tmp.write_bytes(render(meta, {key: (folder / f"{key}.jpg").read_bytes() for key in STAGES}, row["name"]))
             tmp.replace(cached)
@@ -81,7 +82,6 @@ def _at(value: float | None) -> str | None:
     return stamp(datetime.fromtimestamp(value, utc.utc)) if value is not None else None
 
 
-def _dish(store: Store, dishes: str) -> str:
-    # Same wording as the Send page: one dish is "cup", not "1 cup".
-    description = store.dish_description(json.loads(dishes))
-    return description[2:] if description.startswith("1 ") and "," not in description else description
+def _dish(dishes: str, data: dict) -> str:
+    # Same wording as the Send page.
+    return dish_name(json.loads(dishes), data.get("checks", {}).get("looks_like"))

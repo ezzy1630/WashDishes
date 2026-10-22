@@ -107,3 +107,8 @@ def test_the_picture_takes_long_names_and_missing_person_or_late_boxes():
 def test_captions_say_what_happened_in_plain_words():
     assert collage._later(2 * 3600 + 59 * 60) == "2 hours later" and collage._later(3600) == "1 hour later"
     assert collage.place("Dining table (visible portion)") == "Dining table" and collage.place(None) == "Kitchen"
+    # One dish is named only when the second look agrees; "bowl" on a picture of a pan is worse than "dish".
+    one = [{"kind": "bowl", "quantity": 1}]
+    assert collage.dish_name(one, "bowl") == "bowl" and collage.dish_name(one, "frying pan") == "dish"
+    assert collage.dish_name([{"kind": "cup", "quantity": 1}], "drinking glass") == "cup"
+    assert collage.dish_name([{"kind": "cup", "quantity": 2}], "bowl") == "2 cups"

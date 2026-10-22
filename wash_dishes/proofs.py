@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from datetime import timezone as utc
 from pathlib import Path
 
-from .collage import STAGES, render
+from .collage import STAGES, dish_name, render
 from .store import Store, parse_stamp, stamp, utcnow
 
 LATE_LABEL = "Matching dish still visible after the deadline%"
@@ -206,7 +206,7 @@ class Proofs:
         for row in rows:
             data = json.loads(row["data"])
             named = row["confidence"] == "confirmed" and row["resident_id"] is not None
-            out.append({"id": row["id"], "dish": _singular(self.store.dish_description(json.loads(row["dishes"]))), "location": row["location"],
+            out.append({"id": row["id"], "dish": dish_name(json.loads(row["dishes"]), data.get("checks", {}).get("looks_like")), "location": row["location"],
                         "put_down_at": stamp(datetime.fromtimestamp(data["putting_at"], utc.utc)),
                         "late_at": stamp(datetime.fromtimestamp(data["late_at"], utc.utc)),
                         "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
@@ -264,8 +264,3 @@ class Proofs:
             old = [r[0] for r in self.store.conn.execute("SELECT obligation_id FROM proofs WHERE created_at<?", (stamp(now - KEEP),))]
         for oid in old:
             shutil.rmtree(self.dir / str(oid), ignore_errors=True)
-
-
-def _singular(description: str) -> str:
-    # "1 cup" reads as data; one dish is just "cup".
-    return description[2:] if description.startswith("1 ") and "," not in description else description

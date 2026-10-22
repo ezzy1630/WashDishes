@@ -17,10 +17,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .notify import timezone
 from .sequences import _font
+from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 2
+VERSION = 3
 
 WIDTH, MARGIN, GAP = 1600, 32, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2
@@ -50,6 +51,20 @@ def _clock(at: float) -> str:
 def _later(seconds: float) -> str:
     hours, minutes = int(seconds // 3600), int(seconds // 60)
     return f"{hours} hour{'s' * (hours != 1)} later" if hours else f"{minutes} min later"
+
+
+# The dish check's words for the detector's cup, pot and pan.
+SAME_KIND = {"mug": "cup", "drinking glass": "cup", "cooking pot": "pot", "frying pan": "pan"}
+
+
+def dish_name(dishes: list[dict], looks_like: str | None = None) -> str:
+    """"pan" for one pan, "2 cups, bowl" for several. One dish is named only if the dish check's
+    second look agrees with the detector: in the sink the detector calls pans and lids "bowl", and a
+    wrong word undermines the whole picture, so a disagreement just says "dish"."""
+    if len(dishes) == 1 and dishes[0]["quantity"] == 1:
+        kind = dishes[0]["kind"]
+        return kind if looks_like is None or SAME_KIND.get(looks_like, looks_like) == kind else "dish"
+    return Store.dish_description(dishes)
 
 
 def place(location: str | None) -> str:
