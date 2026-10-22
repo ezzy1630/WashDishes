@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import math
+import os
 import sqlite3
 import subprocess
 import sys
@@ -16,9 +17,11 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-REPLAY = Path('/Volumes/Neural/dishwatch-scratch/replay-1022')
-SCRATCH = Path('/Volumes/Neural/dishwatch-scratch/v2/laneE')
-TRUTH = Path('/Volumes/Neural/dishwatch-scratch/v2/truth/truth.jsonl')
+# A frozen copy of the data root (buffer/, history.db, media/, proofs/, models/), kept off-repo with the
+# household's footage; locations come from the environment so no machine's paths are baked in here.
+REPLAY = Path(os.environ.get('DISHWATCH_REPLAY', 'replay'))
+SCRATCH = Path(os.environ.get('DISHWATCH_EVAL_OUT', 'proof-eval'))
+TRUTH = Path(os.environ.get('DISHWATCH_TRUTH', REPLAY / 'truth.jsonl'))
 ZONE = ZoneInfo('America/Los_Angeles')
 
 

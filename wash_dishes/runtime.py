@@ -13,6 +13,7 @@ from .config import Config, monitoring_areas
 from .dataset import Dataset
 from .incidents import Incidents
 from .inventory import PUT_DOWN_CLIP, Inventory, area_for, in_area
+from .journal import Journal
 from .media import Media
 from .notify import Notifier
 from .proofs import Proofs
@@ -42,6 +43,8 @@ class Runtime:
         self.recovery = EvidenceRecovery(store, media, self.dataset)
         self.incidents = Incidents(store, media, self.sequences)
         self.proofs = Proofs(config.root, store, media)
+        # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
+        self.journal = Journal(config.root / "journal.db")
         self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
@@ -166,6 +169,7 @@ class Runtime:
         for thread in (self.thread, self.media_thread, self.notify_thread, self.proof_thread):
             if thread:
                 thread.join(timeout=30)
+        self.journal.close()
 
     def _media_worker(self) -> None:
         try:
@@ -203,6 +207,7 @@ class Runtime:
             try:
                 if time.monotonic() >= next_cleanup:
                     self.proofs.cleanup()
+                    self.journal.prune(time.time(), self.store.settings()["buffer_hours"])
                     next_cleanup = time.monotonic() + 3600
                 with self.lock:
                     seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
@@ -311,6 +316,10 @@ class Runtime:
                 if not current["camera_enabled"] or not current["vision_enabled"] or frame[1] != self.camera.stream_generation or (utcnow() - observed_at).total_seconds() > 15:
                     self.reset_observations()
                     continue
+                try:
+                    self.journal.record(observed_at.timestamp(), analysis["detections"])
+                except Exception:
+                    pass  # History helps find put-downs later; it must never stop live tracking.
                 try:
                     self._align(frame[0], sum(d["kind"] == "person" for d in analysis["detections"]))
                 except Exception:
