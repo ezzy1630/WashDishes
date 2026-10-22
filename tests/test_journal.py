@@ -283,6 +283,21 @@ def test_finder_does_not_call_detector_for_missing_history(tmp_path):
         assert putdown.find_putdown_journal(journal, tmp_path, BOX, 30, 50) == JOURNAL_TOO_NEW
 
 
+def test_brief_clear_glimpse_during_handling_cannot_be_the_left_frame(tmp_path, monkeypatch):
+    person = PERSON | {"box": [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    with Journal(tmp_path / "journal.db") as journal:
+        for t in range(70):
+            nearby = [person] if 18 <= t <= 19 or 23 <= t <= 45 else []
+            journal.record(t, frame(t, t >= 20, nearby)["detections"])
+        monkeypatch.setattr(putdown, "journal_arrival", lambda *args, **kwargs: putdown.Arrival(17, 20, 21, False, "vessel"))
+        monkeypatch.setattr(putdown, "segments", lambda _: [(0, 70, tmp_path / "clip.ts")])
+        monkeypatch.setattr(putdown, "samples", lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(70)])
+        monkeypatch.setattr(putdown, "decoded_photos", lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(280) if kw["t0"] <= t / 4 <= kw["t1"]])
+        assert putdown.find_putdown_journal(journal, tmp_path, BOX, 50, 69) == "the footage has no clear view after the handling finished"
+
+
 def test_neighboring_person_without_box_contact_is_not_a_putting_frame(tmp_path, monkeypatch):
     person = PERSON | {"box": [.2, .2, .19, .5]}
     assert putdown._reach(BOX, person["box"]) < .1
