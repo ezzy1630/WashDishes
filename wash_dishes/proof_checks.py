@@ -39,6 +39,12 @@ class Thresholds:
     same_colour: float = 0.15
     before_cosine: float = 0.85
     before_change: float = 0.15
+    # A pan set down on other dishes in the sink leaves a detected dish and a similar tight
+    # crop in Before (#917 cosine .86, #945 overlap .48), so those alone cannot veto: the spot
+    # must also have changed little. Proofs vetoed only by Before reached change .307; those
+    # sink arrivals changed .575-.68. Cooking/different-dish proofs reached cosine .906.
+    stacked_change: float = 0.45
+    before_same: float = 0.90
     # Existing labeled-box matching uses .30; live attribution uses .10 reach. Inspected
     # torso failures covered >=.708 of the target, versus <=.213 full-person coverage in
     # the two visible drying placements. .60 leaves a .10 margin; it is not a pose model.
@@ -194,7 +200,9 @@ class ProofChecker:
         blocked_before = any(_coverage(box, _body(d["box"])) >= self.thresholds.body_cover
                              for d in before_detections if d["kind"] == "person")
         checks["before"] = {"overlap": overlap, "change": change, "cosine": before_cosine, "blocked": blocked_before}
-        if overlap >= self.thresholds.overlap or change < self.thresholds.before_change or before_cosine >= self.thresholds.before_cosine:
+        occupied = overlap >= self.thresholds.overlap or before_cosine >= self.thresholds.before_cosine
+        if (change < self.thresholds.before_change or before_cosine >= self.thresholds.before_same
+                or (occupied and change < self.thresholds.stacked_change)):
             reasons.append("dish already there in the before picture")
         elif blocked_before:
             reasons.append("the spot is hidden in the before picture")

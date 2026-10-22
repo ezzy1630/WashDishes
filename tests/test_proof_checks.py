@@ -15,6 +15,7 @@ PERSON = [.15, .15, .3, .7]
 HIDDEN = [.35, .3, .3, .6]
 BEFORE, PUTTING, LEFT, LATE = [jpeg(c) for c in ((0, 0, 200), (0, 200, 0), (200, 0, 0), (160, 0, 0))]
 FOUND = {k: {"jpeg": raw, "at": at} for k, raw, at in zip(("before", "putting", "left"), (BEFORE, PUTTING, LEFT), (10, 20, 30))}
+SHADED = jpeg((170, 0, 30))  # crop change .31 from LEFT: the same spot, a little different
 
 
 class Verifier:
@@ -86,22 +87,31 @@ def test_drying_area_outline_does_not_exclude_neighboring_sink(checker):
     assert result["checks"]["excluded_area"] == {"id": "mat", "stage": "late"}
 
 
-def test_before_detector_vetoes_even_when_pixels_change(checker):
+def test_before_dish_vetoes_unless_the_spot_changed_a_lot(checker):
+    # A pan set down on a bowl already in the sink is a new arrival; the same bowl in new light is not.
     check, detections, _ = checker
-    detections[BEFORE] = [{"kind": "bowl", "box": BOX}]
-    assert run(check) == "dish already there in the before picture"
+    detections[BEFORE] = detections[SHADED] = [{"kind": "bowl", "box": BOX}]
+    assert isinstance(run(check), dict)
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}}) == "dish already there in the before picture"
 
 
 def test_large_before_dish_cannot_hide_an_empty_spot_behind_low_iou(checker):
     check, detections, _ = checker
-    detections[BEFORE] = [{"kind": "pan", "box": [.2, .2, .6, .6]}]
-    assert run(check) == "dish already there in the before picture"
+    detections[SHADED] = [{"kind": "pan", "box": [.2, .2, .6, .6]}]
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}}) == "dish already there in the before picture"
 
 
-def test_semantically_same_before_crop_is_not_a_new_arrival(checker):
+@pytest.mark.parametrize("cosine, changed, reason", [
+    (1., True, "dish already there in the before picture"),
+    (.87, False, "dish already there in the before picture"),
+    (.87, True, None),
+])
+def test_semantically_same_before_crop_is_not_a_new_arrival(checker, cosine, changed, reason):
     check, _, verifier = checker
-    verifier.vectors[0] = [1., 0.]
-    assert run(check) == "dish already there in the before picture"
+    verifier.vectors[0] = [cosine, (1 - cosine**2) ** .5]
+    found = FOUND if changed else FOUND | {"before": {"at": 10, "jpeg": SHADED}}
+    result = run(check, found=found)
+    assert result == reason if reason else isinstance(result, dict)
 
 
 def test_before_unchanged_crop_vetoes_even_when_detector_misses(checker):
