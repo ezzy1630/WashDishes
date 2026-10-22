@@ -30,7 +30,10 @@ RETRY = timedelta(minutes=5)
 # fail-closed: other reasons (including handling/uncovering) never authorize rewind.
 ALREADY_THERE = "dish already there in the before picture"
 ARRIVAL_ATTEMPTS = 3
-TRACE_SECONDS = 480
+# One journal search took 351 s on the Jetson (#977, no inference), and the replay's one
+# recovered retry (#901) needed three. Running out only costs a picture, never adds a
+# wrong one; a longer budget only delays later dishes, and few dishes ever retry.
+TRACE_SECONDS = 1200
 
 
 class Finder(Protocol):
