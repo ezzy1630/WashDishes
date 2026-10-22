@@ -45,9 +45,16 @@ class Thresholds:
     # sink arrivals changed .575-.68. Cooking/different-dish proofs reached cosine .906.
     # A pan held over a bowl already there also changes the spot a lot (#901 at 13:55: .96),
     # so the big change only counts with nobody within reach: that person was .021 away, the
-    # people in #945 and #917's genuine Before frames .37 and .19.
+    # people in #945 and #917's genuine Before frames .37 and .19. With someone that close, a
+    # moderate change is not an arrival either: #906 (a container, change .21) hinged on a cup
+    # detection at score .30 that one machine saw and another did not.
     stacked_change: float = 0.45
     before_same: float = 0.90
+    # Lifting a bag off the table (#951: .43) or rinsing a pan over a bowl (#901: .66) changes the
+    # area around the dish as well; genuine put-downs left it at .04-.21. Below a quarter of the
+    # area visible past people's bodies, the measure is too partial to use.
+    around_change: float = 0.30
+    around_visible: float = 0.25
     # Existing labeled-box matching uses .30; live attribution uses .10 reach. Inspected
     # torso failures covered >=.708 of the target, versus <=.213 full-person coverage in
     # the two visible drying placements. .60 leaves a .10 margin; it is not a pose model.
@@ -96,6 +103,23 @@ def crop_change(a: np.ndarray, b: np.ndarray) -> float:
         resized = cv2.resize(image, (32, 32)).astype(np.float32)
         return resized / max(16, float(resized.mean()))
     return float(np.abs(patch(a) - patch(b)).mean())
+
+
+def around_change(a: np.ndarray, b: np.ndarray, box: list, people: list[list]) -> tuple[float, float]:
+    """Brightness-normalized change in a band one box-size wide around the dish, leaving out the
+    dish itself and anyone's body. Returns the change and how much of the band could be measured."""
+    h, w = a.shape[:2]
+    x, y, bw, bh = box
+    x1, y1 = max(0, int((x - bw) * w)), max(0, int((y - bh) * h))
+    x2, y2 = min(w, int((x + 2 * bw) * w)), min(h, int((y + 2 * bh) * h))
+    keep = np.ones((y2 - y1, x2 - x1), bool)
+    for bx, by, bbw, bbh in [box, *people]:
+        keep[max(0, int(by * h) - y1):max(0, int((by + bbh) * h) - y1), max(0, int(bx * w) - x1):max(0, int((bx + bbw) * w) - x1)] = False
+    if not keep.any():
+        return 0.0, 0.0
+    first, second = (image[y1:y2, x1:x2].astype(np.float32) for image in (a, b))
+    first, second = first / max(16, float(first.mean())), second / max(16, float(second.mean()))
+    return float(np.abs(first - second).mean(axis=2)[keep].mean()), float(keep.mean())
 
 
 def _coverage(box: list, other: list) -> float:
@@ -208,10 +232,15 @@ class ProofChecker:
         if (change < self.thresholds.before_change or before_cosine >= self.thresholds.before_same
                 or (occupied and change < self.thresholds.stacked_change)):
             reasons.append("dish already there in the before picture")
-        elif occupied and handled:
+        elif handled and (occupied or change < self.thresholds.stacked_change):
             reasons.append("someone is handling something over the spot in the before picture")
         elif blocked_before:
             reasons.append("the spot is hidden in the before picture")
+        bodies = [d["box"] for d in before_detections + self.detect(found["left"]["jpeg"], box) if d["kind"] == "person"]
+        around, visible = around_change(images[0], images[1], box, bodies)
+        checks["before"] |= {"around": around, "around_visible": visible}
+        if visible >= self.thresholds.around_visible and around >= self.thresholds.around_change:
+            reasons.append("things around the dish changed too: it was uncovered, not put down")
 
         choices = []
         hidden_frames = 0

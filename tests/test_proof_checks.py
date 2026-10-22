@@ -1,9 +1,11 @@
+import io
 import json
 import threading
 from dataclasses import replace
 
 import numpy as np
 import pytest
+from PIL import Image
 from test_proofs import late_dish
 from test_sequences import jpeg
 
@@ -13,9 +15,21 @@ from wash_dishes.proofs import Proofs
 BOX = [.4, .45, .15, .15]
 PERSON = [.15, .15, .3, .7]
 HIDDEN = [.35, .3, .3, .6]
-BEFORE, PUTTING, LEFT, LATE = [jpeg(c) for c in ((0, 0, 200), (0, 200, 0), (200, 0, 0), (160, 0, 0))]
+
+
+def scene(colour, box=BOX):
+    """A grey kitchen where only `box` has this colour, so the dish's surroundings stay put."""
+    image = Image.new("RGB", (640, 360), (90, 90, 90))
+    x, y, w, h = box
+    image.paste(colour, (int(x * 640), int(y * 360), int((x + w) * 640), int((y + h) * 360)))
+    out = io.BytesIO()
+    image.save(out, "JPEG")
+    return out.getvalue()
+
+
+BEFORE, PUTTING, LEFT, LATE = [scene(c) for c in ((0, 0, 200), (0, 200, 0), (200, 0, 0), (160, 0, 0))]
 FOUND = {k: {"jpeg": raw, "at": at} for k, raw, at in zip(("before", "putting", "left"), (BEFORE, PUTTING, LEFT), (10, 20, 30))}
-SHADED = jpeg((170, 0, 30))  # crop change .31 from LEFT: the same spot, a little different
+SHADED = scene((170, 0, 30))  # crop change .31 from LEFT: the same spot, a little different
 
 
 class Verifier:
@@ -102,6 +116,16 @@ def test_a_pan_held_over_the_spot_is_not_a_clear_before(checker):
     assert run(check) == "someone is handling something over the spot in the before picture"
     detections[BEFORE] = [{"kind": "person", "box": PERSON}]
     assert isinstance(run(check), dict)
+    # Someone at the spot and only a moderate change: they may just be moving what is there.
+    detections[SHADED] = [{"kind": "person", "box": PERSON}]
+    assert (run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}})
+            == "someone is handling something over the spot in the before picture")
+
+
+def test_a_dish_uncovered_by_lifting_something_bigger_is_not_a_put_down(checker):
+    check, _, _ = checker
+    bag = scene((40, 150, 40), [.3, .35, .35, .35])
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": bag}}) == "things around the dish changed too: it was uncovered, not put down"
 
 
 def test_large_before_dish_cannot_hide_an_empty_spot_behind_low_iou(checker):
