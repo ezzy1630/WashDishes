@@ -132,18 +132,25 @@ class Proofs:
                 trace = {k: saved[k] for k in ("method", "left_behind") if k in saved}
             except (OSError, KeyError):
                 found = None
-        if found is None:
-            found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
-            if isinstance(found, dict):
-                # A dish that appeared while someone stood over it for a long time was not seen
-                # being put down; the picture says they left it rather than claiming the moment.
-                trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
-        if not isinstance(found, dict):
-            self._save(oid, "untraced", {"reason": found or "no put-down found"})
+        try:
+            if found is None:
+                found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
+                if isinstance(found, dict):
+                    # A dish that appeared while someone stood over it for a long time was not seen
+                    # being put down; the picture says they left it rather than claiming the moment.
+                    trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
+            if not isinstance(found, dict):
+                self._save(oid, "untraced", {"reason": found or "no put-down found"})
+                return oid
+            late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
+            late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
+            checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
+        except Exception as error:
+            # The oldest dish is always tried first: footage or a photo that cannot be read
+            # must close its attempt, or every later dish waits behind it for good.
+            self._save(oid, "untraced", {"reason": f"could not read the footage or photos ({type(error).__name__})"})
+            shutil.rmtree(folder, ignore_errors=True)
             return oid
-        late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
-        late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
-        checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
         if isinstance(checked, str):
             self._save(oid, "untraced", {"reason": checked})
             shutil.rmtree(folder, ignore_errors=True)

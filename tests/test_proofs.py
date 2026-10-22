@@ -123,6 +123,21 @@ def test_selected_picture_and_person_reach_identity_and_collage_metadata(store, 
     assert proofs.image(item['id']).startswith(b'\xff\xd8')
 
 
+def test_a_dish_whose_footage_cannot_be_read_does_not_hold_up_the_next(store, media):
+    proofs = Proofs(store.root, store, media)
+    stuck, nxt = late_dish(store, media), late_dish(store, media)
+    def find(box, logged, until):
+        if not tried:
+            tried.append(1)
+            raise OSError('segment unreadable')
+        return found(box, logged, until)
+    tried = []
+    assert proofs.run_once(find) == stuck['id']
+    assert proofs.run_once(find) == nxt['id']
+    statuses = dict(store.conn.execute('SELECT obligation_id, status FROM proofs').fetchall())
+    assert statuses == {stuck['id']: 'untraced', nxt['id']: 'ready'}
+
+
 def test_selected_identity_absence_withdraws_proof_but_description_failure_keeps_checked_pictures(store, media):
     proofs = Proofs(store.root, store, media)
     missing = late_dish(store, media)
