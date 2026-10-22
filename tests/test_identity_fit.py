@@ -29,7 +29,7 @@ def test_faces_added_to_old_sightings_carry_their_names_into_later_days(store):
     assert add_faces(store, lambda path: faces[path.name])["faces_added"] == 0
 
 
-def test_a_put_down_clip_merges_its_face_into_the_sighting_once(store):
+def test_an_unanchored_put_down_clip_does_not_name_the_person_in_a_crop(store):
     alex, sam = store.add_resident("Alex")["id"], store.add_resident("Sam")["id"]
     yesterday = utcnow() - timedelta(days=1)
     item = store.create_obligation(None, [{"kind": "plate", "quantity": 1}], candidate=True, at=yesterday)
@@ -42,8 +42,26 @@ def test_a_put_down_clip_merges_its_face_into_the_sighting_once(store):
     store.add_person_sample(other["id"], unit(0, 0, 1, 0), at=yesterday, cue="face", context="sink")
     store.action(other["id"], "confirm", resident_id=sam)
 
-    # The zoomed photo shows no face; the clip does.
+    # A face somewhere in the visit cannot establish whose body was labelled.
     first = add_faces(store, lambda path: None, lambda path: unit(1, 0.1, 0, 0))
-    assert first["clip_faces_merged"] == 1
-    assert store.suggest_identity({"outfit": unit(0, 0, 0, 1), "face": unit(1, 0.12, 0, 0)}, at=utcnow())[0] == alex
+    assert first["clip_faces_merged"] == 0
+    assert store.suggest_identity({"outfit": unit(0, 0, 0, 1), "face": unit(1, 0.12, 0, 0)}, at=utcnow())[0] is None
     assert add_faces(store, lambda path: None, lambda path: unit(1, 0.1, 0, 0))["clip_faces_merged"] == 0
+
+
+def test_rebuild_replaces_quarantined_clip_cue_without_deleting_history(store):
+    import json
+    alex = store.add_resident('Alex')['id']
+    at = utcnow()
+    item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+    store.add_evidence(item['id'], 'body', 'body.jpg', 'snapshot', 'Who handled it (zoomed)', at=at)
+    store.add_evidence(item['id'], 'visit', 'visit.mp4', 'clip', 'Putting the dish down', at=at)
+    store.add_person_sample(item['id'], [1, 0, 0, 0], 'body', at=at)
+    store.add_person_sample(item['id'], [0, 0, 1, 0], 'visit', at=at, cue='face')
+    store.action(item['id'], 'confirm', resident_id=alex)
+    report = add_faces(store, lambda _: [1, 0, 0, 0])
+    assert report['faces_added'] == 1
+    assert store.sighting_cues(item['id'])[0]['face'] == [1, 0, 0, 0]
+    old = store.conn.execute("SELECT embedding FROM person_samples WHERE evidence_id='visit'").fetchone()
+    assert json.loads(old[0]) == [0, 0, 1, 0]
+    assert add_faces(store, lambda _: [1, 0, 0, 0])['faces_added'] == 0

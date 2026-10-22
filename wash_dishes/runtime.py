@@ -206,7 +206,7 @@ class Runtime:
                 # One bad recording or picture must not stop proofs for every later dish.
                 pass
 
-    def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at) -> list[float] | None:
+    def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at, *, person_box=None) -> list[float] | None:
         """Box of the person putting the dish down, or None if nobody is within reach of it.
 
         Their appearance replaces whatever the camera captured when it logged the dish (often a
@@ -220,22 +220,37 @@ class Runtime:
             return max(px - cx, 0, cx - px - pw) + max(py - cy, 0, cy - py - ph)
         with self.lock:
             engine = self.local_vision()
-            person = min(engine.people(jpeg), key=reach, default=None)
+            supplied = {"box": person_box} if person_box is not None else None
+            if supplied and (len(person_box) != 4 or any(not 0 <= v <= 1 for v in person_box)
+                             or person_box[2] <= 0 or person_box[3] <= 0):
+                supplied = None
+            person = supplied if supplied and reach(supplied) <= 0.1 else min(engine.people(jpeg), key=reach, default=None)
             if person is None or reach(person) > 0.1:
+                self.store.replace_putdown_samples(obligation_id, {}, "", at=at)
+                self.store.set_suggestion(obligation_id, None, None)
                 return None
             try:
                 cues, crop = engine.describe_person(jpeg, person["box"])
                 faces = engine.enrolled_faces()
             except Exception:
+                self.store.replace_putdown_samples(obligation_id, {}, "", at=at)
+                self.store.set_suggestion(obligation_id, None, None)
                 return person["box"]
+            try:
+                face = engine.putdown_face(self.media.buffer, at.timestamp(), jpeg, person["box"], cues["outfit"])
+                if face is not None:
+                    cues["face"] = face
+            except Exception:
+                # Missing/expired recordings must not discard the valid anchor crop.
+                pass
         settings = self.store.settings()
         location = self.store.obligation(obligation_id)["location"]
         context = next((a["id"] for a in monitoring_areas(settings) if a.get("name") == location), None)
-        evidence_id = self.media.save_snapshot(obligation_id, crop, "Who put it down (from footage)", at=at)
-        self.store.clear_unlabeled_samples(obligation_id)
-        for cue, vector in cues.items():
-            self.store.add_person_sample(obligation_id, vector, evidence_id, at=at, cue=cue, context=context)
-        resident, evidence, _, seen = self.store.suggest_identity(cues, at=at, context=context, enrolled_faces=faces)
+        evidence_id = self.media.save_snapshot(obligation_id, crop, "Who put it down (from footage)", at=at,
+                                               capture={"person_box": person["box"], "identity_source": "putdown"})
+        self.store.replace_putdown_samples(obligation_id, cues, evidence_id, at=at, context=context)
+        resident, evidence, _, seen = self.store.suggest_identity(cues, at=at, context=context, enrolled_faces=faces,
+                                                                exclude_obligation=obligation_id)
         self.store.set_suggestion(obligation_id, resident, evidence, seen)
         return person["box"]
 

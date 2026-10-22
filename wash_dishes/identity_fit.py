@@ -30,13 +30,16 @@ def cases(store: Store) -> list[Case]:
     """
     with store.lock:
         rows = store.conn.execute("""SELECT DISTINCT s.obligation_id id, s.resident_id FROM person_samples s JOIN obligations o ON o.id=s.obligation_id
-            WHERE s.resident_id IS NOT NULL AND o.source='vision' AND o.lifecycle NOT IN ('dismissed','disputed') ORDER BY id""").fetchall()
+            WHERE s.resident_id IS NOT NULL AND o.lifecycle NOT IN ('dismissed','disputed') ORDER BY id""").fetchall()
     result = []
     for row in rows:
-        cues, context, at = store.sighting_cues(row["id"])
+        capture = store.sighting_cues(row["id"])
+        if capture is None:
+            result.append((row["resident_id"], {}))
+            continue
+        cues, context, at = capture
         scored = {resident: features for resident, features, _ in store.cue_features(cues, at=at, context=context, exclude_obligation=row["id"])}
-        if row["resident_id"] in scored and len(scored) > 1:
-            result.append((row["resident_id"], scored))
+        result.append((row["resident_id"], scored))
     return result
 
 
@@ -47,7 +50,7 @@ def score(weights: dict[str, float], features: dict[str, float]) -> float:
 def accuracy(weights: dict[str, float], data: list[Case]) -> float | None:
     if not data:
         return None
-    return sum(max(scored, key=lambda r: score(weights, scored[r])) == truth for truth, scored in data) / len(data)
+    return sum(max(scored, key=lambda r: score(weights, scored[r]), default=None) == truth for truth, scored in data) / len(data)
 
 
 def fit(data: list[Case]) -> dict[str, float]:
@@ -57,6 +60,8 @@ def fit(data: list[Case]) -> dict[str, float]:
     for _ in range(STEPS):
         gradient = {cue: 2 * PRIOR * (weights[cue] - 1.0) for cue in cues}
         for truth, scored in data:
+            if not scored or truth not in scored:
+                continue
             values = {r: score(weights, f) for r, f in scored.items()}
             top = max(values.values())
             total = sum(math.exp(v - top) for v in values.values())
@@ -75,8 +80,8 @@ def cross_validated(data: list[Case], current: dict[str, float]) -> tuple[float,
         test = [case for index, case in enumerate(data) if index % FOLDS == fold]
         train = [case for index, case in enumerate(data) if index % FOLDS != fold]
         weights = fit(train)
-        fitted_right += sum(max(s, key=lambda r: score(weights, s[r])) == t for t, s in test)
-        current_right += sum(max(s, key=lambda r: score(current, s[r])) == t for t, s in test)
+        fitted_right += sum(max(s, key=lambda r: score(weights, s[r]), default=None) == t for t, s in test)
+        current_right += sum(max(s, key=lambda r: score(current, s[r]), default=None) == t for t, s in test)
     return fitted_right / len(data), current_right / len(data)
 
 
@@ -87,6 +92,30 @@ def _write(path, report: dict) -> None:
     os.replace(temporary, path)
 
 
+def evaluate(store: Store, *, past_only: bool = False) -> dict:
+    """All human-labelled cases, including abstentions and residents absent from the gallery.
+
+    Past-only holds out every capture at or after the query. This is a capture-time replay, not a
+    claim that historical labels had already been entered. Only the display/check gate measures that.
+    """
+    with store.lock:
+        rows = store.conn.execute("""SELECT DISTINCT obligation_id, resident_id FROM person_samples
+            WHERE resident_id IS NOT NULL ORDER BY obligation_id""").fetchall()
+    predictions = []
+    for row in rows:
+        capture = store.sighting_cues(row["obligation_id"])
+        guess, score_value = None, None
+        if capture:
+            cues, context, at = capture
+            guess, score_value, _, _ = store.suggest_identity(cues, at=at, context=context,
+                                                             exclude_obligation=row["obligation_id"], before=at if past_only else None)
+        predictions.append({"id": row["obligation_id"], "truth": row["resident_id"], "guess": guess, "score": score_value})
+    guessed = [r for r in predictions if r["guess"] is not None]
+    correct = sum(r["truth"] == r["guess"] for r in guessed)
+    return {"cases": len(predictions), "guesses": len(guessed), "correct": correct,
+            "abstentions": len(predictions) - len(guessed), "precision": correct / len(guessed) if guessed else None, "rows": predictions}
+
+
 def refit(store: Store) -> dict:
     """Fit, compare on held-out sightings, and adopt the new weights only if they do better.
 
@@ -95,6 +124,7 @@ def refit(store: Store) -> dict:
     data = cases(store)
     current = store.identity_weights()
     report = {"at": stamp(), "cases": len(data), "adopted": False}
+    report["suggestions_past_only"] = {k: v for k, v in evaluate(store, past_only=True).items() if k != "rows"}
     if data:
         # How often the top guess names the right person today, each sighting scored as if new.
         report["accuracy_now"] = round(accuracy(current, data), 3)
@@ -115,17 +145,16 @@ def refit(store: Store) -> dict:
 
 
 def add_faces(store: Store, face_of, clip_face_of=None) -> dict:
-    """Add a face cue to saved sightings that have none, from their saved person crop, then merge in
-    the face from each sighting's put-down clip.
+    """Rebuild from the named body crop. Preserve but never reuse unanchored clip face rows.
 
-    face_of(path) and clip_face_of(path) return an embedding or None. The face joins the sighting's
-    capture (same time and area) and its name, so earlier answers teach faces too. Sightings already
-    holding a face are skipped, and a clip already merged is not merged again.
+    clip_face_of is retained for old callers; whole-visit clips cannot establish who the face belongs to.
     """
     with store.lock:
         rows = store.conn.execute("""SELECT s.obligation_id, s.created_at, s.context, s.evidence_id, s.resident_id, s.hint_resident_id, e.filename
             FROM person_samples s JOIN evidence e ON e.id=s.evidence_id WHERE s.cue='outfit' AND e.expired=0
-            AND NOT EXISTS (SELECT 1 FROM person_samples f WHERE f.obligation_id=s.obligation_id AND f.created_at=s.created_at AND f.cue='face')""").fetchall()
+            AND NOT EXISTS (SELECT 1 FROM person_samples f LEFT JOIN evidence fe ON fe.id=f.evidence_id
+                WHERE f.obligation_id=s.obligation_id AND f.created_at=s.created_at AND f.cue='face'
+                AND coalesce(fe.kind,'')!='clip')""").fetchall()
     added = 0
     for row in rows:
         embedding = face_of(store.root / "media" / row["filename"])
@@ -136,16 +165,6 @@ def add_faces(store: Store, face_of, clip_face_of=None) -> dict:
                 VALUES(?,?,?,?,?,?,'face',?)""", (row["obligation_id"], row["resident_id"], row["hint_resident_id"], row["created_at"],
                                                    json.dumps([round(v, 5) for v in embedding]), row["evidence_id"], row["context"]))
         added += 1
-    clips = 0
-    if clip_face_of is not None:
-        from .inventory import PUT_DOWN_CLIP
-        with store.lock:
-            videos = store.conn.execute("""SELECT e.obligation_id, e.id, e.filename FROM evidence e WHERE e.kind='clip' AND e.label=? AND e.expired=0
-                AND EXISTS (SELECT 1 FROM person_samples s WHERE s.obligation_id=e.obligation_id)
-                AND NOT EXISTS (SELECT 1 FROM person_samples f WHERE f.obligation_id=e.obligation_id AND f.cue='face' AND f.evidence_id=e.id)""", (PUT_DOWN_CLIP,)).fetchall()
-        for video in videos:
-            embedding = clip_face_of(store.root / "media" / video["filename"])
-            clips += embedding is not None and store.merge_sighting_face(video["obligation_id"], embedding, video["id"])
     # Sightings still waiting for a name are re-scored with the new faces.
     refreshed = store.refresh_identity_suggestions()
-    return {"sightings": len(rows), "faces_added": added, "clip_faces_merged": clips, "suggestions_changed": refreshed}
+    return {"sightings": len(rows), "faces_added": added, "clip_faces_merged": 0, "suggestions_changed": refreshed}
