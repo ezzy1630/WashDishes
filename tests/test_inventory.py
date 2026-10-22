@@ -289,6 +289,27 @@ def test_an_outlined_counter_does_not_claim_the_cabinet_doors_below_it():
     assert area_for([0.24, 0.66, 0.02, 0.05], [counter]) is None
 
 
+@pytest.mark.parametrize("already_there", [False, True])
+def test_drying_mat_inside_counter_does_not_open_dirty_record(store, media, monkeypatch, already_there):
+    # The cloth beside the rack overlaps the broad counter zone. Its clean
+    # polygon must win both at startup and after someone places cookware there.
+    mat = {"id": "mat", "name": "Drying cloth", "role": "clean",
+           "box": [0.16, 0.62, 0.14, 0.18],
+           "outline": [[0.16, 0.64], [0.3, 0.62], [0.3, 0.8], [0.16, 0.8]]}
+    monkeypatch.setitem(globals(), "AREAS", [*AREAS, mat])
+    kitchen = Kitchen(store, media)
+    put = kitchen.put("pan", "pan", "counter", dx=0.19, dy=0.17)
+    if already_there:
+        put()
+    kitchen.wait(5)
+    if not already_there:
+        kitchen.visit("counter", change=put)
+    kitchen.wait(45)
+    assert kitchen.items() == []
+    assert any(item["area_id"] == "mat" and item["role"] == "clean"
+               for item in kitchen.inventory.items.values())
+
+
 def test_untouched_dish_keeps_one_item_however_the_detector_names_it(kitchen):
     kitchen.visit("counter", change=kitchen.put("pot", "pot", "counter"))
     kitchen.wait(40)
@@ -501,6 +522,58 @@ def test_lights_turning_on_are_not_dishes(kitchen):
     kitchen.light = 1.0
     kitchen.wait(40)
     assert len(kitchen.items()) == 1
+
+
+@pytest.mark.parametrize('restart', [False, True])
+def test_stationary_dish_keeps_clock_through_long_detector_dropout(kitchen, store, media, restart):
+    kitchen.visit('counter', change=kitchen.put('plate', 'plate', 'counter'))
+    kitchen.wait(40)
+    [record] = kitchen.items()
+    [tracked] = kitchen.inventory.listing()
+    if restart:
+        resumed = Kitchen(store, media)
+        resumed.at, resumed.dishes = kitchen.at, kitchen.dishes
+        kitchen = resumed
+    kitchen.hidden.add('plate')
+    kitchen.light = .65
+    # Many settled rechecks, well beyond both disappearance timeouts.
+    for _ in range(70):
+        kitchen.step(seconds=60)
+    kitchen.hidden.clear()
+    kitchen.wait(65)
+    [after] = kitchen.items()
+    assert (after['id'], after['created_at'], after['due_at']) == (record['id'], record['created_at'], record['due_at'])
+    assert [i['key'] for i in kitchen.inventory.listing()] == [tracked['key']]
+    assert not any(e['event'] in ('dish_picked_up', 'dismiss') for e in store.obligation(after['id'])['events'])
+
+
+def test_background_dish_survives_dropout_but_real_removal_clears(store, media):
+    kitchen = Kitchen(store, media)
+    kitchen.put('cup', 'cup', 'counter')()
+    kitchen.wait(40)
+    [record] = kitchen.items()
+    kitchen.hidden.add('cup')
+    for _ in range(70):
+        kitchen.step(seconds=60)
+    kitchen.hidden.clear()
+    kitchen.wait(65)
+    assert [r['id'] for r in kitchen.items()] == [record['id']]
+    kitchen.visit('counter', change=kitchen.take('cup'))
+    kitchen.wait(5)
+    assert kitchen.inventory.listing() == []
+
+
+def test_long_occlusion_preserves_dish_and_deadline(kitchen):
+    kitchen.visit('counter', change=kitchen.put('cup', 'cup', 'counter'))
+    kitchen.wait(40)
+    [record] = kitchen.items()
+    kitchen.hidden.add('cup')
+    for _ in range(15):
+        kitchen.step([(7, [0, .2, .3, .65])], seconds=60)
+    kitchen.hidden.clear()
+    kitchen.wait(65)
+    [after] = kitchen.items()
+    assert (after['id'], after['due_at']) == (record['id'], record['due_at'])
 
 
 def test_a_camera_pulsing_brightness_every_other_frame_still_lets_the_kitchen_be_still(kitchen):
