@@ -22,7 +22,7 @@ from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
 from .tracing import TraceSearch
-from .vision import merge_detections
+from .vision import box_iou, merge_detections
 
 
 class Runtime:
@@ -374,10 +374,13 @@ class Runtime:
     def _remember_frame(self, observed_at, detections: list[dict], looked: list[dict], areas: list[dict]) -> None:
         """Journal the frame with the closer area looks made for it. The full-room pass misses the small
         and nested dishes those looks exist to catch, and the put-down finder only knows what is here."""
-        # As in the inventory, a detail-model box counts only inside its own area.
-        looked = [d for d in looked if not d.get("detail_area") or d["detail_area"] == (area_for(d["box"], areas) or {}).get("id")]
+        # As in the inventory, a detail-model box counts only inside its own area. The room pass is kept
+        # as it was (the finder was measured on it, overlapping kinds included); looks only add.
+        looked = merge_detections([d for d in looked if not d.get("detail_area")
+                                   or d["detail_area"] == (area_for(d["box"], areas) or {}).get("id")])
+        extra = [d for d in looked if not any(d["kind"] == seen["kind"] and box_iou(d["box"], seen["box"]) >= .5 for seen in detections)]
         try:
-            self.journal.record(observed_at.timestamp(), merge_detections([*detections, *looked]))
+            self.journal.record(observed_at.timestamp(), [*detections, *extra])
         except Exception:
             pass  # History helps find put-downs later; it must never stop live tracking.
 
