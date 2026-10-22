@@ -1,5 +1,7 @@
+import json
 from datetime import timedelta
 
+import pytest
 from test_sequences import jpeg
 
 from wash_dishes.proofs import Proofs
@@ -87,3 +89,122 @@ def test_proof_api_lists_serves_and_rejects(authenticated):
     assert client.post(f"/api/proofs/{item['id']}/reject").status_code == 200
     assert client.get("/api/proofs").json()["items"] == []
     assert client.get(f"/api/proofs/{item['id']}/image").status_code == 404
+
+
+def test_check_rejection_stores_reason_and_never_calls_identity(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    calls = []
+    proofs.run_once(found, identify=lambda *args: calls.append(args), check=lambda *_: "dish already there in the before picture")
+    row = store.conn.execute('SELECT * FROM proofs').fetchone()
+    assert row['status'] == 'untraced'
+    assert json.loads(row['data'])['reason'] == 'dish already there in the before picture'
+    assert calls == [] and proofs.items() == []
+    assert not (proofs.dir / str(item['id'])).exists()
+
+
+def test_selected_picture_and_person_reach_identity_and_collage_metadata(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    candidate = {'at': utcnow().timestamp() - 8000, 'jpeg': jpeg((10, 80, 120)), 'person_box': [.1, .2, .3, .4]}
+    calls = []
+    def identify(*args, person_box=None):
+        calls.append((*args, person_box))
+        return candidate['person_box']
+    proofs.run_once(found, check=lambda *_: {'putting': candidate, 'checks': {'probe': .85}}, identify_selected=identify)
+    assert calls[0][1] == candidate['jpeg'] and calls[0][-1] == candidate['person_box']
+    data = json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])
+    assert data['checks'] == {'probe': .85} and data['person_box'] == candidate['person_box']
+    assert (proofs.dir / str(item['id']) / 'putting.jpg').read_bytes() == candidate['jpeg']
+    assert proofs.image(item['id']).startswith(b'\xff\xd8')
+
+
+def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    now = utcnow()
+    traces, identities, checked = [], [], []
+    def find(*args):
+        traces.append(args)
+        return found(*args)
+    def check(oid, trace, late, box, late_box):
+        checked.append((trace, late))
+        return {'status': 'waiting', 'reason': 'someone is still at the dish', 'checks': {'busy': True}}
+    proofs.run_once(find, identify=lambda *_: identities.append(1), now=now, check=check)
+    assert len(traces) == 1 and identities == [] and proofs.items() == []
+    assert proofs.run_once(find, now=now+timedelta(minutes=6)) is None
+    fresh = jpeg((20, 30, 40))
+    moved = [.5, .6, .1, .1]
+    with store.lock, store.conn:
+        store.conn.execute('UPDATE obligations SET box=? WHERE id=?', (json.dumps(moved), item['id']))
+    media.save_snapshot(item['id'], fresh, LATE, at=now+timedelta(minutes=1), capture={'box': moved})
+    assert proofs.run_once(find, now=now+timedelta(minutes=2)) is None
+    proofs = Proofs(store.root, store, media)
+    def accept(oid, trace, late, box, late_box):
+        assert trace['left']['jpeg'] == checked[0][0]['left']['jpeg']
+        assert late == fresh
+        assert box == BOX and late_box == moved
+        return {'checks': {'busy': False}}
+    proofs.run_once(find, now=now+timedelta(minutes=6), check=accept)
+    assert len(traces) == 1
+    assert len(proofs.items(now+timedelta(minutes=6))) == 1
+    assert (proofs.dir / str(item['id']) / 'late.jpg').read_bytes() == fresh
+
+
+def test_newest_matching_photo_is_checked_even_if_older_one_was_clear(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    newest = jpeg((15, 50, 90))
+    media.save_snapshot(item['id'], newest, LATE, capture={'box': BOX})
+    def check(oid, found, late, box, late_box):
+        assert late == newest
+        return {'status': 'waiting', 'reason': 'someone is still at the dish'}
+    proofs.run_once(found, check=check)
+    assert proofs.items() == []
+
+
+def test_retry_capture_requires_fresh_match_and_saves_only_one_photo(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    now = utcnow()
+    proofs.run_once(found, now=now, check=lambda *_: {'status': 'waiting', 'reason': 'still in use'})
+    at = now+timedelta(minutes=6)
+    current = {'obligation_id': item['id'], 'box': BOX, 'role': 'dirty', 'last_seen_at': stamp(at)}
+    assert proofs.refresh_waiting(jpeg((20, 20, 20)), [current], at) == 0
+    store.record_seen(item['id'], at)
+    assert proofs.refresh_waiting(jpeg((20, 20, 20)), [current | {'last_seen_at': stamp(now)}], at) == 0
+    assert proofs.refresh_waiting(jpeg((20, 20, 20)), [current | {'role': 'clean'}], at) == 0
+    assert proofs.refresh_waiting(jpeg((20, 20, 20)), [current], at) == 1
+    assert proofs.refresh_waiting(jpeg((20, 20, 20)), [current], at) == 0
+    assert proofs.candidate(at)['late_at'] == stamp(at)
+
+
+def test_items_contract_and_batched_identity_basis(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    proofs.run_once(found)
+    calls = []
+    def basis(ids):
+        calls.append(ids)
+        return {item['id']: 'same outfit as earlier'}
+    store.suggestion_basis = basis
+    [shown] = proofs.items()
+    assert calls == [[item['id']]]
+    assert set(shown) == {'id', 'dish', 'location', 'put_down_at', 'late_at', 'resident_id', 'resident_name',
+                          'guess_id', 'guess_name', 'image_url', 'guess_basis'}
+    assert shown['guess_basis'] == 'same outfit as earlier'
+
+
+def test_reject_validates_reason_and_not_a_dish_uses_review_dismissal(store, media):
+    proofs = Proofs(store.root, store, media)
+    item = late_dish(store, media)
+    proofs.run_once(found, check=lambda *_: {'checks': {'left_embedding': [1., 0.]}})
+    with pytest.raises(ValueError):
+        proofs.reject(item['id'], 'anything')
+    proofs.reject(item['id'], 'not_a_dish')
+    record = store.obligation(item['id'])
+    assert record['lifecycle'] == 'dismissed' and record['reason'] == 'Not a dish'
+    event = store.conn.execute("SELECT data FROM events WHERE event='dismiss' AND obligation_id=?", (item['id'],)).fetchone()
+    assert json.loads(event[0])['note'] == 'Not a dish'
+    with pytest.raises(LookupError):
+        proofs.reject(item['id'])
