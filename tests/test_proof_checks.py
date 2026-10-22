@@ -90,6 +90,22 @@ def test_clean_mat_excludes_dish_but_dirty_surface_does_not(checker):
     assert isinstance(run(check), dict)
 
 
+def test_a_pan_is_proof_only_where_it_was_put_on_to_cook(checker):
+    check, _, _ = checker
+    sink = {"id": "sink", "name": "Sink basins", "role": "sink", "box": [.3, .3, .4, .4]}
+    stove = {"id": "stove", "name": "Stovetop", "role": "dirty", "box": [.3, .3, .4, .4]}
+    check.negatives = lambda _: {"label": "soda can", "margin": -.1, "looks_like": "frying pan"}
+    check.drying_areas = lambda: [sink]
+    assert "moved there after cooking" in run(check)
+    # Already there at this moment: the search must go on for its real arrival.
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": LEFT}}) == "dish already there in the before picture"
+    check.drying_areas = lambda: [stove]
+    assert isinstance(run(check), dict)
+    check.negatives = lambda _: {"label": "soda can", "margin": -.1, "looks_like": "bowl"}
+    check.drying_areas = lambda: [sink]
+    assert isinstance(run(check), dict)
+
+
 def test_drying_area_outline_does_not_exclude_neighboring_sink(checker):
     check, _, _ = checker
     area = {"id": "mat", "role": "clean", "box": [.3, .3, .5, .5],
