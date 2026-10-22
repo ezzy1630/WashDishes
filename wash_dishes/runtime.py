@@ -22,6 +22,7 @@ from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
 from .tracing import TraceSearch
+from .vision import merge_detections
 
 
 class Runtime:
@@ -331,21 +332,23 @@ class Runtime:
                     self.reset_observations()
                     continue
                 try:
-                    self.journal.record(observed_at.timestamp(), analysis["detections"])
-                except Exception:
-                    pass  # History helps find put-downs later; it must never stop live tracking.
-                try:
                     self._align(frame[0], sum(d["kind"] == "person" for d in analysis["detections"]))
                 except Exception:
                     pass
                 areas = self.areas(current)
+                looked: list[dict] = []  # closer looks at areas made for this frame
+
+                def detect_area(area: dict, detect=getattr(engine, "detect_area", lambda area: [])) -> list[dict]:
+                    found = detect(area)
+                    looked.extend(found)
+                    return found
                 try:
                     with self.lock:
                         # Zones cannot be trusted on a different view; watch, but open nothing new.
                         if self.alignment.settled:
                             self.inventory.process(analysis, getattr(engine, "last_image", None), frame[0], areas, frame[1], observed_at,
-                                                   getattr(engine, "detect_area", lambda area: []))
-                            self._kitchen_check(engine, frame[0], analysis, areas, observed_at)
+                                                   detect_area)
+                            self._kitchen_check(engine, frame[0], analysis, areas, observed_at, detect_area)
                         inventory = self.inventory.listing()
                         if self.alignment.settled:
                             try:
@@ -358,6 +361,8 @@ class Runtime:
                 except Exception:
                     self.vision_message = "An observation could not be saved. Check data storage; manual review remains available."
                     continue
+                finally:
+                    self._remember_frame(observed_at, analysis["detections"], looked, areas)
                 analysis["latency_ms"] = round((time.monotonic() - analyzed) * 1000)
                 self.publish_live(frame[0], frame[1], frame[2], analysis, areas, inventory)
                 try:
@@ -366,7 +371,17 @@ class Runtime:
                 except OSError:
                     pass
 
-    def _kitchen_check(self, engine, jpeg: bytes, analysis: dict, areas: list[dict], observed_at) -> None:
+    def _remember_frame(self, observed_at, detections: list[dict], looked: list[dict], areas: list[dict]) -> None:
+        """Journal the frame with the closer area looks made for it. The full-room pass misses the small
+        and nested dishes those looks exist to catch, and the put-down finder only knows what is here."""
+        # As in the inventory, a detail-model box counts only inside its own area.
+        looked = [d for d in looked if not d.get("detail_area") or d["detail_area"] == (area_for(d["box"], areas) or {}).get("id")]
+        try:
+            self.journal.record(observed_at.timestamp(), merge_detections([*detections, *looked]))
+        except Exception:
+            pass  # History helps find put-downs later; it must never stop live tracking.
+
+    def _kitchen_check(self, engine, jpeg: bytes, analysis: dict, areas: list[dict], observed_at, detect_area) -> None:
         """Run a due kitchen check once every area has been still, with nobody in it, for a minute."""
         now = time.monotonic()
         if now < self.next_check_look:
@@ -389,7 +404,7 @@ class Runtime:
         if present:
             self.check_waits["person at " + ",".join(present)] += 1
             return
-        checks.run(self.store, self.media, self.dataset, slot, observed_at, engine.last_image, jpeg, areas, engine.detect_area,
+        checks.run(self.store, self.media, self.dataset, slot, observed_at, engine.last_image, jpeg, areas, detect_area,
                    self.inventory.listing(), self.inventory.verify)
 
     def publish_live(self, jpeg: bytes, generation: str, frame_at: str, analysis: dict, areas: list[dict], inventory: list[dict]) -> None:
