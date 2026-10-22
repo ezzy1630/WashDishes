@@ -568,7 +568,9 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
         # Give the short handling sequence room to finish. A single clear instant
         # under a moving hand is not the best view of the dish left behind.
         left = next((s for s in states if s[0] >= settled_at + 3 and not s[4]
-                     and distances[s[0]] <= threshold), left)
+                     and distances[s[0]] <= threshold), None)
+        if left is None:
+            return "the footage has no clear view after the handling finished"
         # Stay outside the handling seconds: a different vessel held over the
         # spot can fool both a negative journal frame and the later crop check.
         clear_before = [s for s in states if s[0] <= settled_at - 5 and not s[2] and not s[4]]
