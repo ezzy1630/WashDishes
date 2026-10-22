@@ -23,18 +23,22 @@ LATE_LABEL = "Matching dish still visible after the deadline%"
 STILL_OUT = timedelta(minutes=30)    # unseen this long means it was taken away
 FOOTAGE = timedelta(hours=20)        # the recording keeps 24 h; older put-downs are gone
 KEEP = timedelta(days=7)
+RETRY = timedelta(minutes=5)
 
 
 class Proofs:
-    def __init__(self, root: Path, store: Store, media):
+    def __init__(self, root: Path, store: Store, media, check: Callable | None = None):
         self.dir = Path(root) / "proofs"
         self.store, self.media = store, media
         self.lock = threading.Lock()
+        self.check = check
         with store.lock, store.conn:
-            # One row per dish ever considered, so nothing is traced twice. status: ready (shown while
-            # the dish is out), untraced (footage shows no put-down), rejected (marked wrong by a person).
+            # Waiting retains its trace while a newer late photo is requested. Terminal failures
+            # stay recorded so a bad sequence is not traced repeatedly.
             store.conn.execute("""CREATE TABLE IF NOT EXISTS proofs(obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
                 status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}')""")
+            store.conn.execute("""CREATE TABLE IF NOT EXISTS proof_rejections(obligation_id INTEGER PRIMARY KEY,
+                reason TEXT NOT NULL, created_at TEXT NOT NULL, location TEXT, box TEXT NOT NULL, embedding TEXT NOT NULL)""")
 
     # Dishes still out after their deadline with a late photo and no proof attempt yet. Dishes the camera
     # only found already sitting there (timing_known=0, e.g. after a restart) are included: finding their
@@ -42,16 +46,18 @@ class Proofs:
     WAITING = """FROM obligations o JOIN evidence e ON e.obligation_id=o.id AND e.kind='snapshot' AND e.expired=0 AND e.label LIKE ? AND e.created_at>=o.due_at
         WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.box IS NOT NULL AND o.due_at<=?
           AND o.created_at>=? AND coalesce(o.last_seen_at,o.created_at)>=?
-          AND NOT EXISTS (SELECT 1 FROM proofs p WHERE p.obligation_id=o.id)"""
+          AND NOT EXISTS (SELECT 1 FROM proofs p WHERE p.obligation_id=o.id AND
+              (p.status!='waiting' OR json_extract(p.data,'$.retry_at')>?
+               OR json_extract(p.data,'$.late_at')>=unixepoch(e.created_at)))"""
 
     def _waiting_args(self, now: datetime) -> tuple:
-        return LATE_LABEL, stamp(now), stamp(now - FOOTAGE), stamp(now - STILL_OUT)
+        return LATE_LABEL, stamp(now), stamp(now - FOOTAGE), stamp(now - STILL_OUT), stamp(now)
 
     def candidate(self, now: datetime | None = None) -> dict | None:
         now = now or utcnow()
         with self.store.lock:
             row = self.store.conn.execute(f"""SELECT o.id, o.created_at, o.box, e.id late_id, e.filename late_file, e.created_at late_at, e.capture late_capture
-                {self.WAITING} ORDER BY o.created_at, e.created_at LIMIT 1""", self._waiting_args(now)).fetchone()
+                {self.WAITING} ORDER BY o.created_at, o.id, e.created_at DESC, e.id DESC LIMIT 1""", self._waiting_args(now)).fetchone()
         return dict(row) if row else None
 
     def progress(self, now: datetime | None = None) -> dict:
@@ -63,38 +69,109 @@ class Proofs:
                 AND due_at>? AND coalesce(last_seen_at,created_at)>=?""", (stamp(now), stamp(now - STILL_OUT))).fetchone()[0]
         return {"checking": checking, "upcoming": upcoming}
 
+    def refresh_waiting(self, jpeg: bytes, inventory: list[dict], at: datetime) -> int:
+        """Call after live inventory.process. Only a match from THIS observation can be a late photo.
+
+        Ordinary deadline capture happens once. A waiting proof needs another matched observation,
+        not an arbitrary camera snapshot or a cached inventory entry. One new photo per retry is enough.
+        """
+        observed = stamp(at)
+        with self.store.lock:
+            due = {r["obligation_id"] for r in self.store.conn.execute("""SELECT p.obligation_id FROM proofs p
+                JOIN obligations o ON o.id=p.obligation_id
+                WHERE p.status='waiting' AND json_extract(p.data,'$.retry_at')<=?
+                  AND o.lifecycle='open' AND o.archived_at IS NULL AND o.last_seen_at=? AND o.due_at<=?
+                  AND NOT EXISTS(SELECT 1 FROM evidence e WHERE e.obligation_id=o.id AND e.expired=0
+                    AND e.kind='snapshot' AND e.label LIKE ? AND unixepoch(e.created_at)>json_extract(p.data,'$.late_at'))""",
+                (observed, observed, observed, LATE_LABEL))}
+        captured = 0
+        for item in inventory:
+            oid = item.get("obligation_id")
+            if (oid not in due or item.get("last_seen_at") != observed or item.get("ignored")
+                    or item.get("unseen_since") or item.get("role") not in ("dirty", "sink") or not item.get("box")):
+                continue
+            self.media.save_snapshot(oid, jpeg, "Matching dish still visible after the deadline; proof retry", at=at,
+                                     capture={"stage": "later", "box": item["box"], "box_kind": "candidate_item"})
+            due.remove(oid)
+            captured += 1
+        return captured
+
     def _save(self, obligation_id: int, status: str, data: dict) -> None:
         with self.store.lock, self.store.conn:
             self.store.conn.execute("INSERT OR REPLACE INTO proofs(obligation_id,status,created_at,data) VALUES(?,?,?,?)",
                                     (obligation_id, status, stamp(), json.dumps(data)))
 
-    def run_once(self, find: Callable, identify: Callable | None = None, now: datetime | None = None) -> int | None:
+    def run_once(self, find: Callable, identify: Callable | None = None, now: datetime | None = None,
+                 *, check: Callable | None = None, identify_selected: Callable | None = None) -> int | None:
         """Trace the oldest waiting dish. `find(box, logged, until)` is putdown.find_putdown bound to the
         recording; `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
-        returns their box, or None when no person is near the dish (then it is not proof of anyone)."""
+        returns their box, or None when no person is near the dish (then it is not proof of anyone).
+        `identify_selected` receives the checker's person_box keyword AFTER the checked
+        proof is saved, so immutable identity predictions can read its readiness. Waiting
+        retains the trace and needs both the retry interval and a newer matching late photo."""
+        now = now or utcnow()
+        if check is not None:
+            self.check = check
         item = self.candidate(now)
         if item is None:
             return None
         oid, box = item["id"], json.loads(item["box"])
         late_at = parse_stamp(item["late_at"]).timestamp()
-        found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
+        folder = self.dir / str(oid)
+        with self.store.lock:
+            previous = self.store.conn.execute("SELECT data FROM proofs WHERE obligation_id=? AND status='waiting'", (oid,)).fetchone()
+        found = None
+        if previous:
+            saved = json.loads(previous["data"])
+            try:
+                found = {k: {"at": saved[f"{k}_at"], "jpeg": (folder / f"{k}.jpg").read_bytes()}
+                         for k in ("before", "putting", "left")}
+                # Inventory may have moved the same obligation meanwhile. Its old pictures
+                # still use the original box; only the fresh late photo uses the new one.
+                box = saved["box"]
+            except (OSError, KeyError):
+                found = None
+        if found is None:
+            found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
         if not isinstance(found, dict):
             self._save(oid, "untraced", {"reason": found or "no put-down found"})
             return oid
-        person_box = None
-        if identify is not None:
-            person_box = identify(oid, found["putting"]["jpeg"], box, datetime.fromtimestamp(found["putting"]["at"], utc.utc))
-            if person_box is None:
+        late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
+        late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
+        checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
+        if isinstance(checked, str):
+            self._save(oid, "untraced", {"reason": checked})
+            shutil.rmtree(folder, ignore_errors=True)
+            return oid
+        found = found | {k: checked[k] for k in ("before", "putting", "left") if k in checked}
+        waiting = checked.get("status") == "waiting"
+        person_box = found["putting"].get("person_box")
+        args = (oid, found["putting"]["jpeg"], box, datetime.fromtimestamp(found["putting"]["at"], utc.utc))
+        if identify is not None and identify_selected is None and not waiting:
+            identified = identify(*args)
+            if identified is None:
                 self._save(oid, "untraced", {"reason": "nobody near the dish in the put-down picture"})
                 return oid
-        folder = self.dir / str(oid)
+            person_box = person_box or identified
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         for key in ("before", "putting", "left"):
             (folder / f"{key}.jpg").write_bytes(found[key]["jpeg"])
-        shutil.copyfile(self.media.safe_path(item["late_file"]), folder / "late.jpg")
-        late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
-        self._save(oid, "ready", {"box": box, "person_box": person_box, "late_box": late_box,
-                                  **{f"{k}_at": found[k]["at"] for k in ("before", "putting", "left")}, "late_at": late_at})
+        (folder / "late.jpg").write_bytes(late_jpeg)
+        data = {"box": box, "person_box": person_box, "late_box": late_box, "checks": checked.get("checks", {}),
+                **{f"{k}_at": found[k]["at"] for k in ("before", "putting", "left")}, "late_at": late_at}
+        if waiting:
+            data.update(reason=checked["reason"], retry_at=stamp(now + RETRY))
+        self._save(oid, "waiting" if waiting else "ready", data)
+        if identify_selected is not None and not waiting:
+            # Identity is optional to a checked proof. If describing someone fails, keep the
+            # valid unnamed pictures; the prediction must observe their actual ready state.
+            identified = identify_selected(*args, person_box=person_box)
+            if identified is None:
+                self._save(oid, "untraced", {"reason": "nobody near the dish in the put-down picture"})
+                shutil.rmtree(folder, ignore_errors=True)
+            elif person_box is None:
+                data["person_box"] = identified
+                self._save(oid, "ready", data)
         return oid
 
     def items(self, now: datetime | None = None) -> list[dict]:
@@ -108,6 +185,7 @@ class Proofs:
                 WHERE p.status='ready' AND o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?""",
                 (stamp(now - STILL_OUT),)).fetchall()
         out = []
+        basis = self.store.suggestion_basis([r["id"] for r in rows]) if hasattr(self.store, "suggestion_basis") else {}
         for row in rows:
             data = json.loads(row["data"])
             named = row["confidence"] == "confirmed" and row["resident_id"] is not None
@@ -116,6 +194,7 @@ class Proofs:
                         "late_at": stamp(datetime.fromtimestamp(data["late_at"], utc.utc)),
                         "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
                         "guess_id": row["suggested_resident_id"], "guess_name": row["guess_name"],
+                        "guess_basis": basis.get(row["id"]),
                         "image_url": f"/api/proofs/{row['id']}/image?v={row['resident_id'] if named else 0}"})
         return sorted(out, key=lambda p: p["put_down_at"], reverse=True)
 
@@ -136,10 +215,29 @@ class Proofs:
                 tmp.replace(cached)
             return cached.read_bytes()
 
-    def reject(self, obligation_id: int) -> None:
+    def reject(self, obligation_id: int, reason: str = "wrong_photos") -> None:
+        if reason not in {"not_a_dish", "wrong_photos"}:
+            raise ValueError("Choose not_a_dish or wrong_photos.")
         with self.store.lock, self.store.conn:
-            if not self.store.conn.execute("UPDATE proofs SET status='rejected' WHERE obligation_id=? AND status='ready'", (obligation_id,)).rowcount:
+            row = self.store.conn.execute("""SELECT p.data,o.location FROM proofs p JOIN obligations o ON o.id=p.obligation_id
+                WHERE p.obligation_id=? AND p.status='ready'""", (obligation_id,)).fetchone()
+            if row is None:
                 raise LookupError("No proof for this dish.")
+            data = json.loads(row["data"])
+        embedding = data.get("checks", {}).get("left_embedding")
+        if embedding is None and self.check is not None and hasattr(self.check, "embedding"):
+            embedding = self.check.embedding((self.dir / str(obligation_id) / "left.jpg").read_bytes(), data["box"])
+        now = utcnow()
+        with self.store.lock, self.store.conn:
+            data.update(reason=reason, rejected_at=stamp(now))
+            if not self.store.conn.execute("UPDATE proofs SET status='rejected',data=? WHERE obligation_id=? AND status='ready'",
+                                           (json.dumps(data), obligation_id)).rowcount:
+                raise LookupError("No proof for this dish.")
+            if embedding is not None:
+                self.store.conn.execute("INSERT OR REPLACE INTO proof_rejections VALUES(?,?,?,?,?,?)",
+                                        (obligation_id, reason, stamp(now), row["location"], json.dumps(data["box"]), json.dumps(embedding)))
+            if reason == "not_a_dish":
+                self.store._action_locked(obligation_id, "dismiss", note="Not a dish", now=now)
         shutil.rmtree(self.dir / str(obligation_id), ignore_errors=True)
 
     def cleanup(self, now: datetime | None = None) -> None:
