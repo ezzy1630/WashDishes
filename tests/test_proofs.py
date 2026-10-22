@@ -144,7 +144,7 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     traces, identities, checked = [], [], []
     def find(*args):
         traces.append(args)
-        return found(*args)
+        return found(*args) | {'method': 'journal', 'putting_action': 'left it behind'}
     def check(oid, trace, late, box, late_box):
         checked.append((trace, late))
         return {'status': 'waiting', 'reason': 'someone is still at the dish', 'checks': {'busy': True}}
@@ -167,6 +167,8 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     assert len(traces) == 1
     assert len(proofs.items(now+timedelta(minutes=6))) == 1
     assert (proofs.dir / str(item['id']) / 'late.jpg').read_bytes() == fresh
+    saved = json.loads(store.conn.execute('SELECT data FROM proofs WHERE obligation_id=?', (item['id'],)).fetchone()[0])
+    assert saved['method'] == 'journal' and saved['left_behind'] is True  # the caption survives the retry
 
 
 def test_newest_matching_photo_is_checked_even_if_older_one_was_clear(store, media):

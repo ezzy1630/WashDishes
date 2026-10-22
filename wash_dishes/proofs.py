@@ -120,7 +120,7 @@ class Proofs:
         folder = self.dir / str(oid)
         with self.store.lock:
             previous = self.store.conn.execute("SELECT data FROM proofs WHERE obligation_id=? AND status='waiting'", (oid,)).fetchone()
-        found = None
+        found, trace = None, {}
         if previous:
             saved = json.loads(previous["data"])
             try:
@@ -129,10 +129,15 @@ class Proofs:
                 # Inventory may have moved the same obligation meanwhile. Its old pictures
                 # still use the original box; only the fresh late photo uses the new one.
                 box = saved["box"]
+                trace = {k: saved[k] for k in ("method", "left_behind") if k in saved}
             except (OSError, KeyError):
                 found = None
         if found is None:
             found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at)
+            if isinstance(found, dict):
+                # A dish that appeared while someone stood over it for a long time was not seen
+                # being put down; the picture says they left it rather than claiming the moment.
+                trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
         if not isinstance(found, dict):
             self._save(oid, "untraced", {"reason": found or "no put-down found"})
             return oid
@@ -158,7 +163,7 @@ class Proofs:
             (folder / f"{key}.jpg").write_bytes(found[key]["jpeg"])
         (folder / "late.jpg").write_bytes(late_jpeg)
         data = {"box": box, "person_box": person_box, "late_box": late_box, "checks": checked.get("checks", {}),
-                **{f"{k}_at": found[k]["at"] for k in ("before", "putting", "left")}, "late_at": late_at}
+                **{f"{k}_at": found[k]["at"] for k in ("before", "putting", "left")}, "late_at": late_at, **trace}
         if waiting:
             data.update(reason=checked["reason"], retry_at=stamp(now + RETRY))
         self._save(oid, "waiting" if waiting else "ready", data)
