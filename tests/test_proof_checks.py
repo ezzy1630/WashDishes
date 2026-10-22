@@ -95,6 +95,15 @@ def test_before_dish_vetoes_unless_the_spot_changed_a_lot(checker):
     assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}}) == "dish already there in the before picture"
 
 
+def test_a_pan_held_over_the_spot_is_not_a_clear_before(checker):
+    # Held over a bowl already there, the pan changes the spot as much as a new arrival does.
+    check, detections, _ = checker
+    detections[BEFORE] = [{"kind": "pot", "box": BOX}, {"kind": "person", "box": PERSON}]
+    assert run(check) == "someone is handling something over the spot in the before picture"
+    detections[BEFORE] = [{"kind": "person", "box": PERSON}]
+    assert isinstance(run(check), dict)
+
+
 def test_large_before_dish_cannot_hide_an_empty_spot_behind_low_iou(checker):
     check, detections, _ = checker
     detections[SHADED] = [{"kind": "pan", "box": [.2, .2, .6, .6]}]

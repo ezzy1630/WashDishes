@@ -43,6 +43,9 @@ class Thresholds:
     # crop in Before (#917 cosine .86, #945 overlap .48), so those alone cannot veto: the spot
     # must also have changed little. Proofs vetoed only by Before reached change .307; those
     # sink arrivals changed .575-.68. Cooking/different-dish proofs reached cosine .906.
+    # A pan held over a bowl already there also changes the spot a lot (#901 at 13:55: .96),
+    # so the big change only counts with nobody within reach: that person was .021 away, the
+    # people in #945 and #917's genuine Before frames .37 and .19.
     stacked_change: float = 0.45
     before_same: float = 0.90
     # Existing labeled-box matching uses .30; live attribution uses .10 reach. Inspected
@@ -199,11 +202,14 @@ class ProofChecker:
         before_cosine = float(vectors[0] @ vectors[1])
         blocked_before = any(_coverage(box, _body(d["box"])) >= self.thresholds.body_cover
                              for d in before_detections if d["kind"] == "person")
-        checks["before"] = {"overlap": overlap, "change": change, "cosine": before_cosine, "blocked": blocked_before}
+        handled = any(_reach(box, d["box"]) <= self.thresholds.reach for d in before_detections if d["kind"] == "person")
+        checks["before"] = {"overlap": overlap, "change": change, "cosine": before_cosine, "blocked": blocked_before, "handled": handled}
         occupied = overlap >= self.thresholds.overlap or before_cosine >= self.thresholds.before_cosine
         if (change < self.thresholds.before_change or before_cosine >= self.thresholds.before_same
                 or (occupied and change < self.thresholds.stacked_change)):
             reasons.append("dish already there in the before picture")
+        elif occupied and handled:
+            reasons.append("someone is handling something over the spot in the before picture")
         elif blocked_before:
             reasons.append("the spot is hidden in the before picture")
 
