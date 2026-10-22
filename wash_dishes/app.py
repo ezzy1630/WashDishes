@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import inspect
 import json
 import os
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import checks, demo
+from . import checks, demo, ledger
 from .config import Config, camera_url
 from .incidents import ReviewConflict
 from .media import Media
@@ -58,6 +59,10 @@ class ResidentPatch(BaseModel):
 
 class Dispute(BaseModel):
     note: str = Field(min_length=1, max_length=1000)
+
+
+class ProofReject(BaseModel):
+    reason: Literal["not_a_dish", "wrong_photos"] | None = None
 
 
 class CameraSettings(BaseModel):
@@ -313,23 +318,44 @@ def create_app(config: Config | None = None) -> FastAPI:
         return Response(image, media_type='image/jpeg', headers={
             'Content-Disposition': f'attachment; filename="dish-{obligation_id}.jpg"', 'Cache-Control': 'no-store'})
 
+    # ---- Send (home) and People: proof pictures, and who has been named on them.
     @app.get("/api/proofs", dependencies=[Depends(authenticated)])
     def proofs():
         # The home page reads only this, so it stays small and fast whatever else the dashboard holds.
         learning = store.learning()
-        return {"items": runtime.proofs.items(), **runtime.proofs.progress(), "people": [{"id": r["id"], "name": r["name"]} for r in store.residents() if r["active"]],
+        # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
+        items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
+        return {"items": items, **runtime.proofs.progress(), "people": ledger.tally(store),
                 "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
 
     @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])
     def proof_image(obligation_id: int):
-        # The URL changes when the name on the picture does, so a cached copy is never stale.
-        return Response(runtime.proofs.image(obligation_id), media_type="image/jpeg", headers={
+        # Served while the photos are kept, so a named proof stays on its person's page after the dish
+        # is gone. The URL changes with the name and the design, so a cached copy is never stale.
+        return Response(ledger.picture(store, obligation_id), media_type="image/jpeg", headers={
             "Content-Disposition": f'inline; filename="dish-{obligation_id}.jpg"', "Cache-Control": "private, max-age=604800"})
 
     @app.post("/api/proofs/{obligation_id}/reject", dependencies=[Depends(authenticated)])
-    def proof_reject(obligation_id: int):
-        runtime.proofs.reject(obligation_id)
+    def proof_reject(obligation_id: int, body: ProofReject | None = None):
+        reason = body.reason if body else None
+        reject = runtime.proofs.reject
+        # Proofs.reject keeps the reason once it accepts one; the older version takes only the dish.
+        if reason and "reason" in inspect.signature(reject).parameters:
+            reject(obligation_id, reason)
+        else:
+            reject(obligation_id)
+        if reason == "not_a_dish":
+            # As anywhere else, "Not a dish" closes the record and teaches the detector.
+            learn_from_review(store.action(obligation_id, "dismiss", note="Not a dish"), "dismiss", "Not a dish")
         return {"ok": True}
+
+    @app.get("/api/people", dependencies=[Depends(authenticated)])
+    def people():
+        return {"people": ledger.tally(store)}
+
+    @app.get("/api/people/{resident_id}", dependencies=[Depends(authenticated)])
+    def person(resident_id: int):
+        return ledger.person(store, resident_id)
 
     @app.get("/api/sequences/{obligation_id}/image", dependencies=[Depends(authenticated)])
     def sequence_image(obligation_id: int):
