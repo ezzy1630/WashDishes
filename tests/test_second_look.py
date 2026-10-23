@@ -5,7 +5,15 @@ import numpy as np
 import pytest
 
 from wash_dishes.store import CANT_TELL_NOTE, UNCLAIMED_NOTE, utcnow
-from wash_dishes.verifier import MIN_EXAMPLES, examples, train
+from wash_dishes.verifier import (
+    KITCHEN_PROBE_NAME,
+    MIN_EXAMPLES,
+    PROBE_NAME,
+    DishVerifier,
+    examples,
+    refit_kitchen,
+    train,
+)
 
 pytest.importorskip("cv2")
 from test_inventory import Kitchen  # noqa: E402
@@ -99,3 +107,27 @@ def test_explicit_not_dish_review_teaches_only_its_box_and_respects_holdout(stor
         return np.zeros((100, 100, 3), np.uint8), [{'kind': 'cup', 'box': [.1, .1, .1, .1]}]
     _, y = examples(root, store, detect, lambda crops: np.zeros((len(crops), 4)))
     assert list(y) == ([] if holdout else [0])
+
+
+def test_the_kitchen_probe_learns_from_judged_detections_alone_and_is_stricter_for_pictures(store):
+    X, y = separable(400, np.random.default_rng(5))
+    for vector, label in zip(X, y):
+        store.label_dish_sample(store.add_dish_sample(vector.tolist(), None), bool(label))
+    result = refit_kitchen(store.root, store)
+    assert result["adopted"], result
+    saved = json.loads((store.root / "models" / KITCHEN_PROBE_NAME).read_text())
+    assert saved["proof_threshold"] > saved["threshold"] and saved["examples"] == {"dish": int(y.sum()), "not_dish": int(len(y) - y.sum())}
+
+
+def test_the_kitchen_probe_only_narrows_what_the_general_probe_accepts(tmp_path):
+    (tmp_path / "models").mkdir()
+    def save(name, weights, threshold, proof=None):
+        (tmp_path / "models" / name).write_text(json.dumps({"weights": weights, "bias": 0.0, "threshold": threshold, "proof_threshold": proof or threshold}))
+    save(PROBE_NAME, [1.0, 0.0], 0.5)
+    verifier = DishVerifier(tmp_path, embedder=lambda crops: None)
+    dish, bottle = np.array([2.0, 2.0]), np.array([2.0, -2.0])
+    assert verifier.score(dish)[1] and verifier.score(bottle)[1] and verifier.proof(dish) is None
+    save(KITCHEN_PROBE_NAME, [0.0, 1.0], 0.5, proof=0.95)
+    assert verifier.score(dish)[1] and not verifier.score(bottle)[1]
+    # 0.88 clears the kitchen probe's counter bar but not its bar for a picture.
+    assert not verifier.proof(dish) and verifier.proof(dish * 2)

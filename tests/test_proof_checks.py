@@ -36,6 +36,7 @@ class Verifier:
     def __init__(self):
         self.vectors = np.array([[0., 1.], [1., 0.], [1., 0.]])
         self.scored = (.9, True)
+        self.sure = None
 
     def embed(self, crops):
         return self.vectors
@@ -45,6 +46,9 @@ class Verifier:
 
     def score(self, vector):
         return self.scored
+
+    def proof(self, vector):
+        return self.sure
 
 
 @pytest.fixture
@@ -73,6 +77,14 @@ def test_dish_probe_rejection_and_unavailable_probe_do_not_pass(checker, score):
     check, _, verifier = checker
     verifier.scored = score
     assert isinstance(run(check), str)
+
+
+@pytest.mark.parametrize("sure, passes", [(None, True), (True, True), (False, False)])
+def test_a_picture_needs_the_kitchen_probe_sure_it_is_a_dish(checker, sure, passes):
+    check, _, verifier = checker
+    verifier.sure = sure
+    result = run(check)
+    assert isinstance(result, dict) if passes else result == "not sure enough that it is a dish to show it"
 
 
 def test_zero_shot_negative_can_veto_probe(checker):

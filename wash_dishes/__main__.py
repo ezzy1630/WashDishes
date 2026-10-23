@@ -46,8 +46,9 @@ def main() -> None:
     sub.add_parser("rollback-detector", help="Go back to the kitchen detector in use before the last adoption")
     sub.add_parser("fit-identity", help="Relearn identity cue weights from confirmed names; adopted only if more accurate")
     sub.add_parser("add-faces", help="Add face cues to saved sightings from their person crops and put-down clips")
-    verifier = sub.add_parser("train-verifier", help="Retrain the second look at new dishes from every label; adopted only if it holds up")
+    verifier = sub.add_parser("train-verifier", help="Retrain the kitchen probe from people's answers about detections; adopted only if it holds up")
     verifier.add_argument("--holdout", action="append", default=[], metavar="TRUTH_JSON", help="Keep this evaluation window's frames out of training")
+    verifier.add_argument("--frames", action="store_true", help="Retrain the general probe over the labeled frames instead (loads the detector and CLIP: stop live analysis first)")
     args = parser.parse_args()
     config = Config.environment(demo=getattr(args, "demo", False))
     config.prepare()
@@ -133,13 +134,18 @@ def main() -> None:
         from datetime import datetime
         from pathlib import Path
 
-        from .config import monitoring_areas
-        from .inventory import START_SCORE
         from .store import Store
-        from .verifier import Embedder, refit
-        from .vision import LocalVision
+        from .verifier import refit_kitchen
         store = Store(config.root)
+        windows = [(datetime.fromisoformat(t["from"]), datetime.fromisoformat(t["to"])) for t in (json.loads(Path(p).read_text()) for p in args.holdout)]
         try:
+            if not args.frames:
+                print(json.dumps(refit_kitchen(config.root, store, holdout=windows), indent=1))
+                return
+            from .config import monitoring_areas
+            from .inventory import START_SCORE
+            from .verifier import Embedder, refit
+            from .vision import LocalVision
             areas = monitoring_areas(store.settings())
             region = [min(a["box"][0] for a in areas), min(a["box"][1] for a in areas)]
             region += [max(a["box"][0] + a["box"][2] for a in areas) - region[0], max(a["box"][1] + a["box"][3] for a in areas) - region[1]]
@@ -149,7 +155,6 @@ def main() -> None:
                 # The same per-area pass as live analysis, so its mistakes are the ones to learn.
                 vision.analyze(jpeg)
                 return vision.last_image, [d for d in vision.detect_region(region) if d["score"] >= START_SCORE]
-            windows = [(datetime.fromisoformat(t["from"]), datetime.fromisoformat(t["to"])) for t in (json.loads(Path(p).read_text()) for p in args.holdout)]
             print(json.dumps(refit(config.root, store, detect, Embedder(config.root), holdout=windows), indent=1))
         finally:
             store.close()

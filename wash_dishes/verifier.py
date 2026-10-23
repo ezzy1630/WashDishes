@@ -24,8 +24,18 @@ from .store import Store, stamp
 
 CLIP_NAME = "clip-vit-b32-laion2b.safetensors"
 PROBE_NAME = "dish-probe.json"
+# A second probe learns only from the camera's own detections that people judged: the bottles, tubs
+# and canisters this kitchen's detector keeps calling cups. The general probe passed all 176 such
+# mistakes in the 2026-10-22 labels; this one, scored a day at a time on days it never saw, ranked
+# a dish above a mistake 85% of the time. It only ever narrows what the general probe accepts.
+KITCHEN_PROBE_NAME = "dish-probe-kitchen.json"
+# Its samples are few and alike, so it needs less regularisation (day-out AUC .854 vs .833 at 3e-3).
+KITCHEN_L2 = 1e-3
 # The threshold keeps this share of real dishes in held-out checks; the rest of the trade is precision.
 KEEP_DISHES = 0.95
+# A proof picture is where a wrong dish costs most, so it must clear a stricter bar: keeping 80% of
+# real dishes dropped 74% of the mistakes, against 44% at 95%.
+KEEP_PROOF = 0.80
 # Below these, a probe's held-out numbers are too noisy to trust over having none.
 MIN_EXAMPLES = 60
 MIN_AUC = 0.7
@@ -108,7 +118,7 @@ def auc(scores: np.ndarray, y: np.ndarray) -> float:
     return float((ranks[y == 1].sum() - positives * (positives + 1) / 2) / (positives * negatives))
 
 
-def train(X: np.ndarray, y: np.ndarray) -> dict | None:
+def train(X: np.ndarray, y: np.ndarray, *, l2: float = 3e-3) -> dict | None:
     """A probe with its held-out quality, or None when the labels can't support one yet.
 
     Folds are contiguous in time order, so frames from the same minute don't score each other.
@@ -121,15 +131,16 @@ def train(X: np.ndarray, y: np.ndarray) -> dict | None:
         rest = np.setdiff1d(np.arange(len(y)), fold)
         if len(set(y[rest])) < 2:
             return None
-        held[fold] = probability(X[fold], *fit_probe(X[rest], y[rest]))
+        held[fold] = probability(X[fold], *fit_probe(X[rest], y[rest], l2=l2))
     quality = auc(held, y)
-    threshold = float(np.sort(held[y == 1])[int((1 - KEEP_DISHES) * positives)])
-    kept = held >= threshold
-    weights, bias = fit_probe(X, y)
+    threshold, proof_threshold = (float(np.sort(held[y == 1])[int((1 - keep) * positives)]) for keep in (KEEP_DISHES, KEEP_PROOF))
+    kept, shown = held >= threshold, held >= proof_threshold
+    weights, bias = fit_probe(X, y, l2=l2)
     return {"weights": [round(float(v), 6) for v in weights], "bias": round(bias, 6), "threshold": round(threshold, 6),
-            "examples": {"dish": positives, "not_dish": negatives},
+            "proof_threshold": round(proof_threshold, 6), "examples": {"dish": positives, "not_dish": negatives},
             "held_out": {"auc": round(quality, 4), "dishes_kept": round(float(kept[y == 1].mean()), 4),
-                         "mistakes_dropped": round(float((~kept[y == 0]).mean()), 4), "precision": round(float(y[kept].mean()), 4)}}
+                         "mistakes_dropped": round(float((~kept[y == 0]).mean()), 4), "precision": round(float(y[kept].mean()), 4),
+                         "proof_mistakes_dropped": round(float((~shown[y == 0]).mean()), 4)}}
 
 
 class DishVerifier:
@@ -139,23 +150,30 @@ class DishVerifier:
         self.root = Path(root)
         self.embed = embedder or Embedder(self.root)
         self.path = self.root / "models" / PROBE_NAME
-        self._probe: dict | None = None
-        self._mtime: float | None = None
+        self.kitchen_path = self.root / "models" / KITCHEN_PROBE_NAME
+        self._loaded: dict[Path, tuple[float, dict | None]] = {}
+
+    def _load(self, path: Path) -> dict | None:
+        """The probe saved at path, reread only when the file changes."""
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._loaded.pop(path, None)
+            return None
+        if path not in self._loaded or self._loaded[path][0] != mtime:
+            try:
+                saved = json.loads(path.read_text())
+                probe = saved | {"weights": np.asarray(saved["weights"], dtype=np.float32)}
+            except (OSError, ValueError, KeyError):
+                probe = None
+            self._loaded[path] = (mtime, probe)
+        return self._loaded[path][1]
 
     def probe(self) -> dict | None:
-        try:
-            mtime = self.path.stat().st_mtime
-        except OSError:
-            self._probe, self._mtime = None, None
-            return None
-        if mtime != self._mtime:
-            try:
-                saved = json.loads(self.path.read_text())
-                self._probe = saved | {"weights": np.asarray(saved["weights"], dtype=np.float32)}
-            except (OSError, ValueError, KeyError):
-                self._probe = None
-            self._mtime = mtime
-        return self._probe
+        return self._load(self.path)
+
+    def kitchen(self) -> dict | None:
+        return self._load(self.kitchen_path)
 
     @property
     def ready(self) -> bool:
@@ -168,8 +186,18 @@ class DishVerifier:
         probe = self.probe()
         if probe is None:
             return None
-        value = float(probability(vector[None, :], probe["weights"], probe["bias"])[0])
-        return value, value >= probe["threshold"]
+        value = _value(probe, vector)
+        kitchen = self.kitchen()
+        return value, value >= probe["threshold"] and (kitchen is None or _value(kitchen, vector) >= kitchen["threshold"])
+
+    def proof(self, vector: np.ndarray) -> bool | None:
+        """Sure enough it is a dish to show in a proof picture; None until a kitchen probe is adopted."""
+        kitchen = self.kitchen()
+        return None if kitchen is None else _value(kitchen, vector) >= kitchen.get("proof_threshold", kitchen["threshold"])
+
+
+def _value(probe: dict, vector: np.ndarray) -> float:
+    return float(probability(vector[None, :], probe["weights"], probe["bias"])[0])
 
 
 def store_hook(verifier: DishVerifier, store: Store, *, threshold: float | None = None) -> Callable[[Any, list[float]], dict | None]:
@@ -207,9 +235,7 @@ def examples(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list
     Frames held out for evaluation, and anything inside a holdout window, stay out.
     """
     from .vision import box_iou
-    windows_path = Path(root) / "dataset" / "evaluation-windows.json"
-    if windows_path.exists():
-        holdout = [*holdout, *((datetime.fromisoformat(start), datetime.fromisoformat(end)) for start, end in json.loads(windows_path.read_text()))]
+    holdout = _windows(root, holdout)
     rows: list[tuple[str, np.ndarray, int]] = []
     labels = Path(root) / "dataset" / "labels"
     for path in sorted(labels.glob("*.json")) if labels.exists() else []:
@@ -257,12 +283,29 @@ def examples(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list
     return np.stack([row[1] for row in rows]), np.array([row[2] for row in rows], dtype=float)
 
 
-def refit(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list[dict]]], embed: Callable[[list[Any]], np.ndarray],
-          *, holdout: Sequence[tuple[datetime, datetime]] = ()) -> dict:
-    """Train on everything labeled; adopt only a probe that holds up on data it didn't see."""
-    X, y = examples(root, store, detect, embed, holdout=holdout)
-    probe = train(X, y)
-    path = Path(root) / "models" / PROBE_NAME
+def _windows(root: Path, holdout: Sequence[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    """The given holdout windows plus the evaluation windows recorded with the dataset."""
+    path = Path(root) / "dataset" / "evaluation-windows.json"
+    saved = json.loads(path.read_text()) if path.exists() else []
+    return [*holdout, *((datetime.fromisoformat(start), datetime.fromisoformat(end)) for start, end in saved)]
+
+
+def kitchen_examples(root: Path, store: Store, *, holdout: Sequence[tuple[datetime, datetime]] = ()) -> tuple[np.ndarray, np.ndarray]:
+    """The camera's own detections that people judged, as (features, dish or not), in time order.
+
+    Their features were kept when each was first seen, so no model is loaded: this fits in a small
+    process beside live analysis, where a refit over the labeled frames did not.
+    """
+    holdout = _windows(root, holdout)
+    rows = sorted([(s["created_at"], np.asarray(s["embedding"], dtype=np.float32), s["label"]) for s in store.labeled_dish_samples()
+                   if not any(start <= datetime.fromisoformat(s["created_at"]) <= end for start, end in holdout)], key=lambda row: row[0])
+    if not rows:
+        return np.zeros((0, 512), np.float32), np.zeros(0)
+    return np.stack([row[1] for row in rows]), np.array([row[2] for row in rows], dtype=float)
+
+
+def _adopt(path: Path, probe: dict | None, y: np.ndarray) -> dict:
+    """Save a probe only if it holds up on data it didn't see."""
     if probe is None:
         return {"adopted": False, "reason": f"Not enough labels yet: {int(y.sum())} dishes and {int(len(y) - y.sum())} mistakes; {MIN_EXAMPLES} of each are needed."}
     if probe["held_out"]["auc"] < MIN_AUC:
@@ -272,3 +315,16 @@ def refit(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list[di
     temporary.write_text(json.dumps(probe))
     os.replace(temporary, path)
     return {"adopted": True, "examples": probe["examples"], "held_out": probe["held_out"], "threshold": probe["threshold"]}
+
+
+def refit(root: Path, store: Store, detect: Callable[[bytes], tuple[Any, list[dict]]], embed: Callable[[list[Any]], np.ndarray],
+          *, holdout: Sequence[tuple[datetime, datetime]] = ()) -> dict:
+    """Train on everything labeled; adopt only a probe that holds up on data it didn't see."""
+    X, y = examples(root, store, detect, embed, holdout=holdout)
+    return _adopt(Path(root) / "models" / PROBE_NAME, train(X, y), y)
+
+
+def refit_kitchen(root: Path, store: Store, *, holdout: Sequence[tuple[datetime, datetime]] = ()) -> dict:
+    """Retrain the kitchen probe from people's answers about the camera's detections."""
+    X, y = kitchen_examples(root, store, holdout=holdout)
+    return _adopt(Path(root) / "models" / KITCHEN_PROBE_NAME, train(X, y, l2=KITCHEN_L2), y)
