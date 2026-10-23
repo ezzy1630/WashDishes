@@ -254,14 +254,17 @@ class _Trace:
             return self.user(visit, box, moves)
         if len(moves) >= HOPS:
             return "the dish was moved more times than can be followed back"
-        trails = [self.follow(s.box, s.seen, s.seen + NEAR, (*moves, {"at": visit.start, "from": s.box, "to": box}))
-                  for s in sources[:LOOKALIKES]]
-        if len(trails) == 1:
-            return trails[0]
-        found = [t for t in trails if isinstance(t, dict)]
-        if len(found) == len(trails) and len({(tuple(t["box"]), t["left"]["at"]) for t in found}) == 1:
-            return found[0]
-        return "look-alike dishes were moved together and lead back to different people"
+        first = None
+        for s in sources[:LOOKALIKES]:
+            trail = self.follow(s.box, s.seen, s.seen + NEAR, (*moves, {"at": visit.start, "from": s.box, "to": box}))
+            if len(sources) == 1:
+                return trail
+            # Look-alikes name someone only if every trail ends at the same use: stop at the first that doesn't.
+            if isinstance(trail, str) or (first is not None and (tuple(trail["box"]), trail["left"]["at"]) != first):
+                return "look-alike dishes were moved together and lead back to different people"
+            first = (tuple(trail["box"]), trail["left"]["at"])
+            found = trail
+        return found
 
     def arrival(self, box: list, seen: float, horizon: float) -> Visit | str:
         """The newest visit before `seen` that put the dish at `box`."""

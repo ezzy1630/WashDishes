@@ -9,7 +9,7 @@ from PIL import Image
 from test_proofs import late_dish
 from test_sequences import jpeg
 
-from wash_dishes.proof_checks import ProofChecker, Thresholds, colour_similarity, make_check
+from wash_dishes.proof_checks import ProofChecker, Thresholds, colour_similarity, crop_change, make_check
 from wash_dishes.proofs import Proofs
 
 BOX = [.4, .45, .15, .15]
@@ -29,6 +29,7 @@ def scene(colour, box=BOX):
 
 BEFORE, PUTTING, LEFT, LATE = [scene(c) for c in ((0, 0, 200), (0, 200, 0), (200, 0, 0), (160, 0, 0))]
 FOUND = {k: {"jpeg": raw, "at": at} for k, raw, at in zip(("before", "putting", "left"), (BEFORE, PUTTING, LEFT), (10, 20, 30))}
+SHADED = scene((170, 0, 30))  # crop change .31 from LEFT: the same spot, a little different
 
 
 class Verifier:
@@ -37,7 +38,7 @@ class Verifier:
         self.scored = (.9, True)
 
     def embed(self, crops):
-        return self.vectors[-len(crops):]
+        return self.vectors
 
     def features(self, image, box):
         return self.vectors[1]
@@ -109,6 +110,64 @@ def test_drying_area_outline_does_not_exclude_neighboring_sink(checker):
     result = check.evaluate(1, FOUND, LATE, BOX, [.65, .65, .1, .1])
     assert result["reason"] == "dish is in a drying or storage area"
     assert result["checks"]["excluded_area"] == {"id": "mat", "stage": "late"}
+
+
+def test_before_dish_vetoes_unless_the_spot_changed_a_lot(checker):
+    # A pan set down on a bowl already in the sink is a new arrival; the same bowl in new light is not.
+    check, detections, _ = checker
+    detections[BEFORE] = detections[SHADED] = [{"kind": "bowl", "box": BOX}]
+    assert isinstance(run(check), dict)
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}}) == "dish already there in the before picture"
+
+
+def test_a_pan_held_over_the_spot_is_not_a_clear_before(checker):
+    # Held over a bowl already there, the pan changes the spot as much as a new arrival does.
+    check, detections, _ = checker
+    detections[BEFORE] = [{"kind": "pot", "box": BOX}, {"kind": "person", "box": PERSON}]
+    assert run(check) == "someone is handling something over the spot in the before picture"
+    detections[BEFORE] = [{"kind": "person", "box": PERSON}]
+    assert isinstance(run(check), dict)
+    # Someone at the spot and only a moderate change: they may just be moving what is there.
+    detections[SHADED] = [{"kind": "person", "box": PERSON}]
+    assert (run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}})
+            == "someone is handling something over the spot in the before picture")
+
+
+def test_a_dish_uncovered_by_lifting_something_bigger_is_not_a_put_down(checker):
+    check, _, _ = checker
+    bag = scene((40, 150, 40), [.3, .35, .35, .35])
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": bag}}) == "things around the dish changed too: it was uncovered, not put down"
+
+
+def test_large_before_dish_cannot_hide_an_empty_spot_behind_low_iou(checker):
+    check, detections, _ = checker
+    detections[SHADED] = [{"kind": "pan", "box": [.2, .2, .6, .6]}]
+    assert run(check, found=FOUND | {"before": {"at": 10, "jpeg": SHADED}}) == "dish already there in the before picture"
+
+
+@pytest.mark.parametrize("cosine, changed, reason", [
+    (1., True, "dish already there in the before picture"),
+    (.87, False, "dish already there in the before picture"),
+    (.87, True, None),
+])
+def test_semantically_same_before_crop_is_not_a_new_arrival(checker, cosine, changed, reason):
+    check, _, verifier = checker
+    verifier.vectors[0] = [cosine, (1 - cosine**2) ** .5]
+    found = FOUND if changed else FOUND | {"before": {"at": 10, "jpeg": SHADED}}
+    result = run(check, found=found)
+    assert result == reason if reason else isinstance(result, dict)
+
+
+def test_before_unchanged_crop_vetoes_even_when_detector_misses(checker):
+    check, _, _ = checker
+    found = FOUND | {"before": {"at": 10, "jpeg": LEFT}}
+    assert run(check, found=found) == "dish already there in the before picture"
+
+
+def test_hidden_before_cannot_establish_absence(checker):
+    check, detections, _ = checker
+    detections[BEFORE] = [{"kind": "person", "box": HIDDEN}]
+    assert run(check) == "the spot is hidden in the before picture"
 
 
 @pytest.mark.parametrize("person", [None, [.0, .0, .1, .1], HIDDEN])
@@ -187,8 +246,9 @@ def test_late_box_is_used_for_crop_and_detector(checker):
     assert boxes[-1] == late_box
 
 
-def test_brightness_is_not_a_colour_mismatch():
+def test_brightness_is_not_an_arrival_or_a_colour_mismatch():
     a = np.full((10, 10, 3), [40, 50, 70], np.uint8)
+    assert crop_change(a, a*2) < .01
     assert colour_similarity(a, a*2) > .9
 
 

@@ -34,10 +34,32 @@ class Thresholds:
     # had p95=.0356. The adopted probe retains its own independently fitted threshold.
     negative_margin: float = 0.05
     # Twenty labeled matching left/late pairs reached cosine .707 and colour .180: retain
-    # them with .025/.03 margins. This small replay sample is calibration, NOT an
-    # independent accuracy test, and does not establish recall on good complete proofs.
+    # them with .025/.03 margins. Three actual placements reached before cosine .794 and
+    # change .207: allow .05 margins. These small replay samples are calibration, NOT an
+    # independent accuracy test, and do not establish recall on good complete proofs.
     same_cosine: float = 0.68
     same_colour: float = 0.15
+    before_cosine: float = 0.85
+    before_change: float = 0.15
+    # A pan set down on other dishes in the sink leaves a detected dish and a similar tight
+    # crop in Before (#917 cosine .86, #945 overlap .48), so those alone cannot veto: the spot
+    # must also have changed little. Proofs vetoed only by Before reached change .307; those
+    # sink arrivals changed .575-.68. Cooking/different-dish proofs reached cosine .906.
+    # A pan held over a bowl already there also changes the spot a lot (#901 at 13:55: .96),
+    # so the big change only counts with nobody within reach: that person was .021 away, the
+    # people in #945 and #917's genuine Before frames .37 and .19. With someone that close, a
+    # moderate change is not an arrival either: #906 (a container, change .21) hinged on a cup
+    # detection at score .30 that one machine saw and another did not.
+    stacked_change: float = 0.45
+    before_same: float = 0.90
+    # Lifting a bag off the table (#951: .43) or rinsing a pan over a bowl (#901: .66) changes the
+    # area around the dish as well; genuine put-downs left it at .04-.21. Below a quarter of the
+    # area visible past people's bodies, the measure is too partial to use. A visit that changed
+    # the spot is not proof the dish arrived then: without these checks the 2026-10-22 visits
+    # replay passed #947 (bag lifted off a mug), #954 (cans taken from beside a glass) and #962
+    # (a bowl lifted off a container); with them, all three are refused.
+    around_change: float = 0.30
+    around_visible: float = 0.25
     # Existing labeled-box matching uses .30; live attribution uses .10 reach. Inspected
     # torso failures covered >=.708 of the target, versus <=.213 full-person coverage in
     # the two visible drying placements. .60 leaves a .10 margin; it is not a pose model.
@@ -77,6 +99,32 @@ def colour_similarity(a: np.ndarray, b: np.ndarray) -> float:
         hist = np.histogram2d(chroma[:, 0], chroma[:, 1], bins=12, range=((0, 1), (0, 1)))[0]
         return hist / hist.sum()
     return float(np.minimum(histogram(a), histogram(b)).sum())
+
+
+def crop_change(a: np.ndarray, b: np.ndarray) -> float:
+    """Brightness-normalized pixel change; changing the light alone is not an arrival."""
+    import cv2
+    def patch(image):
+        resized = cv2.resize(image, (32, 32)).astype(np.float32)
+        return resized / max(16, float(resized.mean()))
+    return float(np.abs(patch(a) - patch(b)).mean())
+
+
+def around_change(a: np.ndarray, b: np.ndarray, box: list, people: list[list]) -> tuple[float, float]:
+    """Brightness-normalized change in a band one box-size wide around the dish, leaving out the
+    dish itself and anyone's body. Returns the change and how much of the band could be measured."""
+    h, w = a.shape[:2]
+    x, y, bw, bh = box
+    x1, y1 = max(0, int((x - bw) * w)), max(0, int((y - bh) * h))
+    x2, y2 = min(w, int((x + 2 * bw) * w)), min(h, int((y + 2 * bh) * h))
+    keep = np.ones((y2 - y1, x2 - x1), bool)
+    for bx, by, bbw, bbh in [box, *people]:
+        keep[max(0, int(by * h) - y1):max(0, int((by + bbh) * h) - y1), max(0, int(bx * w) - x1):max(0, int((bx + bbw) * w) - x1)] = False
+    if not keep.any():
+        return 0.0, 0.0
+    first, second = (image[y1:y2, x1:x2].astype(np.float32) for image in (a, b))
+    first, second = first / max(16, float(first.mean())), second / max(16, float(second.mean()))
+    return float(np.abs(first - second).mean(axis=2)[keep].mean()), float(keep.mean())
 
 
 def _coverage(box: list, other: list) -> float:
@@ -158,10 +206,9 @@ class ProofChecker:
         # The probe was trained on broad context. Matching needs a tighter view: otherwise
         # two different pans inherit the similarity of the same stove behind them.
         left = self.verifier.features(images[1], box)
-        vectors = self.verifier.embed([context_crop(images[1], box, scale=1.2, minimum=0),
-                                       context_crop(images[2], late_box, scale=1.2, minimum=0)])
+        vectors = self.verifier.embed([context_crop(im, b, scale=1.2, minimum=0) for im, b in zip(images, (box, box, late_box))])
         score = self.verifier.score(left)
-        negative = self.negatives(vectors[0])
+        negative = self.negatives(vectors[1])
         remembered = self._remembered(obligation_id, left, box)
         checks = {"left_embedding": left.tolist(), "probe": score[0] if score else None, "negative": negative,
                   "looks_like": negative.get("looks_like"),
@@ -188,6 +235,30 @@ class ProofChecker:
             reasons.append("the left picture does not look like a dish")
         if negative["margin"] > self.thresholds.negative_margin:
             reasons.append(f"looks more like a {negative['label']} than a dish")
+
+        before_detections = self.detect(found["before"]["jpeg"], box)
+        # Target coverage also catches a larger detected pan obscuring this smaller spot;
+        # its low IoU does not establish that the spot was empty.
+        overlap = max((_coverage(box, d["box"]) for d in before_detections if d["kind"] != "person"), default=0)
+        change = crop_change(_crop(images[0], box), _crop(images[1], box))
+        before_cosine = float(vectors[0] @ vectors[1])
+        blocked_before = any(_coverage(box, _body(d["box"])) >= self.thresholds.body_cover
+                             for d in before_detections if d["kind"] == "person")
+        handled = any(_reach(box, d["box"]) <= self.thresholds.reach for d in before_detections if d["kind"] == "person")
+        checks["before"] = {"overlap": overlap, "change": change, "cosine": before_cosine, "blocked": blocked_before, "handled": handled}
+        occupied = overlap >= self.thresholds.overlap or before_cosine >= self.thresholds.before_cosine
+        if (change < self.thresholds.before_change or before_cosine >= self.thresholds.before_same
+                or (occupied and change < self.thresholds.stacked_change)):
+            reasons.append("dish already there in the before picture")
+        elif handled and (occupied or change < self.thresholds.stacked_change):
+            reasons.append("someone is handling something over the spot in the before picture")
+        elif blocked_before:
+            reasons.append("the spot is hidden in the before picture")
+        bodies = [d["box"] for d in before_detections + self.detect(found["left"]["jpeg"], box) if d["kind"] == "person"]
+        around, visible = around_change(images[0], images[1], box, bodies)
+        checks["before"] |= {"around": around, "around_visible": visible}
+        if visible >= self.thresholds.around_visible and around >= self.thresholds.around_change:
+            reasons.append("things around the dish changed too: it was uncovered, not put down")
 
         choices = []
         hidden_frames = 0
@@ -221,7 +292,7 @@ class ProofChecker:
 
         late_detections = self.detect(late_jpeg, late_box)
         busy = any(_reach(late_box, d["box"]) <= self.thresholds.reach for d in late_detections if d["kind"] == "person")
-        cosine = float(vectors[0] @ vectors[1])
+        cosine = float(vectors[1] @ vectors[2])
         colour = colour_similarity(_crop(images[1], box), _crop(images[2], late_box))
         checks["late"] = {"cosine": cosine, "colour": colour, "person_at_dish": busy}
         # A dish that moved since is matched along the way by visits.py; its two spots look different.
@@ -241,7 +312,7 @@ def make_check(engine, verifier: DishVerifier, store: Store, *, lock, thresholds
     """Use runtime.lock for detector serialization; CLIP's existing embedder owns its own lock.
 
     No analyze(), face models, tracker updates, or second CLIP instance. A focused detector pass
-    catches small dishes beside a person, using the same loaded detector rather than the teacher.
+    catches small before-frame dishes, using the same loaded detector rather than the teacher.
     Clean/storage areas are read afresh from settings. An optional drying_areas callback supplies
     additional area dictionaries (same schema), e.g. a cloth mat outside the rack outlines.
     """
