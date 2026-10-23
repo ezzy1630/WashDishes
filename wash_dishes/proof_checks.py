@@ -226,6 +226,9 @@ class ProofChecker:
             reasons.append("the dish checker is not ready")
         elif not score[1]:
             reasons.append("the left picture does not look like a dish")
+        elif self.verifier.proof(left) is False:
+            # Passing as a dish on the counter is not enough to put a name on it (verifier.KEEP_PROOF).
+            reasons.append("not sure enough that it is a dish to show it")
         if negative["margin"] > self.thresholds.negative_margin:
             reasons.append(f"looks more like a {negative['label']} than a dish")
 

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Three user timers on the Jetson:
 #   dish-watch-identity: daily 04:30, relearn identity cue weights (separate low-priority process).
-#   dish-watch-verifier: daily 04:45, retrain the second look at new dishes from every label, keeping
-#                        the hand-checked evaluation windows out of training.
+#   dish-watch-verifier: daily 04:45, retrain the kitchen probe from people's answers about detections,
+#                        keeping the hand-checked evaluation windows out. It reads stored features and loads
+#                        no model: the old refit over labeled frames ran the Jetson out of memory beside
+#                        the live service, so that one (train-verifier --frames) is now run by hand only.
 #   dish-watch-improve:  Sunday 02:00, stop live analysis, retrain and evaluate the kitchen detector,
 #                        adopt it only if it does better, then start the service again.
 # Usage: scripts/install-improvement-timers.sh TRUTH_JSON FOOTAGE_DIR [TRUTH_JSON FOOTAGE_DIR ...]
@@ -45,7 +47,7 @@ EOF
 
 cat > "$units/dish-watch-verifier.service" <<EOF
 [Unit]
-Description=Dish watch: retrain the second look at new dishes
+Description=Dish watch: retrain the kitchen probe from people's answers
 
 [Service]
 Type=oneshot
