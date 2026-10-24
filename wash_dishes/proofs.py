@@ -18,7 +18,7 @@ from datetime import timezone as utc
 from pathlib import Path
 from typing import Protocol
 
-from .collage import STAGES, dish_name, render
+from .collage import STAGES, VERSION, dish_name, render, render_out
 from .store import Store, parse_stamp, stamp, utcnow
 
 LATE_LABEL = "Matching dish still visible after the deadline%"
@@ -221,20 +221,22 @@ class Proofs:
                 self._save(oid, "ready", data)
         return oid
 
+    # Seen lately and not picked up since. A dish picked up and not seen since is gone from the counter:
+    # someone dealt with it, so its card goes now, not when the record closes. Seen again, it comes back.
+    STILL_THERE = """o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id
+            AND event IN ('dish_picked_up','dish_moved')) AND e.event='dish_picked_up'
+            AND e.created_at>=coalesce(o.last_seen_at,o.created_at))"""
+
     def items(self, now: datetime | None = None) -> list[dict]:
         """Proofs of dishes still out right now, newest put-down first."""
         now = now or utcnow()
         with self.store.lock:
-            rows = self.store.conn.execute("""SELECT p.obligation_id id, p.data, o.dishes, o.location, o.resident_id, o.confidence,
+            rows = self.store.conn.execute(f"""SELECT p.obligation_id id, p.data, o.dishes, o.location, o.resident_id, o.confidence,
                     o.suggested_resident_id, r.name resident_name, g.name guess_name
                 FROM proofs p JOIN obligations o ON o.id=p.obligation_id
                 LEFT JOIN residents r ON r.id=o.resident_id LEFT JOIN residents g ON g.id=o.suggested_resident_id
-                WHERE p.status='ready' AND o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?
-                  -- A dish picked up and not seen since is gone from the counter: someone dealt with it, so
-                  -- its card goes now, not when the record closes. Seen again, it comes back.
-                  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id
-                      AND event IN ('dish_picked_up','dish_moved')) AND e.event='dish_picked_up'
-                      AND e.created_at>=coalesce(o.last_seen_at,o.created_at))""",
+                WHERE p.status='ready' AND {self.STILL_THERE}""",
                 (stamp(now - STILL_OUT),)).fetchall()
         out = []
         basis = self.store.suggestion_basis([r["id"] for r in rows]) if hasattr(self.store, "suggestion_basis") else {}
@@ -249,6 +251,60 @@ class Proofs:
                         "guess_basis": basis.get(row["id"]),
                         "image_url": f"/api/proofs/{row['id']}/image?v={row['resident_id'] if named else 0}"})
         return sorted(out, key=lambda p: p["put_down_at"], reverse=True)
+
+    def _out_rows(self, now: datetime, obligation_id: int | None = None) -> list:
+        with self.store.lock:
+            return self.store.conn.execute(f"""SELECT o.id, o.created_at, o.timing_known, o.dishes, o.location, o.box, o.resident_id,
+                    o.confidence, o.suggested_resident_id, r.name resident_name, g.name guess_name,
+                    e.id photo_id, e.filename photo_file, e.created_at photo_at, e.capture photo_capture
+                FROM obligations o
+                JOIN evidence e ON e.id=(SELECT id FROM evidence WHERE obligation_id=o.id AND kind='snapshot' AND expired=0
+                    AND label LIKE ? AND created_at>=o.due_at ORDER BY created_at DESC, id DESC LIMIT 1)
+                LEFT JOIN residents r ON r.id=o.resident_id LEFT JOIN residents g ON g.id=o.suggested_resident_id
+                WHERE o.box IS NOT NULL AND o.due_at<=? AND {self.STILL_THERE} AND (? IS NULL OR o.id=?)
+                  AND NOT EXISTS (SELECT 1 FROM proofs p WHERE p.obligation_id=o.id AND p.status='ready')
+                ORDER BY o.created_at, o.id""",
+                (LATE_LABEL, stamp(now), stamp(now - STILL_OUT), obligation_id, obligation_id)).fetchall()
+
+    def out_items(self, now: datetime | None = None) -> list[dict]:
+        """Dishes still out past their deadline with no proof picture, longest out first.
+
+        The camera photographed each one there after its deadline and has seen it lately, but found no
+        picture of who put it down (or is still looking). They are listed so the page matches the kitchen,
+        and so a housemate who knows can say whose it is or that it is not a dish. Nobody is named on
+        them unless a person picks the name.
+        """
+        rows = self._out_rows(now or utcnow())
+        basis = self.store.suggestion_basis([r["id"] for r in rows]) if hasattr(self.store, "suggestion_basis") else {}
+        out = []
+        for row in rows:
+            named = row["confidence"] == "confirmed" and row["resident_id"] is not None
+            out.append({"id": row["id"], "dish": dish_name(json.loads(row["dishes"])), "location": row["location"],
+                        "out_since": row["created_at"], "timing_known": bool(row["timing_known"]), "photo_at": row["photo_at"],
+                        "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
+                        "guess_id": row["suggested_resident_id"], "guess_name": row["guess_name"], "guess_basis": basis.get(row["id"]),
+                        # Changes with the photo, the name on it and the design, so a cached copy is never stale.
+                        "image_url": f"/api/proofs/out/{row['id']}/image?v={row['photo_id']}.{row['resident_id'] if named else 0}.{VERSION}"})
+        return out
+
+    def out_image(self, obligation_id: int) -> bytes:
+        """The still-out picture with the name currently on it, drawn once per photo, name and design."""
+        row = next(iter(self._out_rows(utcnow(), obligation_id)), None)
+        if row is None:
+            raise LookupError("This dish is no longer out.")
+        named = row["resident_name"] if row["confidence"] == "confirmed" else None
+        cached = self.dir / "out" / f"{obligation_id}-{row['photo_id']}-{row['resident_id'] if named else 0}-v{VERSION}.jpg"
+        with self.lock:
+            if not cached.exists():
+                box = (json.loads(row["photo_capture"] or "{}") or {}).get("box") or json.loads(row["box"])
+                meta = {"dish": dish_name(json.loads(row["dishes"])), "location": row["location"], "box": box,
+                        "timing_known": bool(row["timing_known"]), "out_since": parse_stamp(row["created_at"]).timestamp(),
+                        "photo_at": parse_stamp(row["photo_at"]).timestamp()}
+                cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                tmp = cached.with_suffix(".tmp")
+                tmp.write_bytes(render_out(meta, self.media.safe_path(row["photo_file"]).read_bytes(), named))
+                tmp.replace(cached)
+            return cached.read_bytes()
 
     def image(self, obligation_id: int) -> bytes:
         item = next((p for p in self.items() if p["id"] == obligation_id), None)
@@ -299,3 +355,7 @@ class Proofs:
             old = [r[0] for r in self.store.conn.execute("SELECT obligation_id FROM proofs WHERE created_at<?", (stamp(now - KEEP),))]
         for oid in old:
             shutil.rmtree(self.dir / str(oid), ignore_errors=True)
+        # Still-out pictures are only a cache; a newer photo or name gets a new file.
+        for cached in (self.dir / "out").glob("*.jpg"):
+            if cached.stat().st_mtime < (now - KEEP).timestamp():
+                cached.unlink(missing_ok=True)

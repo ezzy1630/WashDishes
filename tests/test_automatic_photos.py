@@ -116,3 +116,17 @@ def test_due_photo_does_not_borrow_a_neighbour_that_is_not_due(store, media):
     inventory.zones={'stove':Zone({'id':'stove','name':'Stove','role':'dirty','box':[.2,.6,.3,.3]})}
     inventory._capture_due(jpeg('red'),utcnow(),lambda area:[{'kind':'pan','score':.8,'box':neighbour['box']}])
     assert not store.obligation(record['id'])['evidence']
+
+
+def test_a_dish_still_out_gets_a_fresh_photo_each_hour_it_is_seen(store, media):
+    item = store.create_obligation(None, [{'kind': 'pan', 'quantity': 1}], candidate=True, at=utcnow()-timedelta(hours=5))
+    inventory = Inventory(store, media)
+    tracked = {'obligation_id': item['id'], 'role': 'dirty', 'box': [.3, .7, .05, .05]}
+    due = parse_stamp(store.obligation(item['id'])['followup_at'])
+    for minutes in (1, 30, 61, 90, 122):
+        inventory._record_seen(tracked, jpeg('blue'), due + timedelta(minutes=minutes))
+    late = [e for e in store.obligation(item['id'])['evidence'] if e['capture'].get('stage') == 'later']
+    assert [parse_stamp(e['created_at']) - due for e in late] == [timedelta(minutes=m) for m in (1, 61, 122)]
+    store.action(item['id'], 'dismiss', note='Not a dish')
+    inventory._record_seen(tracked, jpeg('blue'), due + timedelta(minutes=190))
+    assert len([e for e in store.obligation(item['id'])['evidence'] if e['capture'].get('stage') == 'later']) == 3

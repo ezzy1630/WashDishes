@@ -54,6 +54,8 @@ PUT_DOWN_CLIP = "Putting the dish down"
 # A put-down clip covers the whole visit, up to this long.
 CLIP_MAX_SECONDS = 120
 UNSEEN_GRACE = timedelta(minutes=10)
+# A dish still out after its deadline gets a fresh photo this often while it is seen there.
+OUT_PHOTO_EVERY = timedelta(hours=1)
 MAX_ITEMS = 128
 TEXTURE_WIDTH = 240
 # A normalized view of the dish's own spot survives exposure changes. It only vetoes a
@@ -248,6 +250,8 @@ class Inventory:
         # Working frames; localized handling originals are also journaled immediately.
         self.evidence: dict[str, dict] = {}
         self.generation: str | None = None
+        # When this unbroken stretch of watching began: a dish seen since then and now gone was taken while watched.
+        self.watching_since: datetime | None = None
         # Identity hooks: (frame, person box) -> (cues, crop), and enrolled face vectors per housemate.
         self.describe: Callable | None = None
         self.enrolled_faces: Callable[[], dict] = dict
@@ -310,6 +314,7 @@ class Inventory:
         if generation != self.generation:
             self.reset()
             self.generation = generation
+            self.watching_since = observed_at
             self.store.mark_watching(observed_at)
         # Correct saved inventory after a zone edit without inventing physical
         # movement, changing ownership, or opening another incident.
@@ -406,17 +411,24 @@ class Inventory:
             return
         record = self.store.obligation(item["obligation_id"], now=observed_at)
         self.store.record_seen(item["obligation_id"], observed_at)
-        captured = any((e["capture"].get("stage") == "later" or e["label"].startswith("Matching dish still visible after the deadline"))
-                       and record["followup_at"] and parse_stamp(e["created_at"]) >= parse_stamp(record["followup_at"])
-                       for e in record["evidence"])
-        if captured:
+        late = [parse_stamp(e["created_at"]) for e in record["evidence"]
+                if (e["capture"].get("stage") == "later" or e["label"].startswith("Matching dish still visible after the deadline"))
+                and record["followup_at"] and parse_stamp(e["created_at"]) >= parse_stamp(record["followup_at"])]
+        if late:
             item["followup_saved_at"] = record["followup_at"]
-        if (record["lifecycle"] == "open" and not record["archived_at"]
-                and observed_at >= parse_stamp(record["followup_at"]) and not captured):
+        if record["lifecycle"] != "open" or record["archived_at"]:
+            return
+        if observed_at >= parse_stamp(record["followup_at"]) and not late:
             self.media.save_snapshot(item["obligation_id"], jpeg, "Matching dish still visible after the deadline; dirty status requires review", at=observed_at,
                                      capture={"stage": "later", "box": item["box"], "box_kind": "candidate_item"})
             self.media.request_event_clip(item["obligation_id"], "Around the after-deadline observation", at=observed_at, seconds=15)
             item["followup_saved_at"] = record["followup_at"]
+        elif late and observed_at - max(late) >= OUT_PHOTO_EVERY:
+            # The Send page shows a dish still out by its newest photo; the deadline photo alone made a
+            # bowl out for a day read "still there 2 hours later". Only a settled look gets here once
+            # the deadline photo is saved, so whoever was in the way has gone.
+            self.media.save_snapshot(item["obligation_id"], jpeg, "Matching dish still visible after the deadline; still out", at=observed_at,
+                                     capture={"stage": "later", "box": item["box"], "box_kind": "candidate_item"})
 
     def _capture_due(self, jpeg: bytes, observed_at: datetime, detect: Callable) -> None:
         # Deadline photos must not wait for an entire zone to become motionless.
@@ -528,7 +540,11 @@ class Inventory:
             if observed_at - since < UNSEEN_GRACE:
                 continue
             if item.get("obligation_id") and not self.store.close_unclaimed(item["obligation_id"]):
-                self.store.note_missing(item["obligation_id"], zone.area["name"])
+                if self.watching_since and parse_stamp(item["last_seen_at"]) >= self.watching_since:
+                    self.store.note_gone(item["obligation_id"], zone.area["name"])
+                else:
+                    # It may have sat out unseen through the gap; only a person can say.
+                    self.store.note_missing(item["obligation_id"], zone.area["name"])
             del self.items[item["key"]]
         for detection in extra:
             if any(box_iou(detection['box'], old['box']) >= .3 for old in missing):

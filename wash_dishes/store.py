@@ -691,6 +691,18 @@ class Store:
                 self.conn.execute("UPDATE obligations SET review_pending=1,reason='Dish reappeared after an observation gap. Confirm that this is still the same dish before using its deadline evidence.' WHERE id=?", (obligation_id,))
                 self._event(obligation_id, "dish_continuity_uncertain", "Dish visibility was interrupted; matching and outcome need review")
 
+    def note_gone(self, obligation_id: int, location: str) -> None:
+        """Gone from its spot while the camera kept watching, though nobody was seen taking it (often from
+        behind whoever stood there). Recorded as picked up when last seen, so it closes like any dish carried
+        off: never as washed, and late only if it was seen after its deadline. Until 2026-10-23 these waited
+        a day for a review nobody gave. None of the 78 was seen again; in the four checked by eye, each was a
+        stove pot or pan swapped for another (or a detection on an empty burner)."""
+        with self.lock, self.conn:
+            item = self.obligation(obligation_id)
+            if item["lifecycle"] == "open" and not item["archived_at"]:
+                self._event(obligation_id, "dish_picked_up", f"Gone from {location}; nobody was seen taking it",
+                            at=parse_stamp(item["last_seen_at"] or item["created_at"]))
+
     def note_missing(self, obligation_id: int, location: str) -> None:
         """Gone when monitoring resumed: moved or cleaned unobserved. Never counts as washed."""
         with self.lock, self.conn:

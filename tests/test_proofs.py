@@ -418,3 +418,39 @@ def test_retry_reason_matches_the_real_checker_contract():
                          Verifier(), lambda _: {'label': 'soda can', 'margin': -.1})
     already = FOUND | {'before': {'at': 10, 'jpeg': LEFT}}
     assert check(1, already, LATE, BOX, None) == ALREADY_THERE
+
+
+def test_a_late_dish_with_no_proof_is_listed_until_it_is_gone_or_proved(store, media):
+    # 2026-10-23: four dishes sat out past their deadline with no proof, and the page said one was out.
+    proofs = Proofs(store.root, store, media)
+    untraced, traced = late_dish(store, media), late_dish(store, media)
+    store.create_obligation(None, [{"kind": "bowl", "quantity": 1}], candidate=True, source="vision", box=BOX)  # not due yet
+    late_dish(store, media, seen_minutes_ago=45)  # not seen lately
+    assert [p["id"] for p in proofs.out_items()] == [untraced["id"], traced["id"]]
+    assert proofs.run_once(lambda *args, **kwargs: None) == untraced["id"]
+    assert proofs.run_once(found) == traced["id"]
+    [out] = proofs.out_items()
+    assert out["id"] == untraced["id"] and out["resident_name"] is None and out["timing_known"]
+    assert [p["id"] for p in proofs.items()] == [traced["id"]]
+    assert proofs.out_image(untraced["id"]).startswith(b"\xff\xd8")
+    store.event("dish_picked_up", "Cup picked up from Dining table", untraced["id"])
+    assert proofs.out_items() == []
+    with pytest.raises(LookupError):
+        proofs.out_image(untraced["id"])
+
+
+def test_naming_or_dismissing_a_still_out_dish_changes_its_card(authenticated):
+    client = authenticated
+    runtime = client.app.state.runtime
+    named, wrong = late_dish(runtime.store, runtime.media), late_dish(runtime.store, runtime.media)
+    sam = runtime.store.add_resident("Sam")["id"]
+    before = {p["id"]: p for p in client.get("/api/proofs").json()["out"]}
+    image = client.get(before[named["id"]]["image_url"])
+    assert image.headers["content-type"] == "image/jpeg" and "max-age" in image.headers["cache-control"]
+    client.post(f"/api/obligations/{named['id']}/action", json={"action": "confirm", "resident_id": sam, "note": "Named from the still-out photo"})
+    client.post(f"/api/obligations/{wrong['id']}/action", json={"action": "dismiss", "note": "Not a dish"})
+    [after] = client.get("/api/proofs").json()["out"]
+    assert after["id"] == named["id"] and after["resident_name"] == "Sam"
+    assert after["image_url"] != before[named["id"]]["image_url"]
+    assert client.get(after["image_url"]).status_code == 200
+    assert client.get(before[wrong["id"]]["image_url"]).status_code == 404

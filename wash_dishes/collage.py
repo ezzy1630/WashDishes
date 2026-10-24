@@ -161,48 +161,93 @@ def _mark(draw: ImageDraw.ImageDraw, rect: tuple[float, float, float, float], st
                                (a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e)], fill=color, width=width)
 
 
+HEAD = MARGIN + 100 + 58 + 26
+
+
+def _canvas(height: int, dish: str, name: str | None, subtitle: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    """A blank picture with the title and a muted line under it."""
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    title, title_font = _title(probe, dish, name)
+    subtitle, sub_font = _fit(probe, subtitle, range(44, 35, -4), 450, WIDTH - 2 * MARGIN)
+    canvas = Image.new("RGB", (WIDTH, height), PAPER)
+    draw = ImageDraw.Draw(canvas)
+    draw.text((MARGIN, MARGIN + 92), title, font=title_font, fill=INK, anchor="ls")
+    draw.text((MARGIN, MARGIN + 92 + 62), subtitle, font=sub_font, fill=MUTED, anchor="ls")
+    return canvas, draw
+
+
+def _aspect(picture: bytes, width: int, height: int) -> float:
+    """The crop's width/height in frame units that fills a width x height panel undistorted."""
+    with Image.open(io.BytesIO(picture)) as first:
+        return width / height * first.height / first.width
+
+
+def _panel(canvas: Image.Image, draw: ImageDraw.ImageDraw, picture: bytes, region: tuple[float, float, float, float],
+           box: list[float], at: tuple[int, int], size: tuple[int, int], style: str) -> None:
+    """One photo cropped to `region`, with the dish's `box` marked; a box outside the region is not marked."""
+    (px, py), (width, height), (x0, y0, x1, y1) = at, size, region
+    with Image.open(io.BytesIO(picture)) as source:
+        frame = source.convert("RGB")
+    bounds = (round(x0 * frame.width), round(y0 * frame.height), round(x1 * frame.width), round(y1 * frame.height))
+    canvas.paste(frame.crop(bounds).resize((width, height), Image.Resampling.LANCZOS), (px, py))
+    sx, sy = width / (x1 - x0), height / (y1 - y0)
+    bx, by, bw, bh = box
+    cx, cy = px + (bx + bw / 2 - x0) * sx, py + (by + bh / 2 - y0) * sy
+    half_w, half_h = max(bw * sx / 2 + 10, MIN_MARK / 2), max(bh * sy / 2 + 10, MIN_MARK / 2)
+    rect = (max(px + 6, cx - half_w), max(py + 6, cy - half_h), min(px + width - 6, cx + half_w), min(py + height - 6, cy + half_h))
+    if rect[0] < rect[2] and rect[1] < rect[3]:  # a late box far from the first one can fall outside
+        _mark(draw, rect, style)
+
+
+def _caption(draw: ImageDraw.ImageDraw, text: str, at: float, x: int, base: int, width: int, color: str) -> None:
+    """A bold caption with its clock time after it, shrunk to fit one panel's width."""
+    time_font = _type(46, 450)
+    clock = _clock(at)
+    room = width - draw.textlength(clock, font=time_font) - 20
+    caption, font = _fit(draw, text, range(50, 37, -2), 650, int(room))
+    draw.text((x, base), caption, font=font, fill=color, anchor="ls")
+    draw.text((x + draw.textlength(caption, font=font) + 20, base), clock, font=time_font, fill=MUTED, anchor="ls")
+
+
+def _jpeg(canvas: Image.Image) -> bytes:
+    out = io.BytesIO()
+    canvas.save(out, "JPEG", quality=84, optimize=True, progressive=True)
+    return out.getvalue()
+
+
 def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
     """2x2 photos with a short caption and time each; the dish marked in yellow in every panel.
 
     Optional meta: `person_box` keeps the person's head in the crop, `late_box` marks the dish where the
     late photo saw it, and `left_behind` captions the second photo as leaving the dish rather than
     putting it down (the moment found was them walking off from it)."""
-    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    title, title_font = _title(probe, meta["dish"], name)
     day = datetime.fromtimestamp(meta["putting_at"], utc.utc).astimezone(timezone())
-    subtitle, sub_font = _fit(probe, f"{day:%a %b %-d} · {place(meta['location'])}", range(44, 35, -4), 450, WIDTH - 2 * MARGIN)
-    head = MARGIN + 100 + 58 + 26
     row = PANEL_H + CAPTION_H
-    canvas = Image.new("RGB", (WIDTH, head + 2 * row + GAP + MARGIN - 18), PAPER)
-    draw = ImageDraw.Draw(canvas)
-    draw.text((MARGIN, MARGIN + 92), title, font=title_font, fill=INK, anchor="ls")
-    draw.text((MARGIN, MARGIN + 92 + 62), subtitle, font=sub_font, fill=MUTED, anchor="ls")
-
-    with Image.open(io.BytesIO(pictures["putting"])) as first:
-        aspect = PANEL_W / PANEL_H * first.height / first.width
-    x0, y0, x1, y1 = _crop([meta["box"], *([meta["late_box"]] if meta.get("late_box") else [])], meta.get("person_box"), aspect)
-    sx, sy = PANEL_W / (x1 - x0), PANEL_H / (y1 - y0)
+    canvas, draw = _canvas(HEAD + 2 * row + GAP + MARGIN - 18, meta["dish"], name, f"{day:%a %b %-d} · {place(meta['location'])}")
+    region = _crop([meta["box"], *([meta["late_box"]] if meta.get("late_box") else [])], meta.get("person_box"),
+                   _aspect(pictures["putting"], PANEL_W, PANEL_H))
     captions = {"before": "Before", "putting": "Leaving it" if meta.get("left_behind") else "Putting it down",
                 "left": "Left there", "late": f"Still there {_later(meta['late_at'] - meta['left_at'])}"}
     styles = {"before": "dashed", "putting": "corners", "left": "solid", "late": "solid"}
-    time_font = _type(46, 450)
     for i, key in enumerate(STAGES):
-        px, py = MARGIN + (i % 2) * (PANEL_W + GAP), head + (i // 2) * (row + GAP)
-        with Image.open(io.BytesIO(pictures[key])) as source:
-            frame = source.convert("RGB")
-        bounds = (round(x0 * frame.width), round(y0 * frame.height), round(x1 * frame.width), round(y1 * frame.height))
-        canvas.paste(frame.crop(bounds).resize((PANEL_W, PANEL_H), Image.Resampling.LANCZOS), (px, py))
-        bx, by, bw, bh = meta["late_box"] if key == "late" and meta.get("late_box") else meta["box"]
-        cx, cy = px + (bx + bw / 2 - x0) * sx, py + (by + bh / 2 - y0) * sy
-        half_w, half_h = max(bw * sx / 2 + 10, MIN_MARK / 2), max(bh * sy / 2 + 10, MIN_MARK / 2)
-        rect = (max(px + 6, cx - half_w), max(py + 6, cy - half_h), min(px + PANEL_W - 6, cx + half_w), min(py + PANEL_H - 6, cy + half_h))
-        if rect[0] < rect[2] and rect[1] < rect[3]:  # a late box far from the first one can fall outside
-            _mark(draw, rect, styles[key])
-        clock, base = _clock(meta[f"{key}_at"]), py + PANEL_H + 64
-        room = PANEL_W - draw.textlength(clock, font=time_font) - 20
-        caption, font = _fit(draw, captions[key], range(50, 37, -2), 650, int(room))
-        draw.text((px, base), caption, font=font, fill=DISH if key == "late" else INK, anchor="ls")
-        draw.text((px + draw.textlength(caption, font=font) + 20, base), clock, font=time_font, fill=MUTED, anchor="ls")
-    out = io.BytesIO()
-    canvas.save(out, "JPEG", quality=84, optimize=True, progressive=True)
-    return out.getvalue()
+        px, py = MARGIN + (i % 2) * (PANEL_W + GAP), HEAD + (i // 2) * (row + GAP)
+        box = meta["late_box"] if key == "late" and meta.get("late_box") else meta["box"]
+        _panel(canvas, draw, pictures[key], region, box, (px, py), (PANEL_W, PANEL_H), styles[key])
+        _caption(draw, captions[key], meta[f"{key}_at"], px, py + PANEL_H + 64, PANEL_W, DISH if key == "late" else INK)
+    return _jpeg(canvas)
+
+
+OUT_W = WIDTH - 2 * MARGIN
+OUT_H = OUT_W * 3 // 4
+
+
+def render_out(meta: dict, picture: bytes, name: str | None) -> bytes:
+    """A dish still out past its deadline whose put-down was never found: one photo of it there, marked,
+    with since when. Nobody is named on it until a person picks a name; the camera saw no one leave it."""
+    since = datetime.fromtimestamp(meta["out_since"], utc.utc).astimezone(timezone())
+    when = f"{'Out since' if meta['timing_known'] else 'There since at least'} {since:%a %-I:%M %p}"
+    canvas, draw = _canvas(HEAD + OUT_H + CAPTION_H + MARGIN - 18, meta["dish"], name, f"{when} · {place(meta['location'])}")
+    region = _crop([meta["box"]], None, _aspect(picture, OUT_W, OUT_H))
+    _panel(canvas, draw, picture, region, meta["box"], (MARGIN, HEAD), (OUT_W, OUT_H), "solid")
+    _caption(draw, f"Still there {_later(meta['photo_at'] - meta['out_since'])}", meta["photo_at"], MARGIN, HEAD + OUT_H + 64, OUT_W, DISH)
+    return _jpeg(canvas)
