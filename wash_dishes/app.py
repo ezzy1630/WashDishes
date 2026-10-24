@@ -324,7 +324,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         learning = store.learning()
         # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
         items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
-        return {"items": items, **runtime.proofs.progress(), "people": ledger.tally(store),
+        return {"items": items, "out": runtime.proofs.out_items(), **runtime.proofs.progress(), "people": ledger.tally(store),
                 "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
 
     @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])
@@ -332,6 +332,12 @@ def create_app(config: Config | None = None) -> FastAPI:
         # Served while the photos are kept, so a named proof stays on its person's page after the dish
         # is gone. The URL changes with the name and the design, so a cached copy is never stale.
         return Response(ledger.picture(store, obligation_id), media_type="image/jpeg", headers={
+            "Content-Disposition": f'inline; filename="dish-{obligation_id}.jpg"', "Cache-Control": "private, max-age=604800"})
+
+    @app.get("/api/proofs/out/{obligation_id}/image", dependencies=[Depends(authenticated)])
+    def still_out_image(obligation_id: int):
+        # Served only while the dish is still out. The URL changes with the photo and the name.
+        return Response(runtime.proofs.out_image(obligation_id), media_type="image/jpeg", headers={
             "Content-Disposition": f'inline; filename="dish-{obligation_id}.jpg"', "Cache-Control": "private, max-age=604800"})
 
     @app.post("/api/proofs/{obligation_id}/reject", dependencies=[Depends(authenticated)])

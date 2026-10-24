@@ -463,6 +463,22 @@ def test_dish_gone_after_a_restart_needs_review_and_is_not_cleaned(kitchen, stor
     assert item["lifecycle"] == "open" and item["review_pending"]
 
 
+def test_dish_swapped_out_while_watched_is_taken_away_not_left_for_review(kitchen):
+    # The stove, 2026-10-23: a pot replaced by a bigger pan on the same burner is neither a pickup nor
+    # a put-down, so the pot was only found missing later; it then waited a day for a review.
+    kitchen.visit("counter", change=kitchen.put("plate", "plate", "counter"))
+    kitchen.wait(40)
+    [item] = kitchen.items()
+    kitchen.visit("counter", change=lambda: (kitchen.take("plate")(), kitchen.put("pan", "pan", "counter", dx=.015, dy=.06, size=(.10, .13))()))
+    for _ in range(12):
+        kitchen.step(seconds=60)
+    record = kitchen.store.obligation(item["id"])
+    [gone] = [e for e in record["events"] if e["event"] == "dish_picked_up"]
+    assert not record["review_pending"] and gone["created_at"] == record["last_seen_at"]
+    kitchen.store.scan_deadlines()
+    assert kitchen.store.obligation(item["id"])["status"] == "cleared"
+
+
 def test_background_detector_miss_keeps_one_record_without_training_labels(store, media):
     kitchen = Kitchen(store, media)
     kitchen.dishes["plate"] = ("plate", [0.05, 0.6, 0.06, 0.08])
