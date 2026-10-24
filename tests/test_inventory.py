@@ -464,8 +464,9 @@ def test_dish_gone_after_a_restart_needs_review_and_is_not_cleaned(kitchen, stor
 
 
 def test_dish_swapped_out_while_watched_is_taken_away_not_left_for_review(kitchen):
-    # The stove, 2026-10-23: a pot replaced by a bigger pan on the same burner is neither a pickup nor
-    # a put-down, so the pot was only found missing later; it then waited a day for a review.
+    # 2026-10-23: stove pans that left without a seen pickup were only found missing on a later
+    # recheck, then waited a day for a review. A pot swapped for a much bigger pan is one such case:
+    # the pairing reads it as neither a pickup nor a put-down.
     kitchen.visit("counter", change=kitchen.put("plate", "plate", "counter"))
     kitchen.wait(40)
     [item] = kitchen.items()
