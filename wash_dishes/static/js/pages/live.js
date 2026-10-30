@@ -13,7 +13,7 @@ export function livePage(main, route) {
   const errors = h("p", { class: "form-error", role: "alert" });
   const progress = h('p', {class: 'help', role: 'status', 'aria-live': 'polite'});
   const area = h("select", { "aria-label": "Area to investigate" });
-  const hours = h("select", { "aria-label": "Search period" }, [[2, "Last 2 hours"], [6, "Last 6 hours"], [12, "Last 12 hours"], [24, "Last 24 hours"]].map(([v, t]) => h("option", { value: v, selected: v === 12 }, t)));
+  const hours = h("select", { "aria-label": "Search period" }, [[2, "Last 2 hours"], [6, "Last 6 hours"], [12, "Last 12 hours"], [24, "Last 24 hours"], [50, "Last 50 hours"]].map(([v, t]) => h("option", { value: v, selected: v === 12 }, t)));
   const purpose = h("select", { "aria-label": "Correction use" }, h("option", { value: "training" }, "Use for training"), h("option", { value: "evaluation" }, "Reserve for testing"));
   const live = new LiveView({ onSelect: (key, d) => { if (d && d.kind !== "person") choose(d); }, onUpdate: next => updateLive(next) });
   const layers = h("div", { class: "chips", "aria-label": "Camera layers" }, [["zones", "Areas"], ["dishes", "Dishes"], ["people", "People"]].map(([key, label]) => h("button", {

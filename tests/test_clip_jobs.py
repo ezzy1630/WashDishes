@@ -18,7 +18,7 @@ def test_requested_clip_survives_restart_and_failed_export_retries(store, media,
 
 def test_clip_request_is_idempotent_and_failures_are_visible(store, media):
     item = store.create_obligation(None, [{'kind': 'pan', 'quantity': 1}])
-    at = utcnow() - timedelta(days=2)
+    at = utcnow() - timedelta(days=3)
     for _ in range(2):
         media.request_event_clip(item['id'], 'Handling', at=at)
     assert len(media.pending_clips) == 1
