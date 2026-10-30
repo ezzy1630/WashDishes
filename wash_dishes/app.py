@@ -99,7 +99,7 @@ class TraceRequest(BaseModel):
     frame_id: str = Field(max_length=20)
     area_id: str = Field(max_length=80)
     obligation_id: int | None = Field(default=None, ge=1)
-    hours: float = Field(default=12, ge=.1, le=48, allow_inf_nan=False)
+    hours: float = Field(default=12, ge=.1, le=72, allow_inf_nan=False)
 
 
 class TraceKeep(BaseModel):

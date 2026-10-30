@@ -70,7 +70,7 @@ export function setupPage(main) {
     }, { submit: "Save rules" });
     const num = (label, key, min, max, help, step = "1") => field(label, h("input", { type: "number", name: key, value: s[key], min, max, step, required: true }), help);
     f.append(h("div", { class: "form-grid" }, num("Grace period (minutes)", "deadline_minutes", 1, 1440, "How long a dish can sit before it counts as late. Applies to new dishes."), num("Storage limit (GB)", "storage_limit_gb", 0.1, 2000, "Cap for camera footage and evidence.", "0.1")),
-      h("div", { class: "form-grid four" }, num("Rolling footage (hours)", "buffer_hours", 0.1, 48, "", "0.1"), num("Keep clips (days)", "evidence_days", 1, 90), num("Keep photos (days)", "photo_days", 1, 730), num("Keep disputed (days)", "review_days", 1, 365)));
+      h("div", { class: "form-grid four" }, num("Rolling footage (hours)", "buffer_hours", 0.1, 72, "", "0.1"), num("Keep clips (days)", "evidence_days", 1, 90), num("Keep photos (days)", "photo_days", 1, 730), num("Keep disputed (days)", "review_days", 1, 365)));
     f.finish(); return f;
   }
 
