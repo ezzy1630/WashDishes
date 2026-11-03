@@ -100,7 +100,9 @@ def test_the_picture_takes_long_names_and_missing_person_or_late_boxes():
     plain = render()
     assert plain[0][0] == collage.WIDTH and plain[1] < 600_000
     assert render({"person_box": [.6, .5, .2, .5], "late_box": [.71, .8, .04, .05], "left_behind": True}, "Sam")[0] == plain[0]
-    assert render({"dish": "2 cups, bowl"}, "Maximilian Alexander-Fitzgerald the Third of Kitchen")[0] == plain[0]
+    long = render({"dish": "2 cups, bowl"}, "Maximilian Alexander-Fitzgerald the Third of Kitchen")
+    assert long[0][0] == plain[0][0] and long[0][1] >= plain[0][1]
+    assert long[1] <= 350_000
     assert render({"box": [.98, .97, .02, .03], "person_box": [0.0, .66, .11, .34]})[0] == plain[0]
 
 

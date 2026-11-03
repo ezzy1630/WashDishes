@@ -60,14 +60,14 @@ def test_filmstrip_saved_once_with_real_frame_times_boxes_and_seven_day_expiry(s
         assert parse_stamp(evidence['expires_at'])-parse_stamp(evidence['created_at']) == timedelta(days=7)
         import json
         frames = json.loads(evidence['capture'])['frames']
-        assert len(frames) == 6
+        assert len(frames) == 2
         # Identical synthetic gray source frames cannot establish an absent-to-arrival change.
         assert json.loads(evidence['capture'])['window']['arrival_recorded'] is False
-        assert len({f['at'] for f in frames}) == 6
+        assert len({f['at'] for f in frames}) == 2
         picture = media.safe_path(evidence['filename']).read_bytes()
         with Image.open(io.BytesIO(picture)) as image:
-            assert image.width == 1200 and image.height == 1668
-        assert len(picture) < 600000
+            assert image.width == 1080 and image.height < 1668
+        assert len(picture) <= 350000
         assert store.conn.execute("SELECT count(*) FROM evidence WHERE kind='filmstrip'").fetchone()[0] == 1
 
 
@@ -203,10 +203,11 @@ def test_short_filmstrip_fits_its_frames_and_uses_housemate_copy(monkeypatch):
     monkeypatch.setattr(ImageDraw.ImageDraw, 'text', track)
     picture = filmstrip.render(item, frames)
     with Image.open(io.BytesIO(picture)) as image:
-        assert image.size == (1200, 1177)
-    assert 'Plate on the dining table' in text
-    assert 'Nov 2 · 11:14–11:20 AM' in text
+        assert image.width == 1080 and image.height < 1177
+    assert 'Dishes to check' in text
+    assert 'Nov 2 · Dining table' in text
+    assert not any('11:14–11:14' in t for t in text)
     assert not any('arrival context' in value or 'human review' in value for value in text)
     text.clear()
     filmstrip.render(item, frames, already_at=start)
-    assert 'Already there at 11:14 AM — arrival not recorded' in text
+    assert 'already here at 11:14 AM.' in ' '.join(text)

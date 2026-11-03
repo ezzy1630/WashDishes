@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from io import BytesIO
 
 from PIL import Image, ImageDraw
 
 from .collage import INK, MUTED, PAPER, _fit, _type
+from .evidence_image import jpeg
 
 SITE = 'https://highest-house.vercel.app'
 WIDTH = 1080
@@ -20,14 +20,15 @@ def render(data: dict, *, demo: bool = False) -> bytes:
     draw = ImageDraw.Draw(canvas)
     margin, usable, y = 64, WIDTH - 128, 56
 
-    def line(text, size=36, color=INK, weight=450):
+    def line(text, size=40, color=INK, weight=450):
         nonlocal y
-        value, font = _fit(draw, text, range(size, 23, -2), weight, usable)
+        value, font = _fit(draw, text, range(size, 39, -2) if size > 40 else range(40, 39, -1), weight, usable)
         draw.text((margin, y), value, fill=color, font=font)
-        y += size + 18
+        y += max(40, size) + 18
 
-    def paragraph(text, size=32, color=MUTED):
+    def paragraph(text, size=40, color=MUTED):
         nonlocal y
+        size = max(40, size)
         font = _type(size)
         words, row = text.split(), ''
         for word in words:
@@ -46,11 +47,11 @@ def render(data: dict, *, demo: bool = False) -> bytes:
     y += 24
     rows = [r for r in data['standings'] if r['points'] > 0]
     for person in rows[:3]:
-        label, font = _fit(draw, person['name'], range(48, 25, -2), 600, usable - 220)
+        label, font = _fit(draw, person['name'], range(48, 39, -2), 600, usable - 220)
         draw.text((margin, y), label, font=font, fill=INK)
         draw.text((WIDTH - margin, y), f"{person['points']} pt", font=_type(48, 650), fill=INK, anchor='ra')
         y += 82
-        draw.line((margin, y, WIDTH - margin, y), fill='#30363d', width=2)
+        draw.line((margin, y, WIDTH - margin, y), fill='#3a4048', width=2)
         y += 24
     if len(rows) > 3:
         paragraph('Also scoring: ' + ', '.join(f"{p['name']} {p['points']} pt" for p in rows[3:]), 28)
@@ -71,6 +72,4 @@ def render(data: dict, *, demo: bool = False) -> bytes:
     y += 26
     line(SITE, 34, weight=600)
     image = canvas.crop((0, 0, WIDTH, y + 40))
-    out = BytesIO()
-    image.save(out, 'JPEG', quality=88, optimize=True)
-    return out.getvalue()
+    return jpeg(image)

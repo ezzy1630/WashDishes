@@ -37,7 +37,8 @@ def test_sequence_collection_keeps_originals_and_needs_semantic_review(store, me
     assert saved['captured'] == 4
     assert [s['key'] for s in saved['stages']] == ['before', 'using', 'leaving', 'later']
     assert len({s['sha256'] for s in saved['stages']}) == 4
-    assert Image.open(collection.image(item['id'])).size[0] >= 2400
+    assert Image.open(collection.image(item['id'])).size[0] == 1080
+    assert collection.image(item['id']).stat().st_size <= 350_000
     assert collection.refresh() == 0
     assert len(store.obligation(item['id'])['evidence']) == 5  # Four originals and the derived collage.
     reviewed = collection.review(item['id'], saved['fingerprint'], {k: True for k in ('before','using','leaving','later')})
