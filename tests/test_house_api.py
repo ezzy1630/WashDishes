@@ -1040,3 +1040,49 @@ def test_confident_saved_still_is_fair_without_arrival_and_expiry_downgrades(hou
     assert expired['visits'][0]['evidence'] == 'weak'
     assert (expired['clear_count'], expired['weak_count']) == (0, 1)
     assert sum(p['points'] for p in expired['standings']) == 0
+
+
+@pytest.mark.parametrize('features,expected', [
+    ([-1, -1], 'weak'),  # every canonical member has an object hint
+    ([-1, 1], 'fair'),   # a real dish keeps the whole trip visible
+    ([-1, None], 'fair'),  # an unscored member cannot be silently hidden
+])
+def test_object_hints_cannot_hide_a_mixed_visit(house_client, features, expected):
+    client, store = house_client, house_client.app.state.store
+    items = [late(client), late(client)]
+    stored_visit(client, items, visit_id='mixed-objects', arrival_seen=True)
+    models = store.root / 'models'
+    models.mkdir(exist_ok=True)
+    (models / 'dish-review-probe.json').write_text(json.dumps({
+        'weights': [10.] + [0.] * 511, 'bias': 0., 'threshold': .35, 'retain_threshold': .65}))
+    for item, feature in zip(items, features):
+        if feature is not None:
+            sample = store.add_dish_sample([0., 1.] + [0.] * 510, .9,
+                                          tight_embedding=[float(feature)] + [0.] * 511)
+            store.link_dish_sample(sample, item['id'])
+    board = client.get('/house/api/week').json()
+    visit = next(v for v in board['visits'] if v['id'] == 'mixed-objects')
+    assert visit['evidence'] == expected
+    assert set(visit['dish_ids']) == {i['id'] for i in items}
+    assert visit['can_name'] is True
+    assert sum(p['points'] for p in board['standings']) == 0
+
+
+@pytest.mark.parametrize('verdict,expected', [('not_dish', 'weak'), ('clean', 'fair')])
+def test_household_object_answer_teaches_review_and_undo_restores_it(house_client, verdict, expected):
+    client, store = house_client, house_client.app.state.store
+    store.set_settings({'areas': [{'id': 'table', 'name': 'Table', 'role': 'dirty', 'box': [0, 0, 1, 1]}]})
+    original, recurring = late(client), late(client)
+    stored_visit(client, [recurring], visit_id='recurring-object', arrival_seen=True)
+    for item in [original, recurring]:
+        with store.conn:
+            store.conn.execute('UPDATE obligations SET box=?,location=? WHERE id=?',
+                               (json.dumps([.2, .2, .1, .1]), 'Table', item['id']))
+        store.link_dish_sample(store.add_dish_sample([1.] + [0.] * 511, .9), item['id'])
+    getattr(store, 'mark_' + verdict)([original['id']], 'operator')
+    def tier():
+        visits = client.get('/house/api/week').json()['visits']
+        return next(v['evidence'] for v in visits if v['id'] == 'recurring-object')
+    assert tier() == expected
+    store.undo_dish_correction(original['id'], 'operator')
+    assert tier() == 'fair'

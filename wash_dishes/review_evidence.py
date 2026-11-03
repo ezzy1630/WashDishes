@@ -10,7 +10,7 @@ from .remembered import EMBEDDING_SIZE, SIMILARITY_THRESHOLD, similarity, unit_e
 
 
 def rate(capture: dict, *, has_filmstrip: bool, has_photo: bool, dish_confident: bool,
-         remembered_near_match: bool) -> dict:
+         remembered_near_match: bool, non_dish: bool = False, dish_likely: bool = False) -> dict:
     """Pure visit rating. One useful signal earns fair; strong needs all safeguards.
 
     person_boxes in a saved filmstrip are already filtered to people in reach by
@@ -18,9 +18,11 @@ def rate(capture: dict, *, has_filmstrip: bool, has_photo: bool, dish_confident:
     """
     arrival = capture.get('window', {}).get('arrival_recorded') is True
     person = any(frame.get('person_boxes') for frame in capture.get('frames', []))
+    if non_dish:
+        return {'evidence': 'weak', 'reason': 'Looks like a household object; check Not a dish'}
     if has_filmstrip and arrival and person and dish_confident and not remembered_near_match:
         return {'evidence': 'strong', 'reason': None}
-    if (has_filmstrip and (arrival or person)) or ((has_filmstrip or has_photo) and dish_confident):
+    if (has_filmstrip and (arrival or person)) or ((has_filmstrip or has_photo) and (dish_confident or dish_likely)):
         return {'evidence': 'fair', 'reason': None}
     reasons = []
     if not has_filmstrip and arrival:
