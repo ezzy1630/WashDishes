@@ -3,7 +3,7 @@ import { api, h, fill, toast } from "./core.js";
 // Plain words for the operator; raw codes stay in the API.
 const MODEL = {
   probe: "Dish check",
-  identity: "Who it was",
+  identity: "Person matching",
   detector: "Dish finder",
 };
 const STATUS = {
