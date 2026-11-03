@@ -17,7 +17,6 @@ import numpy as np
 
 from .config import monitoring_areas
 from .inventory import rests_in
-from .proof_visits import single_visitor
 from .store import Store
 from .verifier import DishVerifier, context_crop
 from .vision import box_iou
@@ -275,38 +274,6 @@ class ProofChecker:
                                 if any(w in f"{a.get('id', '')} {a.get('name', '')}".lower() for w in STOVE_WORDS)):
             reasons.append("a pan or pot set down off the stove was likely moved there after cooking; who cooked with it isn't shown")
 
-        visit = None
-        if found.get("method") == "visit":
-            if self.verifier.proof(left) is not True:
-                reasons.append("the visit needs the kitchen dish checker to be sure it is a dish")
-            if not any(a["role"] in ("dirty", "sink") and rests_in(box, a) for a in areas):
-                reasons.append("the visit is outside the configured dirty or sink surfaces")
-            frames = found.get("visit_frames", [])
-            visit = single_visitor(frames, box)
-            if isinstance(visit, str):
-                reasons.append(visit)
-                visit = None
-            elif (abs(frames[0]["at"] - found["before"]["at"]) > .25
-                  or abs(frames[-1]["at"] - found["left"]["at"]) > .25):
-                reasons.append("the visit observations do not bracket these proof pictures")
-                visit = None
-            if handled or any(_reach(box, d["box"]) <= self.thresholds.reach
-                              for d in self.detect(found["left"]["jpeg"], box) if d["kind"] == "person"):
-                reasons.append("the visit needs clear views before and after the person")
-            checks["visit"] = {"start": visit["start"], "end": visit["end"], "observations": len(visit["observations"])} if visit else None
-            # A deposit is not necessarily new use: refuse a possible transfer
-            # from another dirty/sink spot. No visual matcher can prove use from
-            # an occluded transfer. Clean/storage sources do not carry old blame.
-            after_detections = self.detect(found["left"]["jpeg"], box)
-            sources = [d for d in before_detections if d["kind"] != "person"
-                       and box_iou(box, d["box"]) < .3
-                       and any(a["role"] in ("dirty", "sink") and rests_in(d["box"], a) for a in areas)
-                       and not any(o["kind"] != "person" and box_iou(d["box"], o["box"]) >= .3 for o in after_detections)
-                       and visit and any(_reach(d["box"], o["person_box"]) <= self.thresholds.reach
-                                         for o in visit["observations"])]
-            checks["possible_dirty_sources"] = sources
-            if sources:
-                reasons.append("a dish disappeared from another dirty spot during this visit; use versus moving needs review")
         choices = []
         hidden_frames = 0
         for candidate in [found["putting"], *found.get("candidates", [])]:
@@ -327,10 +294,7 @@ class ProofChecker:
             # A bounding box cannot locate the shoulder precisely. At the body's edges,
             # require an actual dish detection if the person covers most of the spot.
             # A visible dish beside an outstretched arm can still pass this check.
-            observed = min(visit["observations"], key=lambda o: abs(o["at"] - candidate["at"]), default=None) if visit else None
-            visit_person = (observed is not None and abs(observed["at"] - candidate["at"]) <= .25
-                            and box_iou(observed["person_box"], people[0]) >= .4)
-            if not visit_person and (cover >= self.thresholds.body_cover
+            if (cover >= self.thresholds.body_cover
                     or (person_cover >= self.thresholds.body_cover and visible < self.thresholds.overlap)):
                 hidden_frames += 1
                 continue

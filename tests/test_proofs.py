@@ -152,15 +152,14 @@ def test_selected_identity_absence_withdraws_proof_but_description_failure_keeps
     assert proofs.image(item['id']).startswith(b'\xff\xd8')
 
 
-@pytest.mark.parametrize('method,action', [('journal', 'left it behind'), ('visit', 'at the counter')])
-def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(store, media, method, action):
+def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(store, media):
     proofs = Proofs(store.root, store, media)
     item = late_dish(store, media)
     now = utcnow()
     traces, identities, checked = [], [], []
     def find(*args, **kwargs):
         traces.append(args)
-        return found(*args) | {'method': method, 'putting_action': action, 'visit_frames': [{'at': 1, 'detections': []}]}
+        return found(*args) | {'method': 'journal', 'putting_action': 'left it behind'}
     def check(oid, trace, late, box, late_box):
         checked.append((trace, late))
         return {'status': 'waiting', 'reason': 'someone is still at the dish', 'checks': {'busy': True}}
@@ -176,8 +175,6 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     proofs = Proofs(store.root, store, media)
     def accept(oid, trace, late, box, late_box):
         assert trace['left']['jpeg'] == checked[0][0]['left']['jpeg']
-        assert trace['method'] == method and trace['putting_action'] == action
-        assert trace['visit_frames'] == checked[0][0]['visit_frames']
         assert late == fresh
         assert box == BOX and late_box == moved
         return {'checks': {'busy': False}}
@@ -186,7 +183,7 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     assert len(proofs.items(now+timedelta(minutes=6))) == 1
     assert (proofs.dir / str(item['id']) / 'late.jpg').read_bytes() == fresh
     saved = json.loads(store.conn.execute('SELECT data FROM proofs WHERE obligation_id=?', (item['id'],)).fetchone()[0])
-    assert saved['method'] == method and saved['left_behind'] == (method == 'journal')  # the caption survives the retry
+    assert saved['method'] == 'journal' and saved['left_behind'] is True  # the caption survives the retry
 
 
 def test_newest_matching_photo_is_checked_even_if_older_one_was_clear(store, media):

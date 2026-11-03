@@ -142,11 +142,10 @@ class Proofs:
             try:
                 found = {k: {"at": saved[f"{k}_at"], "jpeg": (folder / f"{k}.jpg").read_bytes()}
                          for k in ("before", "putting", "left")}
-                found.update({k: saved[k] for k in ("method", "visit_frames", "putting_action") if k in saved})
                 # Inventory may have moved the same obligation meanwhile. Its old pictures
                 # still use the original box; only the fresh late photo uses the new one.
                 box = saved["box"]
-                trace = {k: saved[k] for k in ("method", "left_behind", "visit_frames", "putting_action") if k in saved}
+                trace = {k: saved[k] for k in ("method", "left_behind") if k in saved}
             except (OSError, KeyError):
                 found = None
         deadline = time.monotonic() + TRACE_SECONDS
@@ -162,8 +161,7 @@ class Proofs:
                     found = find(box, parse_stamp(item["created_at"]).timestamp(), late_at,
                                  earlier_than=earlier_than, deadline=deadline)
                     if isinstance(found, dict):
-                        trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind",
-                                 **{k: found[k] for k in ("visit_frames", "putting_action") if k in found}}
+                        trace = {"method": found.get("method"), "left_behind": found.get("putting_action") == "left it behind"}
                 if not isinstance(found, dict):
                     checked = found or "no put-down found"
                     break
