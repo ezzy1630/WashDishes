@@ -9,6 +9,7 @@ import os
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -31,7 +32,7 @@ def port():
         return sock.getsockname()[1]
 
 
-def ready(url, process=None):
+def ready(url, ca, process=None):
     import httpx
 
     deadline = time.monotonic() + 40
@@ -39,7 +40,7 @@ def ready(url, process=None):
         if process and process.poll() is not None:
             raise RuntimeError("Jetson app exited during startup; inspect app.log")
         try:
-            if httpx.get(url, timeout=1, trust_env=False).status_code == 200:
+            if httpx.get(url, timeout=1, trust_env=False, verify=ssl.create_default_context(cafile=ca)).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
@@ -64,11 +65,12 @@ def main():
     from cryptography.hazmat.primitives import serialization
     from fake_auth import FakeAuth
     from static_site import server as site_server
+    from tls import certificates
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--foundation", action="store_true", help="Run only currently available infrastructure checks")
     parser.add_argument("--playwright", default=os.getenv("HOUSE_E2E_PLAYWRIGHT"), help="Existing playwright-core package directory")
-    parser.add_argument("--supabase-js", default=os.getenv("HOUSE_E2E_SUPABASE_JS"), help="Existing supabase-js UMD file")
+    parser.add_argument("--supabase-js", default=os.getenv("HOUSE_E2E_SUPABASE_JS"), help="Existing supabase-js browser ES module")
     parser.add_argument("--site-config", help="Scratch JS config template; substitutes AUTH_URL, API_URL and ANON_KEY")
     parser.add_argument("--config-path", default="/config.js")
     parser.add_argument("--ui-contract", help="JSON selector overrides for the merged site's accessible labels")
@@ -87,46 +89,59 @@ def main():
     try:
         playwright = locate(args.playwright, sorted(Path("/Volumes/Neural/NexaRad/node_modules/.pnpm").glob("playwright-core@*/node_modules/playwright-core")),
                             "No existing playwright-core. Set HOUSE_E2E_PLAYWRIGHT to an installed package under /Volumes/Neural.")
-        sdk = locate(args.supabase_js, [REPO / "house-site/vendor/supabase.js", REPO / "house-site/vendor/supabase.min.js",
-                     SCRATCH / "deps/node_modules/@supabase/supabase-js/dist/umd/supabase.js"],
-                     "No supabase-js UMD file. See scripts/house_e2e/README.md for scratch-only setup.")
+        sdk = locate(args.supabase_js, [REPO / "house-site/vendor/supabase-js-2.118.0.js"],
+                     "No vendored supabase-js ES module. Set HOUSE_E2E_SUPABASE_JS to an existing browser module.")
         ports = set()
         while len(ports) < 3:
             ports.add(port())
         site_port, auth_port, app_port = sorted(ports)
-        site_url, auth_url, app_url = [f"http://127.0.0.1:{p}" for p in (site_port, auth_port, app_port)]
+        tls = certificates(run)
+        verify = ssl.create_default_context(cafile=tls["ca"])
+        site_url, auth_url, app_url = [f"https://127.0.0.1:{p}" for p in (site_port, auth_port, app_port)]
         auth = FakeAuth(auth_url, site_url)
-        # Bind before starting threads; every server is loopback-only.
-        auth_server = uvicorn.Server(uvicorn.Config(auth.app, host="127.0.0.1", port=auth_port, log_level="error"))
+        # Every server is loopback-only, using the same throwaway certificate.
+        auth_server = uvicorn.Server(uvicorn.Config(auth.app, host="127.0.0.1", port=auth_port, log_level="error",
+                                                  ssl_certfile=tls["cert"], ssl_keyfile=tls["key"]))
         threads.append(threading.Thread(target=auth_server.run, daemon=True))
         config_js = None
         if args.site_config:
             config_js = Path(args.site_config).read_text().replace("AUTH_URL", auth_url).replace("API_URL", app_url).replace("ANON_KEY", auth.anon_key)
         static = site_server(REPO / "house-site", sdk, auth_url, app_url, auth.anon_key, args.config_path, config_js, site_port)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(tls["cert"], tls["key"])
+        static.socket = context.wrap_socket(static.socket, server_side=True)
         threads.append(threading.Thread(target=static.serve_forever, daemon=True))
         for thread in threads:
             thread.start()
-        ready(auth_url + "/auth/v1/settings")
+        ready(auth_url + "/auth/v1/settings", tls["ca"])
+        try:
+            httpx.get(auth_url + "/auth/v1/settings", trust_env=False)
+        except httpx.ConnectError as exc:
+            require("CERTIFICATE_VERIFY_FAILED" in str(exc), "Expected untrusted TLS certificate refusal")
+        else:
+            raise RuntimeError("Throwaway certificate was trusted without the harness CA")
+        report["executed"].append("HTTPS with throwaway CA; untrusted client refuses certificate; no production origin exception")
         clock_file = run / "clock-offset-seconds"
         clock_file.write_text("0")
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(run),
                "HOUSE_E2E_CLOCK_FILE": str(clock_file),
+               "HOUSE_E2E_TLS_CERT": tls["cert"], "HOUSE_E2E_TLS_KEY": tls["key"],
+               "SSL_CERT_FILE": tls["ca"], "NODE_EXTRA_CA_CERTS": tls["ca"],
                "HOUSE_E2E_DATA": str(run / "data"), "HOUSE_E2E_PORT": str(app_port),
                "WASHDISHES_DATA_DIR": str(run / "data"), "WASHDISHES_ACCESS_KEY": secrets.token_urlsafe(24),
                "WASHDISHES_TIMEZONE": "America/Los_Angeles", "SUPABASE_URL": auth_url,
-               "SUPABASE_SERVICE_ROLE_KEY": auth.admin_key, "SUPABASE_SERVICE_KEY": auth.admin_key,
-               "SUPABASE_ANON_KEY": auth.anon_key, "HOUSE_SITE_ORIGIN": site_url, "HOUSE_PUBLIC_ORIGIN": app_url,
-               "HOUSE_MEDIA_SECRET": secrets.token_urlsafe(32)}
+               "SUPABASE_SECRET_KEY": auth.admin_key, "SUPABASE_JWT_SECRET": "",
+               "SUPABASE_ANON_KEY": auth.anon_key, "HOUSE_SITE_ORIGIN": site_url, "HOUSE_PUBLIC_ORIGIN": app_url}
         # Exclude inherited proxy settings; both harness and app only contact loopback.
         env = {k: v for k, v in env.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
         with (run / "app.log").open("w") as log:
             product = subprocess.Popen([str(PYTHON), "-B", str(Path(__file__).with_name("boot.py"))], cwd=REPO, env=env, stdout=log, stderr=log)
-        ready(app_url + "/api/health", product)
+        ready(app_url + "/api/health", tls["ca"], product)
         fixture = json.loads((run / "fixture.json").read_text())
         require(len(fixture["residents"]) == 10, "Seed must contain ten residents")
         require(fixture["visits"][0]["points"] == 4, "Multi-dish fixture must score four points")
         report["executed"].extend(["real app started with workers disabled", "10 residents, 3 current visits, 1 closed-week visit and synthetic JPEGs seeded"])
-        with httpx.Client(base_url=app_url, trust_env=False) as client:
+        with httpx.Client(base_url=app_url, trust_env=False, verify=verify) as client:
             login = client.post("/api/login", json={"password": env["WASHDISHES_ACCESS_KEY"]})
             require(login.status_code == 200, "Operator session login failed: " + login.text)
             csrf = login.json()["csrf_token"]
@@ -150,7 +165,7 @@ def main():
             operator_cookie = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
         report["executed"].append("operator cookie login and dashboard read")
         report["executed"].append("synthetic JPEGs served through authenticated media; isolated server wall clock advanced/restored")
-        with httpx.Client(base_url=auth_url, trust_env=False) as client:
+        with httpx.Client(base_url=auth_url, trust_env=False, verify=verify) as client:
             admin = {"Authorization": "Bearer " + auth.admin_key, "apikey": auth.admin_key}
             created = client.post("/auth/v1/admin/users", headers=admin,
                                   json={"email": "probe@house-e2e.invalid", "password": "first-password", "email_confirm": True})
@@ -170,7 +185,7 @@ def main():
         ui = json.loads(Path(args.ui_contract).read_text()) if args.ui_contract else {}
         browser_config = {"run": str(run), "playwright": str(playwright), "site": site_url, "auth": auth_url, "api": app_url,
                           "anon": auth.anon_key, "fixture": fixture, "operatorCookie": operator_cookie, "csrf": csrf,
-                          "privateKey": str(private_key), "clockFile": str(clock_file), "kid": auth.kid, "ui": ui}
+                          "privateKey": str(private_key), "clockFile": str(clock_file), "kid": auth.kid, "ui": ui, "tlsSpki": tls["spki"]}
         config = run / "browser.json"
         config.write_text(json.dumps(browser_config))
 
@@ -182,6 +197,7 @@ def main():
                 (run / (mode + ".log")).write_text(stdout + stderr)
                 print(stdout, end="", flush=True)
                 require(driver.returncode == 0, f"{mode} browser failed: {stderr.strip()} (see {run / (mode + '.log')})")
+                report.setdefault("browser_steps", {})[mode] = json.loads((run / (mode + "-steps.json")).read_text())
             finally:
                 # Own the process group so even a driver timeout cannot orphan Chrome.
                 try:
@@ -199,7 +215,7 @@ def main():
         missing = []
         if not (REPO / "house-site/index.html").exists():
             missing.append("Lane C house-site/index.html")
-        if not any(r["path"] == "/house/api/week" for r in fixture["routes"]):
+        if not fixture["house_api"]:
             missing.append("Lane B /house/api/week")
         if args.foundation or missing:
             report["pending"] = ["Full UI journey: join Jadon/Andrew/Daniel, camera guess, exact scores/pick, disputes/settlement, closed week, auth/media/tunnel refusals"]

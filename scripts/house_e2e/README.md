@@ -1,119 +1,111 @@
 # House league browser proof
 
-From this checkout, using the existing Python environment:
+From this checkout:
 
 ```sh
 /Volumes/Neural/WashDishes/.venv/bin/python scripts/house_e2e/run.py
 ```
 
-The default command runs the infrastructure checks, then the full product journey.
-Exit **0** means everything requested in that mode passed; **1** means a failure;
-**2** means the foundation passed but product lanes are missing. It never reports
-the absent product journey as green. To explicitly run just the foundation today:
+Exit **0** means the full journey passed; **1** means a failure; **2** means the
+foundation passed but product lanes are missing. `--foundation` explicitly runs
+only infrastructure checks. A missing product journey never reports as green.
+
+## Isolation and dependencies
+
+Every run has a new private directory under
+`/Volumes/Neural/dishwatch-scratch/houseleague/laneE/`. It contains generated
+JPEGs, databases, credentials, CA/certificate, profiles, screenshots and logs.
+Nothing is copied from live storage or cameras. All owned servers and Chrome
+stop on success or failure; a driver timeout terminates its process group.
+
+All three servers use **HTTPS** with a throwaway CA and a loopback-only leaf
+certificate. Python clients and the app child trust the CA through a per-run
+SSL context / `SSL_CERT_FILE`; Node uses `NODE_EXTRA_CA_CERTS`. The dedicated
+Chrome process accepts only the generated certificate's SPKI pin, with a fresh
+scratch profile. No system/browser trust store or production origin validation
+is changed. A client without the CA must reject the certificate.
+
+App workers/inference/recording stay disabled. The app child blocks external DNS
+and connections. Chrome aborts external page requests and fails the run if any
+are attempted. No real Supabase, Cloudflare, Vercel or Jetson is used.
+
+No package install or browser download is needed on this machine. The runner
+uses the site's **real vendored supabase-js 2.118.0** for both the probe and
+product site, existing `playwright-core` under
+`/Volumes/Neural/NexaRad/node_modules/.pnpm`, installed Google Chrome over CDP,
+and the specified Python environment (`httpx`, `PyJWT`, `cryptography`, app
+dependencies). Overrides: `HOUSE_E2E_PLAYWRIGHT` (package directory),
+`HOUSE_E2E_CHROME` (executable), `HOUSE_E2E_SUPABASE_JS` (browser ES module).
+
+## What the command proves
+
+`seed.py` uses the real store/media APIs and `league.override` to seed ten
+specified residents and Ezzy on current duty. Three current-week visits contain
+pan + plate + bowl (**4**), cup (**1**), pot (**2**). A fourth belongs to a closed
+week two Mondays ago. Only synthetic, visibly labeled JPEGs are generated.
+The seed uses a one-minute deadline and the real matching-late-photo label.
+Arrival evidence uses `filmstrip` / `arrival` and real capture metadata
+`{visit_id,obligation_ids,frames}`. Andrew is the first visit's camera guess.
+Data and JPEGs are read back through authenticated HTTP before Chrome starts.
+Times follow the current house week in America/Los_Angeles; the first five
+minutes of Monday are refused because a current-week overdue fixture cannot
+yet exist. These fixtures represent distinct dishes with observed timing;
+duplicate-alias and already-present/untimed rule changes belong to the parallel
+integrator and are not simulated by changing eligibility in this harness.
+
+The in-memory fake Auth implements ES256/JWKS, password/refresh grants, admin
+create/password update, user lookup, settings and logout. Admin calls require a
+fresh per-run API key. It is a protocol fixture, not a production GoTrue server.
+
+The full journey uses independent **390×844** Chrome contexts for Jadon, Andrew
+and Daniel, the real site and API contracts in `docs/house-api.md`:
+
+1. Operator cookie + CSRF creates actual join links; each actor sets a password
+   through `/join#token` and lands signed in using real supabase-js.
+2. Jadon confirms Andrew through the camera button and names the cup as himself.
+   Atomic visit membership, owner/namer audit, **4:1** points and Andrew's pick
+   are checked through API reads and rendered standings.
+3. Andrew disputes (**0:1**, no pick); the namer and disputer cannot settle.
+   Daniel settles “them” (**4:1**) and then a second dispute “not them”
+   (**0:1**, back to unnamed). Ezzy remains on duty.
+4. Jadon names the pot: **4:3**, insufficient lead, no pick. Closed historical
+   week selection renders “Closed” and refuses naming with HTTP 409.
+5. Valid auth succeeds; expired/forged/wrong-audience/wrong-issuer/missing JWTs
+   fail with 401. A different housemate cannot dispute (403).
+6. Signed media works, refuses another evidence id, expires, then works again
+   when the isolated server clock is restored. Cache headers are checked.
+   A tunnel header refuses the operator dashboard (403) while allowing the
+   authenticated house API. Andrew signs out and signs back in via name picker.
+
+Media expiry advances only the isolated app child's wall clock past the URL's
+actual signed `exp`; no verifier, secret, signature or expiry policy is replaced.
+Monotonic timeouts remain untouched. Foundation tests clock advance/restore.
+
+## Evidence and maintenance
+
+- `report.json`: result, executed/pending coverage, checkout HEAD and hashes of
+  harness sources.
+- `journey-checks.json`: actual HTTP statuses, exact score/pick snapshots and
+  returned atomic naming/settlement records. No JWT/password request bodies.
+- `*-steps.json`: step-to-screenshot index. Each step has a 390×844 viewport
+  capture and a full-page capture; failed steps capture all actor pages.
+- `*-network.json`: blocked external requests and browser page errors (both
+  must be empty); `app.log`, browser and Chrome logs provide failure details.
+- `latest-run.txt`: path to the latest run. Keep all evidence in scratch.
+
+The local static server substitutes an ES module at `/config.js` with the real
+site's `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `HOUSE_API_ORIGIN` exports;
+the product source and SDK are unchanged. Optional `--config-path`,
+`--site-config` (substitutes `AUTH_URL`, `API_URL`, `ANON_KEY`) and
+`--ui-contract` (accessible-label regex overrides) support deliberate contract
+changes. API paths and `data-dish-id` selectors match the merged product.
+`unnamed_count` counts dishes; `unreviewed_count` counts visits.
+
+Focused product regression command (scratch-only output):
 
 ```sh
-/Volumes/Neural/WashDishes/.venv/bin/python scripts/house_e2e/run.py --foundation
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=/Volumes/Neural/dishwatch-scratch/houseleague/laneE \
+  /Volumes/Neural/WashDishes/.venv/bin/python -B -m pytest -q -p no:cacheprovider \
+  --basetemp=/Volumes/Neural/dishwatch-scratch/houseleague/laneE/pytest-merged \
+  tests/test_house_api.py tests/test_league.py tests/test_filmstrip.py tests/test_left_out.py
 ```
-
-Each run creates a new private directory under
-`/Volumes/Neural/dishwatch-scratch/houseleague/laneE/`. Its `report.json` records
-executed/pending coverage, checkout HEAD and SHA-256 hashes of harness sources.
-`*-steps.json` indexes screenshots; failed steps capture every open actor page.
-`latest-run.txt` points to the most recent directory. Logs, profiles, passwords,
-signing keys, SQLite databases and all images remain there. Do not commit them.
-All owned servers and Chrome processes stop on success or failure.
-
-## Dependencies
-
-No global packages or browser downloads are needed on this machine. The runner
-finds existing `playwright-core` under `/Volumes/Neural/NexaRad/node_modules/.pnpm`
-and uses installed Google Chrome over CDP. Override package and Chrome paths with
-`HOUSE_E2E_PLAYWRIGHT` and `HOUSE_E2E_CHROME` if needed. Python needs the app's
-dependencies plus `httpx`, `PyJWT`, and `cryptography` (already in the specified
-environment).
-
-The probe uses the site's vendored supabase-js UMD file if found at
-`house-site/vendor/supabase.js` or `supabase.min.js`, otherwise the scratch copy.
-`HOUSE_E2E_SUPABASE_JS` can point to another existing UMD file. The foundation
-was exercised with real **supabase-js 2.118.0**, installed only in scratch:
-
-```sh
-npm install --prefix /Volumes/Neural/dishwatch-scratch/houseleague/laneE/deps \
-  --cache /Volumes/Neural/dishwatch-scratch/houseleague/laneE/npm-cache \
-  --no-audit --no-fund --save-exact @supabase/supabase-js@2.118.0
-```
-
-This optional setup contacts npm only. Harness execution contacts loopback only.
-The app child blocks external DNS/connections; Chrome aborts external page
-requests and fails the run if any are attempted. No real Supabase, Cloudflare,
-Vercel, camera or Jetson is used. Inference/recording workers are disabled.
-
-## Fixture and coverage
-
-`seed.py` uses the real store and media APIs, a fresh database, ten specified
-residents, a one-minute fixture deadline, and visibly synthetic JPEGs. The current
-house week has three visits: pan + plate + bowl (**4**), cup (**1**), pot (**2**).
-A fourth visit belongs to a week closed two Mondays ago. The grouped arrival
-evidence has kind `filmstrip`, label `arrival`, and capture metadata containing
-`visit_id`, `obligation_ids`, `frames`. Andrew is the first visit's camera guess.
-The command reads residents, dishes and JPEGs back through authenticated HTTP.
-Times follow the current Monday in America/Los_Angeles; it refuses the first
-five minutes of Monday when a current-week overdue fixture cannot yet exist.
-
-The fake Auth implements ES256/JWKS, password and refresh grants, admin create
-and password update, user lookup, settings and logout. Admin calls require a
-fresh per-run service key. Fake Auth is an in-memory protocol fixture, not a
-general GoTrue emulator or a production security implementation.
-
-The full journey opens independent 390×844 Chrome contexts for Jadon, Andrew
-and Daniel. Operator session/CSRF creates join links through the actual operator
-API. All visit mutations happen through UI controls and their real HTTP
-responses are checked. API reads assert exact totals **4:1 → 0:1 → 4:1 → 0:1**,
-return to unnamed, and **4:3 with no pick** (insufficient lead). Other residents
-must remain at zero. The script checks who can dispute/settle, past-week naming
-refusal, JWT expiry/forgery/audience/issuer, missing auth, signed media binding
-and expiry, operator tunnel isolation, sign-out and name-picker sign-in.
-
-Media expiry uses the product's own freshly signed URL and real verifier. A
-scratch file advances only the isolated app child's wall clock beyond `exp`;
-the same URL must fail, then succeed again when the clock is restored. The
-verifier, secret, signature and expiry policy are never replaced. Monotonic
-timeouts stay untouched. Foundation verifies clock advancement/restoration.
-
-## Merge handoff: authored, not yet executed
-
-At base `93f8541`, Lane B's API and Lane C's site do not exist. The full journey
-has therefore **not** run. Before claiming full proof after merging, reconcile
-these explicit integration assumptions against `docs/house-api.md` and the site:
-
-- The site loads `/config.js` with `window.HOUSE_CONFIG = {supabaseUrl,
-  supabaseAnonKey, apiBase}`. For a different config shape, pass
-  `--config-path /actual/path.js --site-config /scratch/path/local-config.js`.
-  The template replaces literal `AUTH_URL`, `API_URL`, `ANON_KEY` with local
-  values; no product source edit is needed. The real site's SDK remains real.
-- Operator join route spelling is discovered from the running app's POST routes
-  under `/api/` containing `join`. Exactly one is required. Resident id comes
-  from the path or `{resident_id}` body; its result supplies `token`, `join_token`,
-  `url`, `join_url`, or `link`. Ambiguity fails with the discovered routes.
-- Lane A's capture metadata must be the grouping input. If the merged lane
-  exposes a dedicated visit creation API, update only `seed.py` to use it.
-  The full journey requires exactly the three grouped dish ids and four points.
-- **Seed a non-null current duty person using Lane B's actual store API in
-  `seed.py`.** That API/schema is unavailable in this checkout. The journey
-  deliberately fails if duty is null so retention is tested meaningfully.
-- Cards use `data-visit-id`, or an accessible `article` containing their unique
-  title. The camera button is explicitly a guess/confirmation (text or
-  `button[data-guess]` / `button.guess`), rather than a generic name chip.
-  `--ui-contract /scratch/path/ui.json` overrides regex strings for accessible
-  labels: `join`, `nameTab`, `guess`, `signOut`, `signIn`, `dispute`,
-  `disputeSubmit`, `settle`, `them`, `notThem`. Defaults live in `browser.mjs`.
-- Standings expose numeric `points` and a resident id; `pick`, `resident` and
-  `guess` expose a resident id/object or null. `unnamed_count` counts visits.
-  A disagreement with the merged documented contract needs an adapter change,
-  not relaxed scores, skipped interactions, or a false green.
-
-Today's green coverage is the foundation: fake Auth through real supabase-js
-and Chrome, ES256/JWKS checks, admin create/update, synthetic seeding, actual
-app/operator startup, media readback and isolated clock control. The product
-journey, its UI selectors, duty fixture and all house API security checks remain
-pending the merge and a successful default command.

@@ -12,7 +12,7 @@ PROBE = b'''<!doctype html><html><meta name="viewport" content="width=device-wid
 <input aria-label="Email" id="email"><input aria-label="Password" id="password" type="password">
 <button id="login">Sign in</button><button id="user">Get user</button><button id="refresh">Refresh</button>
 <button id="logout">Sign out</button><pre id="result">Ready</pre>
-<script src="/__e2e__/supabase.js"></script><script src="/__e2e__/probe.js"></script></html>'''
+<script type="module" src="/__e2e__/probe.js"></script></html>'''
 
 
 def server(site: Path, sdk: Path, auth: str, api: str, anon: str, config_path: str, config_js: str | None, port: int):
@@ -27,7 +27,8 @@ def server(site: Path, sdk: Path, auth: str, api: str, anon: str, config_path: s
             if path == "/__e2e__/supabase.js":
                 return self.send(sdk.read_bytes(), "text/javascript")
             if path == "/__e2e__/probe.js":
-                script = f"const client = supabase.createClient({json.dumps(auth)}, {json.dumps(anon)});\n"
+                script = ('import {createClient} from "/__e2e__/supabase.js";\n'
+                          f"const client = createClient({json.dumps(auth)}, {json.dumps(anon)});\n")
                 script += """
 window.authClient = client;
 const show = value => document.querySelector('#result').textContent = JSON.stringify(value);
@@ -38,11 +39,12 @@ document.querySelector('#logout').onclick = async () => {show(await client.auth.
 """
                 return self.send(script.encode(), "text/javascript")
             if path == config_path:
-                config = {"supabaseUrl": auth, "supabaseAnonKey": anon, "apiBase": api}
-                script = config_js or "window.HOUSE_CONFIG = " + json.dumps(config) + ";"
+                script = config_js or (f"export const SUPABASE_URL = {json.dumps(auth)};\n"
+                                       f"export const SUPABASE_PUBLISHABLE_KEY = {json.dumps(anon)};\n"
+                                       f"export const HOUSE_API_ORIGIN = {json.dumps(api)};\n")
                 return self.send(script.encode(), "text/javascript")
             # /join is a static SPA route, never a request to real hosting.
-            if path == "/join" and not (site / "join").exists():
+            if path in ("/join", "/name", "/mine", "/past"):
                 self.path = "/index.html"
             return super().do_GET()
 

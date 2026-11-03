@@ -70,16 +70,10 @@ def main():
     app = create_app(Config(root=root, workers=False, password=os.environ["WASHDISHES_ACCESS_KEY"]))
     fixture = seed(app)
     install_fixture_clock(Path(os.environ["HOUSE_E2E_CLOCK_FILE"]))
-    routes = []
-    for route in app.routes:
-        body = getattr(route, "body_field", None)
-        model = getattr(body, "type_", None)
-        fields = getattr(model, "model_fields", {})
-        routes.append({"path": route.path, "methods": sorted(getattr(route, "methods", [])),
-                       "body_fields": list(fields)})
-    fixture["routes"] = routes
+    fixture["house_api"] = hasattr(app.state, "house")
     (root.parent / "fixture.json").write_text(json.dumps(fixture, indent=2))
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ["HOUSE_E2E_PORT"]), log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ["HOUSE_E2E_PORT"]), log_level="warning",
+                ssl_certfile=os.environ["HOUSE_E2E_TLS_CERT"], ssl_keyfile=os.environ["HOUSE_E2E_TLS_KEY"])
 
 
 if __name__ == "__main__":

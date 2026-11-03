@@ -17,7 +17,7 @@ class FakeAuth:
     def __init__(self, origin: str, site: str):
         self.origin = origin
         self.admin_key = secrets.token_urlsafe(32)
-        self.anon_key = "house-e2e-local-anon"
+        self.anon_key = "sb_publishable_house_e2e_local_only"
         self.key = ec.generate_private_key(ec.SECP256R1())
         self.kid = "house-e2e-local-p256"
         self.users: dict[str, dict] = {}
@@ -64,7 +64,7 @@ class FakeAuth:
                     "phone_autoconfirm": False, "sms_provider": ""}
         body = await request.json() if request.method in ("POST", "PUT") and await request.body() else {}
         if path.startswith("admin/users"):
-            if request.headers.get("authorization") != "Bearer " + self.admin_key:
+            if request.headers.get("apikey") != self.admin_key:
                 raise HTTPException(403, "Local service role required")
             if path == "admin/users" and request.method == "POST":
                 if any(u["email"] == body["email"] for u in self.users.values()):
