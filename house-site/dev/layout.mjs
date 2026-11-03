@@ -5,10 +5,10 @@ export async function inspectLayout(page) {
     const root = document.scrollingElement;
     const violations = [];
     const cards =
-      ".auth,.duty,.pick,.standings,.rankings li,.name-cta,.house-rules,.name-panel,.dish-record,.reviewed-visit,.week-choice,.past-detail,.offline,.duplicate-choice,.photo,.arrival-photo,.naming";
+      ".auth,.duty,.pick,.standings,.rankings li,.name-cta,.house-rules,.name-panel,.dish-record,.reviewed-visit,.week-choice,.past-detail,.offline,.duplicate-choice,.photo,.arrival-photo,.naming,.learning-card,.learning-panel,.personal-status,.learning-prompt";
     const describe = (el) =>
       `${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.trim().replace(/\s+/g, ".") : ""}`;
-    for (const el of document.querySelectorAll("main *")) {
+    for (const el of document.querySelectorAll("main *, nav *")) {
       if (!(el instanceof Element) || el.closest("details:not([open])"))
         continue;
       const rect = el.getBoundingClientRect();

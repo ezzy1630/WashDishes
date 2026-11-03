@@ -1,4 +1,8 @@
-import { learningFeed } from "./learning-contracts.js";
+import {
+  learningFeed,
+  learningAnswer,
+  learningFeedback,
+} from "./learning-contracts.js";
 import { HOUSE_API_ORIGIN } from "../config.js";
 import { accessToken, mock } from "./auth.js";
 import * as parse from "./contracts.js";
@@ -82,4 +86,21 @@ export const act = (id, action, body) =>
   );
 
 /** Teaching responses are isolated from the league payload. */
-export const learningRequest = async (path, body) => { const data = await request(path, body === undefined ? {} : { body }); if(path !== "/learning") return data; try { return learningFeed(data); } catch { throw new HouseError("Dish Watch is offline right now", 502); } };
+export const getLearning = () => parsed(request("/learning"), learningFeed);
+/** @param {number} id @param {string} answer @param {{box: import('./learning-contracts.js').LearningBox, kind:string}|null} value */
+export const answerLearning = (id, answer, value) =>
+  parsed(
+    request(`/learning/${id}/answer`, { body: { answer, value } }),
+    learningAnswer,
+  );
+/** @param {number} id */
+export const undoLearning = (id) =>
+  request(`/learning/labels/${id}/undo`, { body: {} });
+/** @param {string|number} id */
+export const feedbackLearning = (id) =>
+  parsed(
+    request(`/visits/${encodeURIComponent(id)}/feedback`, {
+      body: { task: "missed" },
+    }),
+    learningFeedback,
+  );

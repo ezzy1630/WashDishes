@@ -31,7 +31,8 @@ node house-site/dev/mock.mjs
 
 Open `http://127.0.0.1:4317/?mock=1`. Type any of the ten names; the initial password is `house-demo`. Join: `/join?mock=1#demo-invite`; reset: `/join?mock=1#demo-reset`. Links are single-use until reset. Mock sign-in is enabled only on loopback plus `?mock=1`; the mock endpoints and fixture server do not deploy. The mock creates synthetic JPEG frames and passes them through the production
 `wash_dishes/filmstrip.py` renderer. No private captures are read. It includes
-six-frame and four-frame strips, later photos and an arrival-not-recorded visit;
+multi-frame and arrival-not-recorded source windows, rendered as chronological
+1080px evidence images, plus later photos;
 each source frame is labeled synthetic. `dev/fixtures.py` writes only to scratch.
 It uses the project's Python environment (override with `PYTHON`).
 
@@ -82,3 +83,19 @@ flush on app navigation, sign-out and page hide, and use fetch keepalive. A reje
 save restores the visit and shows a persistent error. The server remains the
 source of scores; pending answers do not appear as saved points. Abrupt process
 termination can lose unsent answers; no household evidence is stored locally.
+
+
+### Learning integration verification
+
+`DISHWATCH_OUTPUT` selects a separate evidence directory for the mock fixtures,
+screenshots and verification JSON while `DISHWATCH_SCRATCH` still selects installed
+tooling. Browser profiles use `<output>/tmp`; set `XDG_CACHE_HOME` alongside it.
+The matrix includes week views as the on-duty resident and another resident,
+all five Help task types (presence, kind, missed box, same dish and identity),
+box drawing and keyboard coordinates, answers and Undo, empty, unavailable-photo,
+load-error/retry and save-error states, plus the naming correction link.
+Operator Learning covers populated history, accuracy, disagreements and resolution,
+empty history and error/retry. All captures run at 390×844 and 1280×800 in light
+and dark preferences, checking axe, document/card/text bounds and 44px controls.
+The real HTTPS E2E additionally captures authenticated Send and Learning at those
+sizes/preferences; the operator app intentionally retains its graphite theme.

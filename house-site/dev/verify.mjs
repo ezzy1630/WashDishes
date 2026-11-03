@@ -6,15 +6,16 @@ import { inspectLayout } from "./layout.mjs";
 const scratch =
   process.env.DISHWATCH_SCRATCH ||
   "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
+const output = process.env.DISHWATCH_OUTPUT || scratch;
 const require = createRequire(`${scratch}/tooling/package.json`);
 const { chromium } = require("playwright-core");
 const { default: AxeBuilder } = await import(
   `${scratch}/tooling/node_modules/@axe-core/playwright/dist/index.mjs`
 );
 const origin = process.env.MOCK_ORIGIN || "http://127.0.0.1:4317";
-await mkdir(`${scratch}/screenshots`, { recursive: true });
-await mkdir(`${scratch}/tmp`, { recursive: true });
-process.env.TMPDIR = `${scratch}/tmp`;
+await mkdir(`${output}/screenshots`, { recursive: true });
+await mkdir(`${output}/tmp`, { recursive: true });
+process.env.TMPDIR = `${output}/tmp`;
 const browser = await chromium.launch({
   executablePath:
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -45,7 +46,8 @@ function observe(page) {
       m.type() === "error" &&
       !m.text().includes("503") &&
       !m.text().includes("400") &&
-      !m.text().includes("409")
+      !m.text().includes("409") &&
+      !m.location().url.includes("/dev/photos/missing.jpg")
     )
       issues.push(m.text());
   });
@@ -121,7 +123,9 @@ async function capture(page, name, size, theme) {
   );
   layouts.push({ screen: name, size, theme, ...layout });
   const small = await page
-    .locator("button:not(:disabled), nav a, input, select, textarea, summary")
+    .locator(
+      "button:not(:disabled), nav a, .learning-prompt a, .personal-link, .learning-panel a, input, select, textarea, summary",
+    )
     .evaluateAll((nodes) =>
       nodes
         .filter(
@@ -146,7 +150,7 @@ async function capture(page, name, size, theme) {
     [],
     `${name} accessibility`,
   );
-  const filename = `${scratch}/screenshots/${name}-${size}-${theme}.png`;
+  const filename = `${output}/screenshots/${name}-${size}-${theme}.png`;
   await page.screenshot({
     path: filename,
     fullPage: name !== "filmstrip-zoom",
@@ -228,7 +232,7 @@ try {
         await control({ dutyMode: mode });
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
         await page
-          .locator(".duty")
+          .locator(".duty, .personal-duty")
           .getByText(
             mode === "pick"
               ? "Most dish points the week of Oct 26."
@@ -252,6 +256,203 @@ try {
           "Most dish points the week of Oct 19. Nobody else has been a clear pick since, so Ezzy stays on.",
           { exact: true },
         )
+        .waitFor();
+
+      assert.equal(
+        await page
+          .getByRole("heading", {
+            name: "You’re on kitchen this week",
+            exact: true,
+          })
+          .count(),
+        1,
+      );
+      assert.equal(
+        await page
+          .getByRole("heading", {
+            name: "Ezzy’s on kitchen this week",
+            exact: true,
+          })
+          .count(),
+        0,
+      );
+      await capture(page, "week-on-duty", size, theme);
+      const otherContext = await browser.newContext({
+        viewport: { width, height },
+        colorScheme: theme,
+      });
+      const otherPage = await otherContext.newPage();
+      observe(otherPage);
+      await signedIn(otherPage, "wren");
+      await otherPage
+        .getByRole("heading", {
+          name: "Ezzy’s on kitchen this week",
+          exact: true,
+        })
+        .waitFor();
+      await capture(otherPage, "week-not-on-duty", size, theme);
+      await otherContext.close();
+      for (const task of ["present", "kind", "same", "identity", "missed"]) {
+        await control({ reset: true, learningTask: task });
+        await page.goto(`${origin}/help?mock=1`);
+        await page.locator(".learning-card .learning-question h2").waitFor();
+        await capture(page, `help-${task}`, size, theme);
+        if (task === "missed") {
+          const photo = page.locator(".learning-draw");
+          const rect = await photo.boundingBox();
+          await page.mouse.move(
+            rect.x + rect.width * 0.2,
+            rect.y + rect.height * 0.3,
+          );
+          await page.mouse.down();
+          await page.mouse.move(
+            rect.x + rect.width * 0.6,
+            rect.y + rect.height * 0.7,
+          );
+          await page.mouse.up();
+          await page
+            .getByText("Adjust box with keyboard", { exact: true })
+            .click();
+          assert.equal(
+            await page.getByLabel("Top percent", { exact: true }).inputValue(),
+            "30",
+            "coordinate fields reflect the drawn box",
+          );
+          await page.getByLabel("Left percent", { exact: true }).fill("20");
+          await page.getByLabel("Width percent", { exact: true }).fill("30");
+          await capture(page, "help-missed-box", size, theme);
+          const saved = page.waitForRequest((r) =>
+            r.url().endsWith("/learning/3/answer"),
+          );
+          await page
+            .getByRole("button", { name: "Save dish box", exact: true })
+            .click();
+          const payload = (await saved).postDataJSON();
+          assert.equal(payload.answer, "box");
+          assert.equal(payload.value.kind, "plate");
+          assert.equal(payload.value.box[0], 0.2);
+          assert.equal(payload.value.box[2], 0.3);
+        } else {
+          await page.locator(".learning-choice").first().click();
+        }
+        await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
+        if (task === "present") await capture(page, "help-undo", size, theme);
+        await page.getByRole("button", { name: "Undo", exact: true }).click();
+        await page
+          .getByRole("button", { name: "Undo", exact: true })
+          .waitFor({ state: "hidden" });
+        assert.equal(
+          await page.locator(".learning-question h2").innerText(),
+          {
+            present: "Is this a dish?",
+            kind: "What is it?",
+            same: "Is this the same dish?",
+            identity: "Is this you?",
+            missed: "Did the camera miss a dish?",
+          }[task],
+        );
+      }
+      for (const [state, heading] of [
+        ["empty", "That’s all for now."],
+        ["load-error", "Couldn’t load your questions"],
+        ["missing", "Is this a dish?"],
+      ]) {
+        await control({ reset: true, learningState: state });
+        await page.goto(`${origin}/help?mock=1`);
+        await page
+          .getByRole("heading", { name: heading, exact: true })
+          .waitFor();
+        if (state === "missing") {
+          await page
+            .getByText(
+              "This photo is no longer available. Skip to the next question.",
+              { exact: true },
+            )
+            .waitFor();
+          assert.equal(
+            await page.locator(".learning-choice:disabled").count(),
+            2,
+          );
+          assert.equal(
+            await page
+              .getByRole("button", { name: "Not sure · Skip", exact: true })
+              .isEnabled(),
+            true,
+          );
+        }
+        await capture(page, `help-${state}`, size, theme);
+        if (state === "load-error") {
+          await control({ learningState: "cards" });
+          await page
+            .getByRole("button", { name: "Try again", exact: true })
+            .click();
+          await page
+            .getByRole("heading", { name: "Is this a dish?", exact: true })
+            .waitFor();
+        }
+      }
+      await control({ reset: true, learningState: "error" });
+      await page.goto(`${origin}/help?mock=1`);
+      await page.getByRole("button", { name: "Yes", exact: true }).click();
+      await page.getByRole("alert").filter({ hasText: "offline" }).waitFor();
+      await capture(page, "help-save-error", size, theme);
+      assert.equal(
+        await page.locator(".learning-question h2").innerText(),
+        "Is this a dish?",
+      );
+      await control({ reset: true });
+      await navigation(page, "Name dishes");
+      await page
+        .getByRole("button", { name: "Box was wrong? Fix it", exact: true })
+        .click();
+      await page
+        .getByRole("heading", {
+          name: "Did the camera miss a dish?",
+          exact: true,
+        })
+        .waitFor();
+      assert.equal(new URL(page.url()).pathname, "/help");
+      const operator = await context.newPage();
+      observe(operator);
+      for (const state of ["cards", "conflict", "empty", "load-error"]) {
+        await control({ reset: true, learningState: state });
+        await operator.goto(`${origin}/dev/learning-operator.html`);
+        await operator
+          .getByRole("heading", { name: "Learning", exact: true })
+          .waitFor();
+        if (state === "load-error")
+          await operator
+            .getByRole("button", { name: "Retry", exact: true })
+            .waitFor();
+        else
+          await operator
+            .locator(".learning-panel .row-actions button")
+            .first()
+            .waitFor();
+        await capture(operator, `operator-learning-${state}`, size, theme);
+        if (state === "conflict") {
+          await operator
+            .getByRole("button", { name: "Use yes · resident 1", exact: true })
+            .click();
+          await operator
+            .getByText("No learning runs yet.", { exact: true })
+            .waitFor();
+        }
+        if (state === "load-error") {
+          await control({ learningState: "empty" });
+          await operator
+            .getByRole("button", { name: "Retry", exact: true })
+            .click();
+          await operator
+            .getByText("No learning runs yet.", { exact: true })
+            .waitFor();
+        }
+      }
+      await operator.close();
+      await control({ reset: true });
+      await navigation(page, "This week");
+      await page
+        .getByRole("heading", { name: "This week", exact: true })
         .waitFor();
 
       await navigation(page, "Name dishes");
@@ -328,8 +529,8 @@ try {
       const dimensions = await assertImageRatios();
       assert.deepEqual(
         [dimensions[0].width, dimensions[0].height],
-        [1200, 1668],
-        "production six-frame renderer",
+        [1080, 1688],
+        "production chronological evidence renderer",
       );
       await page
         .getByRole("button", { name: /Enlarge.*arrival photos/ })
@@ -378,8 +579,8 @@ try {
       const short = await assertImageRatios();
       assert.deepEqual(
         [short[0].width, short[0].height],
-        [1200, 1177],
-        "production four-frame renderer",
+        [1080, 1096],
+        "production already-present evidence renderer",
       );
       await navigation(page, "My dishes");
       await capture(page, "my-dishes", size, theme);
@@ -869,7 +1070,7 @@ try {
   await context.close();
   assert.deepEqual(issues, [], "Browser exceptions/CSP errors");
   await writeFile(
-    `${scratch}/verification.json`,
+    `${output}/verification.json`,
     JSON.stringify(
       { shots, layouts, checks, browser: await browser.version(), issues },
       null,

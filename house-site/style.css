@@ -2067,3 +2067,20 @@ dialog::backdrop {
     font-size: 16px;
   }
 }
+
+/* Five resident destinations fit without squeezing multiword labels together. */
+@media (max-width: 760px) {
+  .nav {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .nav a {
+    white-space: normal;
+    text-align: center;
+    text-wrap: balance;
+    line-height: 1.25;
+    padding: 8px 4px;
+    min-height: 52px;
+  }
+}

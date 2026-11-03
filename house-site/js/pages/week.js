@@ -15,15 +15,32 @@ export function weekPage(context) {
     duty = data.on_duty;
   const copy = dutyCopy(data);
   const personal = personalCopy(data, state.me?.resident.id);
+  const ownDuty =
+    data.rules.enabled &&
+    duty !== null &&
+    String(duty.resident_id) === String(state.me?.resident.id);
   return h(
     "div",
     {},
     heading("This week", weekSubtitle(data)),
-    learningPrompt(context),
     h(
       "section",
-      { class: "personal-status", "aria-label": "Your week" },
-      h("div", {}, h("h2", {}, personal.title), h("p", {}, personal.detail)),
+      {
+        class: `personal-status${ownDuty ? " personal-duty" : ""}`,
+        "aria-label": "Your week",
+      },
+      h(
+        "div",
+        {},
+        h("h2", {}, ownDuty ? "You’re on kitchen this week" : personal.title),
+        ownDuty ? h("p", { class: "duty-reason" }, copy.explanation) : null,
+        ownDuty &&
+          data.pick.state === "pick" &&
+          String(data.pick.resident_id) === String(state.me?.resident.id)
+          ? h("p", {}, personal.title)
+          : null,
+        h("p", {}, personal.detail),
+      ),
       h(
         "a",
         {
@@ -44,12 +61,23 @@ export function weekPage(context) {
       h(
         "div",
         { class: "week-main" },
-        h(
-          "section",
-          { class: "duty" },
-          h("div", { class: "duty-mark", "aria-hidden": "true" }, icon("dish")),
-          h("div", {}, h("h2", {}, copy.title), h("p", {}, copy.explanation)),
-        ),
+        ownDuty
+          ? null
+          : h(
+              "section",
+              { class: "duty" },
+              h(
+                "div",
+                { class: "duty-mark", "aria-hidden": "true" },
+                icon("dish"),
+              ),
+              h(
+                "div",
+                {},
+                h("h2", {}, copy.title),
+                h("p", {}, copy.explanation),
+              ),
+            ),
         h(
           "section",
           { class: "pick" },
@@ -127,6 +155,7 @@ export function weekPage(context) {
               )
             : null,
         ),
+        learningPrompt(context),
         h(
           "section",
           { class: "house-rules" },

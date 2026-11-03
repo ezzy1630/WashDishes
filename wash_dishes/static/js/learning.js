@@ -1,7 +1,11 @@
 import { api, h, fill, toast } from "./core.js";
 
 // Plain words for the operator; raw codes stay in the API.
-const MODEL = { probe: "Dish check", identity: "Who it was", detector: "Dish finder" };
+const MODEL = {
+  probe: "Dish check",
+  identity: "Who it was",
+  detector: "Dish finder",
+};
 const STATUS = {
   adopted: "improved — now in use",
   rejected: "tried, not better — kept the old one",
@@ -15,13 +19,22 @@ const STATUS = {
 };
 const words = (map, key) => map[key] || String(key).replaceAll("_", " ");
 const when = (stamp) =>
-  new Date(stamp).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  new Date(stamp).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
 // A self-contained additive panel; Setup owns its placement.
 export function learningPanel() {
   const panel = h(
     "section",
-    { class: "setup-sec card learning-panel", id: "s-learning" },
+    {
+      class: "setup-sec card learning-panel",
+      id: "s-learning",
+      "data-id": "learning",
+    },
     h("div", { class: "card-head" }, h("h2", {}, "Learning")),
   );
   const body = h("div", { class: "card-body stack" });
@@ -33,14 +46,15 @@ export function learningPanel() {
         class: "btn",
         type: "button",
         onclick: async (e) => {
-          e.currentTarget.disabled = true;
+          const control = e.currentTarget;
+          control.disabled = true;
           try {
             await fn();
             await load();
           } catch (error) {
             toast(error.message, { error: true });
           } finally {
-            e.currentTarget.disabled = false;
+            control.disabled = false;
           }
         },
       },
@@ -111,8 +125,14 @@ export function learningPanel() {
       trends.append(tbody);
       const conflicts = h(
         "div",
-        { class: "stack" },
-        h("h3", {}, data.conflicts.length === 1 ? "1 answer disagreement to settle" : `${data.conflicts.length} answer disagreements to settle`),
+        { class: "stack learning-conflicts" },
+        h(
+          "h3",
+          {},
+          data.conflicts.length === 1
+            ? "1 answer disagreement to settle"
+            : `${data.conflicts.length} answer disagreements to settle`,
+        ),
       );
       for (const q of data.conflicts) {
         const options = [
@@ -120,7 +140,7 @@ export function learningPanel() {
         ];
         const entry = h(
           "div",
-          {},
+          { class: "learning-conflict" },
           h("p", {}, `${q.task} · teaching question ${q.id}`),
           h(
             "a",
@@ -159,17 +179,21 @@ export function learningPanel() {
         runs.children.length
           ? runs
           : h("p", { class: "tx2" }, "No learning runs yet."),
-        tbody.children.length ? trends : null,
+        tbody.children.length
+          ? h("div", { class: "learning-table" }, trends)
+          : null,
         conflicts,
         h(
           "div",
           { class: "row-actions" },
           data.models.map((model) =>
-            action(`Undo last ${words(MODEL, model).toLowerCase()} update`, () =>
-              api(`/api/learning/rollback/${model}`, {
-                method: "POST",
-                body: {},
-              }),
+            action(
+              `Undo last ${words(MODEL, model).toLowerCase()} update`,
+              () =>
+                api(`/api/learning/rollback/${model}`, {
+                  method: "POST",
+                  body: {},
+                }),
             ),
           ),
         ),

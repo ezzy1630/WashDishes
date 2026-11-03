@@ -1,6 +1,17 @@
-import { learningRequest } from "../api.js";
+import {
+  getLearning,
+  answerLearning,
+  undoLearning,
+  feedbackLearning,
+} from "../api.js";
 import { announce, button, fill, h, heading } from "../ui.js";
 
+/** @typedef {import('../types.js').ScreenContext} ScreenContext */
+/** @typedef {Awaited<ReturnType<typeof getLearning>>} LearningFeed */
+/** @typedef {LearningFeed['questions'][number]} LearningCard */
+/** @typedef {import('../learning-contracts.js').LearningBox} LearningBox */
+/** @typedef {{actor:string|number|undefined, data:LearningFeed|null, error:string, loading:boolean, pending:boolean, receipt:(Awaited<ReturnType<typeof answerLearning>> & {card:LearningCard})|null, box:LearningBox|null}} LearningSession */
+/** @type {WeakMap<ScreenContext, LearningSession>} */
 const sessions = new WeakMap();
 const prompts = {
   present: "Is this a dish?",
@@ -9,7 +20,9 @@ const prompts = {
   same: "Is this the same dish?",
   identity: "Is this you?",
 };
+/** @type {Record<import("../learning-contracts.js").LearningTask, [string,string][]>} */
 const choices = {
+  missed: [],
   present: [
     ["yes", "Yes"],
     ["no", "No"],
@@ -33,11 +46,12 @@ const choices = {
   ],
 };
 
+/** @param {ScreenContext} context */
 export function helpPage(context) {
   let session = sessions.get(context);
   if (session && session.actor !== context.state.me?.resident.id) {
     sessions.delete(context);
-    session = null;
+    session = undefined;
   }
   if (!session) {
     session = {
@@ -51,13 +65,14 @@ export function helpPage(context) {
     };
     sessions.set(context, session);
   }
+  const current = session;
   const host = h("div", { class: "help-camera" });
   const title = heading("Help the camera", "Teach it what you can see.");
   const content = h("div", { class: "learning-body" });
   host.append(title, content);
   const paint = () => {
     if (!host.isConnected) return;
-    const data = session.data,
+    const data = current.data,
       card = data?.questions[0];
     const progress = h(
       "section",
@@ -77,7 +92,7 @@ export function helpPage(context) {
           : "Learning starts when there are enough independent answers.",
       ),
     );
-    const metrics = data?.metrics?.find(m => Number.isFinite(m.before_accuracy) && Number.isFinite(m.after_accuracy));
+    const metrics = data?.metrics[0];
     if (metrics)
       progress.append(
         h(
@@ -89,14 +104,14 @@ export function helpPage(context) {
     const receipt = h(
       "div",
       { class: "learning-receipt", role: "status" },
-      session.receipt
+      current.receipt
         ? [
             h(
               "span",
               {},
-              session.receipt.state === "trusted"
+              current.receipt.state === "trusted"
                 ? "Saved as teaching truth."
-                : session.receipt.state === "conflict"
+                : current.receipt.state === "conflict"
                   ? "Saved. The operator will check the disagreement."
                   : "Saved. Another housemate will check it.",
             ),
@@ -104,20 +119,21 @@ export function helpPage(context) {
           ]
         : h("span", {}, "Independent checks keep the league fair."),
     );
+    /** @type {HTMLElement} */
     let body;
-    if (session.loading && !data)
+    if (current.loading && !data)
       body = h(
         "section",
         { class: "learning-card learning-message", "aria-busy": "true" },
         h("h2", {}, "Finding useful questions…"),
         h("p", {}, "One clear question at a time."),
       );
-    else if (session.error && !card)
+    else if (current.error && !card)
       body = h(
         "section",
         { class: "learning-card learning-message" },
         h("h2", {}, "Couldn’t load your questions"),
-        h("p", {}, session.error),
+        h("p", {}, current.error),
         button("Try again", () => void load(), "primary"),
       );
     else if (!card)
@@ -145,20 +161,29 @@ export function helpPage(context) {
             : "Kitchen frame to check",
         draggable: "false",
       });
-      image.addEventListener("error", () => {
+      /** @param {HTMLImageElement} unavailable @param {HTMLElement} target */
+      const missingPhoto = (unavailable, target) => {
         card.imageMissing = true;
-        image.hidden = true;
+        unavailable.hidden = true;
         body
           ?.querySelectorAll(".learning-choice,.primary,select,input")
-          .forEach((el) => (el.disabled = true));
-        photo.replaceChildren(
+          .forEach((el) => {
+            if (
+              el instanceof HTMLButtonElement ||
+              el instanceof HTMLSelectElement ||
+              el instanceof HTMLInputElement
+            )
+              el.disabled = true;
+          });
+        target.replaceChildren(
           h(
             "p",
             { class: "learning-photo-missing" },
             "This photo is no longer available. Skip to the next question.",
           ),
         );
-      });
+      };
+      image.addEventListener("error", () => missingPhoto(image, photo));
       const overlay = h("canvas", {
         "aria-hidden": "true",
         class: "learning-overlay",
@@ -188,12 +213,19 @@ export function helpPage(context) {
           dy: (r.height - h) / 2,
         };
       };
+      /** @type {HTMLInputElement[]} */
+      const coordinateInputs = [];
       const draw = () => {
+        const drawnBox = current.box;
+        if (drawnBox)
+          coordinateInputs.forEach((input, i) => {
+            input.value = String(Math.round(drawnBox[i] * 100));
+          });
         const rect = photo.getBoundingClientRect();
         overlay.width = Math.round(rect.width * 2);
         overlay.height = Math.round(rect.height * 2);
         const ctx = overlay.getContext("2d"),
-          box = session.box || card.box,
+          box = current.box || card.box,
           boundsRect = bounds();
         if (ctx && box) {
           ctx.strokeStyle = "#ffd400";
@@ -207,6 +239,7 @@ export function helpPage(context) {
         }
       };
       image.addEventListener("load", draw);
+      /** @type {[number,number]|null} */
       let start = null;
       if (card.task === "missed") {
         photo.tabIndex = 0;
@@ -215,6 +248,7 @@ export function helpPage(context) {
           "aria-label",
           "Draw around the missed dish. Keyboard users can use the coordinate fields below.",
         );
+        /** @param {PointerEvent} e @returns {[number,number]} */
         const point = (e) => {
           const r = bounds();
           return [
@@ -229,7 +263,7 @@ export function helpPage(context) {
         photo.addEventListener("pointermove", (e) => {
           if (!start) return;
           const end = point(e);
-          session.box = [
+          current.box = [
             Math.min(start[0], end[0]),
             Math.min(start[1], end[1]),
             Math.abs(end[0] - start[0]),
@@ -244,7 +278,7 @@ export function helpPage(context) {
             Math.abs(end[0] - start[0]) < 0.01 &&
             Math.abs(end[1] - start[1]) < 0.01
           )
-            session.box = [
+            current.box = [
               Math.min(0.85, Math.max(0, end[0] - 0.075)),
               Math.min(0.85, Math.max(0, end[1] - 0.075)),
               0.15,
@@ -254,6 +288,7 @@ export function helpPage(context) {
           draw();
         });
       } else {
+        /** @type {number|null} */
         let x = null;
         photo.addEventListener("pointerdown", (e) => {
           x = e.clientX;
@@ -283,13 +318,16 @@ export function helpPage(context) {
             type: "number",
             min: 0,
             max: 100,
-            value: i < 2 ? 25 : 15,
+            value: Math.round(
+              (current.box?.[i] ?? (i < 2 ? 0.25 : 0.15)) * 100,
+            ),
             step: 1,
             "aria-label": `${label} percent`,
           });
+          coordinateInputs.push(input);
           input.addEventListener("input", () => {
-            session.box ||= [0.25, 0.25, 0.15, 0.15];
-            session.box[i] = Number(input.value) / 100;
+            current.box ||= [0.25, 0.25, 0.15, 0.15];
+            current.box[i] = Number(input.value) / 100;
             draw();
           });
           fields.append(h("label", {}, label, input));
@@ -300,39 +338,36 @@ export function helpPage(context) {
           button(
             "Save dish box",
             () =>
-              session.box
-                ? void send("box", { box: session.box, kind: select.value })
+              current.box
+                ? void send("box", { box: current.box, kind: select.value })
                 : announce("Tap a dish or drag a box around it first."),
             "primary",
           ),
           coords,
         );
       } else
-        for (const [answer, label] of choices[card.task] || [])
+        for (const [answer, label] of choices[card.task])
           actions.append(
             button(label, () => void send(answer), "learning-choice"),
           );
       actions.append(
         button("Not sure · Skip", () => void send("unsure"), "quiet"),
       );
-      const media = card.other_image_url
-        ? h(
-            "div",
-            { class: "learning-pair" },
-            photo,
-            h(
-              "div",
-              { class: "learning-photo" },
-              h("img", {
-                src: card.other_image_url,
-                alt: "Second dish to compare",
-              }),
-            ),
-          )
-        : photo;
+      let media = photo;
+      if (card.other_image_url) {
+        const otherImage = h("img", {
+          src: card.other_image_url,
+          alt: "Second dish to compare",
+        });
+        const otherPhoto = h("div", { class: "learning-photo" }, otherImage);
+        otherImage.addEventListener("error", () =>
+          missingPhoto(otherImage, otherPhoto),
+        );
+        media = h("div", { class: "learning-pair" }, photo, otherPhoto);
+      }
       body = h(
         "section",
-        { class: "learning-card", "aria-busy": String(session.pending) },
+        { class: "learning-card", "aria-busy": String(current.pending) },
         h(
           "div",
           { class: "learning-question" },
@@ -367,18 +402,20 @@ export function helpPage(context) {
       });
       requestAnimationFrame(draw);
     }
-    if (session.error && card)
+    if (current.error && card)
       body.append(
-        h("p", { class: "learning-error", role: "alert" }, session.error),
+        h("p", { class: "learning-error", role: "alert" }, current.error),
       );
-    body
-      .querySelectorAll("button,select,input")
-      .forEach(
-        (el) =>
-          (el.disabled =
-            session.pending ||
-            (card?.imageMissing && !el.classList.contains("quiet"))),
-      );
+    body.querySelectorAll("button,select,input").forEach((el) => {
+      if (
+        el instanceof HTMLButtonElement ||
+        el instanceof HTMLSelectElement ||
+        el instanceof HTMLInputElement
+      )
+        el.disabled =
+          current.pending ||
+          Boolean(card?.imageMissing && !el.classList.contains("quiet"));
+    });
     fill(
       content,
       progress,
@@ -392,79 +429,83 @@ export function helpPage(context) {
     );
   };
   async function load() {
-    if (session.loading) return;
-    session.loading = true;
-    session.error = "";
+    if (current.loading) return;
+    current.loading = true;
+    current.error = "";
     paint();
     try {
-      session.data = await learningRequest("/learning");
+      current.data = await getLearning();
     } catch (e) {
-      session.error = e.message || "Reconnect to the kitchen and try again.";
+      current.error =
+        (e instanceof Error ? e.message : "") ||
+        "Reconnect to the kitchen and try again.";
     } finally {
-      session.loading = false;
+      current.loading = false;
       paint();
     }
   }
+  /** @param {string} answer @param {{box:LearningBox,kind:string}|null} [value] */
   async function send(answer, value = null) {
     if (
-      session.pending ||
-      !session.data?.questions.length ||
-      (session.data.questions[0].imageMissing && answer !== "unsure")
+      current.pending ||
+      !current.data?.questions.length ||
+      (current.data.questions[0].imageMissing && answer !== "unsure")
     )
       return;
-    session.pending = true;
-    session.error = "";
-    const card = session.data.questions.shift();
-    session.box = null;
-    session.receipt = null;
+    current.pending = true;
+    current.error = "";
+    const card = current.data.questions[0];
+    current.data.questions.shift();
+    current.box = null;
+    current.receipt = null;
     paint();
     try {
-      const saved = await learningRequest(`/learning/${card.id}/answer`, {
-        answer,
-        value,
-      });
-      session.receipt = { ...saved, card };
-      if (answer !== "unsure") session.data.personal_labels++;
-      session.box = null;
+      const saved = await answerLearning(card.id, answer, value);
+      current.receipt = { ...saved, card };
+      if (answer !== "unsure") current.data.personal_labels++;
+      current.box = null;
       announce("Answer saved.");
     } catch (e) {
-      session.data.questions.unshift(card);
-      session.error = e.message || "That didn’t save. Try again.";
+      current.data.questions.unshift(card);
+      current.error =
+        (e instanceof Error ? e.message : "") || "That didn’t save. Try again.";
     } finally {
-      session.pending = false;
+      current.pending = false;
       paint();
       content.querySelector("h2")?.focus({ preventScroll: true });
-      if (!session.data?.questions.length && !session.error) void load();
+      if (!current.data?.questions.length && !current.error) void load();
     }
   }
   async function undo() {
-    if (session.pending || !session.receipt) return;
-    session.pending = true;
+    if (current.pending || !current.receipt) return;
+    current.pending = true;
     paint();
     try {
-      await learningRequest(`/learning/labels/${session.receipt.id}/undo`, {});
-      session.data.questions.unshift(session.receipt.card);
-      session.receipt = null;
-      session.box = null;
+      await undoLearning(current.receipt.id);
+      current.data?.questions.unshift(current.receipt.card);
+      current.receipt = null;
+      current.box = null;
       void load();
       announce("Answer undone.");
     } catch (e) {
-      session.error = e.message || "Couldn’t undo. Try again.";
+      current.error =
+        (e instanceof Error ? e.message : "") || "Couldn’t undo. Try again.";
     } finally {
-      session.pending = false;
+      current.pending = false;
       paint();
     }
   }
   requestAnimationFrame(() => {
     paint();
-    if (!session.data && !session.loading) void load();
+    if (!current.data && !current.loading) void load();
   });
   return host;
 }
 
+/** @param {ScreenContext} context */
 export function learningPrompt(context) {
   const component = h("div", { class: "learning-prompt", hidden: true });
-  void learningRequest("/learning")
+  void getLearning()
     .then((data) => {
       if (!component.isConnected || !data.questions.length) return;
       component.hidden = false;
@@ -474,7 +515,7 @@ export function learningPrompt(context) {
           "a",
           {
             href: context.href("/help"),
-            onclick: (e) => {
+            onclick: (/** @type {MouseEvent} */ e) => {
               e.preventDefault();
               context.navigate("/help");
             },
@@ -487,22 +528,25 @@ export function learningPrompt(context) {
   return component;
 }
 
+/** @param {ScreenContext} context @param {import("../types.js").Visit} visit */
 export function correctionLink(context, visit) {
   return button(
     "Box was wrong? Fix it",
     async () => {
       try {
-        const result = await learningRequest(
-          `/visits/${encodeURIComponent(visit.id)}/feedback`,
-          { task: "missed" },
-        );
+        const result = await feedbackLearning(visit.id);
         if (result.independent_review)
           announce("Flagged. Another housemate will check this visit.");
-        else { sessions.delete(context); context.navigate("/help"); }
+        else {
+          sessions.delete(context);
+          context.navigate("/help");
+        }
       } catch (e) {
-        announce(e.message || "Couldn’t flag this box.");
+        announce(
+          (e instanceof Error ? e.message : "") || "Couldn’t flag this box.",
+        );
       }
     },
-    "quiet",
+    "quiet correction-link",
   );
 }

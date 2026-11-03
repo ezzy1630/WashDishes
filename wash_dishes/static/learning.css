@@ -1,6 +1,76 @@
-/* Learning panel only. Settings and the operator theme retain their existing styles. */
-.learning-panel .btn { min-height: 44px; }
-.learning-panel .row-actions { flex-wrap: wrap; gap: 8px; }
-.learning-panel .learning-trends { width: 100%; border-collapse: collapse; }
-.learning-panel .learning-trends th, .learning-panel .learning-trends td { text-align: left; padding: 8px 12px; }
-.learning-panel .learning-trends caption { text-align: left; padding-block: 8px; }
+/* Operator learning uses the same graphite surfaces and quiet controls as Send. */
+.learning-panel {
+  --tx3: #919aa4;
+}
+.learning-panel .card-body {
+  gap: 24px;
+}
+.learning-panel .btn,
+.learning-panel a {
+  min-height: 44px;
+}
+.learning-panel .btn {
+  white-space: normal;
+  height: auto;
+  text-align: left;
+}
+.learning-panel a {
+  display: inline-flex;
+  align-items: center;
+  color: var(--tx2);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.learning-panel .row-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.learning-panel .learning-table {
+  overflow-x: auto;
+}
+.learning-panel .learning-trends {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.learning-panel .learning-trends th,
+.learning-panel .learning-trends td {
+  text-align: left;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--ln);
+}
+.learning-panel .learning-trends th {
+  font-weight: 550;
+  color: var(--tx2);
+}
+.learning-panel .learning-trends caption {
+  text-align: left;
+  padding-bottom: 12px;
+  color: var(--tx2);
+}
+.learning-panel .learning-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block: 16px;
+  border-top: 1px solid var(--ln);
+}
+.learning-panel .learning-conflict p,
+.learning-panel .learning-conflict a {
+  flex-basis: 100%;
+}
+.learning-panel .learning-conflicts h3 {
+  font-size: 16px;
+}
+@media (max-width: 600px) {
+  .learning-panel .card-head {
+    padding: 16px;
+  }
+  .learning-panel .card-body {
+    padding: 4px 16px 16px;
+  }
+  .learning-panel .row-actions .btn {
+    flex: 1 1 100%;
+  }
+}

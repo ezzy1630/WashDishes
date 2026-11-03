@@ -195,9 +195,82 @@ test("clearing a session cancels queued answers before another write starts", as
   assert.deepEqual(sent, []);
 });
 
-test('learning cards reject unsafe images, unknown tasks and invalid geometry', async () => {
-  const {learningFeed}=await import('../house-site/js/learning-contracts.js');
-  const feed={personal_labels:0,house_truth:0,runs:[],last_learned:null,questions:[{id:1,task:'present',reason:'Uncertain',captured_at:'2026-11-03T00:00:00Z',image_url:'https://example.com/house/learning-media/1',other_image_url:null,box:[0,0,.3,.3]}]};
-  assert.equal(learningFeed(feed),feed);
-  for(const patch of [{task:'unknown'},{image_url:'javascript:alert(1)'},{image_url:'https://user:password@example.com/photo'},{box:[0,0,NaN,.3]}])assert.throws(()=>learningFeed({...feed,questions:[{...feed.questions[0],...patch}]}));
+test("learning cards reject unsafe images, unknown tasks and invalid geometry", async () => {
+  const { learningFeed } = await import(
+    "../house-site/js/learning-contracts.js"
+  );
+  const feed = {
+    personal_labels: 0,
+    house_truth: 0,
+    runs: [],
+    last_learned: null,
+    questions: [
+      {
+        id: 1,
+        task: "present",
+        reason: "Uncertain",
+        captured_at: "2026-11-03T00:00:00Z",
+        image_url: "https://example.com/house/learning-media/1",
+        other_image_url: null,
+        box: [0, 0, 0.3, 0.3],
+      },
+    ],
+  };
+  const parsed = learningFeed(feed);
+  assert.equal(parsed.personal_labels, 0);
+  assert.equal(parsed.questions[0].task, "present");
+  assert.deepEqual(parsed.questions[0].box, [0, 0, 0.3, 0.3]);
+  assert.equal(parsed.questions[0].imageMissing, false);
+  for (const patch of [
+    { task: "unknown" },
+    { image_url: "javascript:alert(1)" },
+    { image_url: "https://user:password@example.com/photo" },
+    { box: [0, 0, NaN, 0.3] },
+  ])
+    assert.throws(() =>
+      learningFeed({
+        ...feed,
+        questions: [{ ...feed.questions[0], ...patch }],
+      }),
+    );
+});
+
+test("learning responses narrow untrusted cards, metrics and receipts", async () => {
+  const { learningFeed, learningAnswer, learningFeedback } = await import(
+    "../house-site/js/learning-contracts.js"
+  );
+  const feed = {
+    personal_labels: 2,
+    house_truth: 1,
+    questions: [],
+    runs: [],
+    metrics: [{ model: "probe", before_accuracy: 0.5, after_accuracy: 0.8 }],
+  };
+  assert.deepEqual(learningFeed(feed).metrics, feed.metrics);
+  for (const patch of [
+    { personal_labels: "2" },
+    { house_truth: -1 },
+    { questions: [null] },
+    {
+      metrics: [{ model: "probe", before_accuracy: NaN, after_accuracy: 0.8 }],
+    },
+    { metrics: {} },
+    { last_learned: 4 },
+  ])
+    assert.throws(() => learningFeed({ ...feed, ...patch }));
+  for (const state of ["trusted", "conflict", "pending"])
+    assert.deepEqual(learningAnswer({ id: 3, state }), { id: 3, state });
+  for (const value of [
+    null,
+    { id: "3", state: "pending" },
+    { id: 3, state: "adopted" },
+  ])
+    assert.throws(() => learningAnswer(value));
+  assert.deepEqual(
+    learningFeedback({ question_id: 4, independent_review: true }),
+    { question_id: 4, independent_review: true },
+  );
+  assert.throws(() =>
+    learningFeedback({ question_id: 4, independent_review: "yes" }),
+  );
 });

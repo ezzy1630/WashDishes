@@ -6,12 +6,13 @@ import { SUPABASE_URL } from "../config.js";
 const scratch =
   process.env.DISHWATCH_SCRATCH ||
   "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
+const output = process.env.DISHWATCH_OUTPUT || scratch;
 const require = createRequire(`${scratch}/tooling/package.json`),
   { chromium } = require("playwright-core");
 const origin = process.env.MOCK_ORIGIN || "http://127.0.0.1:4317",
   authOrigin = "https://lane-c-auth.supabase.co";
-await mkdir(`${scratch}/tmp`, { recursive: true });
-process.env.TMPDIR = `${scratch}/tmp`;
+await mkdir(`${output}/tmp`, { recursive: true });
+process.env.TMPDIR = `${output}/tmp`;
 const browser = await chromium.launch({
   executablePath:
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -65,9 +66,7 @@ await page.route(`${origin}/`, async (r) => {
       ...response.headers(),
       "content-security-policy": response
         .headers()
-        [
-          "content-security-policy"
-        ].replaceAll(SUPABASE_URL, authOrigin),
+        ["content-security-policy"].replaceAll(SUPABASE_URL, authOrigin),
     },
   });
 });
@@ -143,7 +142,7 @@ try {
   );
   assert.deepEqual(issues, []);
   await writeFile(
-    `${scratch}/auth-verification.json`,
+    `${output}/auth-verification.json`,
     JSON.stringify(
       {
         checks: [

@@ -294,7 +294,6 @@ export function namePage(context) {
     h(
       "article",
       { class: "naming", "data-dish-id": visit.id },
-      correctionLink(context, visit),
       h(
         "div",
         { class: "evidence" },
@@ -395,6 +394,7 @@ export function namePage(context) {
           ),
         ),
         verdictChoices(visit, data, mutate),
+        correctionLink(context, visit),
         h("p", { class: "action-error", role: "alert" }),
       ),
     ),

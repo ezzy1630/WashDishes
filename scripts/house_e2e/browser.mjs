@@ -329,6 +329,25 @@ async function journey() {
   await operatorPage.goto(cfg.privateApi+'/#/setup/learning');
   await operatorPage.getByText('No learning runs yet.',{exact:true}).waitFor();
   await screenshot(operatorPage,'operator-learning-panel');
+  // Inspect the real authenticated operator routes at the same sizes/themes as the house site.
+  for (const [width, height] of [[390,844], [1280,800]]) {
+    await operatorPage.setViewportSize({width, height});
+    for (const theme of ['light','dark']) {
+      await operatorPage.emulateMedia({colorScheme: theme, reducedMotion: 'reduce'});
+      for (const [route, label] of [['proof', 'send'], ['setup/learning', 'learning']]) {
+        await operatorPage.goto(cfg.privateApi + '/#/' + route);
+        await operatorPage.locator(route === 'proof' ? '.operator-home .home-week-overview' : '.learning-panel .card-body').waitFor();
+        if (route === 'setup/learning') await operatorPage.getByText('No learning runs yet.', {exact:true}).waitFor();
+        await operatorPage.evaluate(() => document.fonts.ready);
+        const layout = await operatorPage.evaluate(() => ({width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth}));
+        assert(layout.scroll <= layout.width, `Operator ${label} ${width} ${theme} overflow`);
+        const small = await operatorPage.locator('.operator-home button:not(:disabled), .operator-home select, .learning-panel button, .learning-panel a').evaluateAll(nodes =>
+          nodes.filter(n => n.getBoundingClientRect().height > 0 && n.getBoundingClientRect().height < 43.5).map(n => n.textContent));
+        assert.deepEqual(small, [], `Operator ${label} 44px targets`);
+        await screenshot(operatorPage, `operator-${label}-${width}x${height}-${theme}`);
+      }
+    }
+  }
   await operatorPage.close();
   scores(state, 0, 0, null);
   assert.equal(state.rules.min_points, 4);
