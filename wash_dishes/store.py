@@ -7,6 +7,7 @@ import os
 import secrets
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -152,6 +153,10 @@ class Store:
                 id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, embedding TEXT NOT NULL, score REAL,
                 obligation_id INTEGER REFERENCES obligations(id), label INTEGER);
             CREATE INDEX IF NOT EXISTS dish_samples_obligation ON dish_samples(obligation_id);
+            CREATE TABLE IF NOT EXISTS dish_reviews(
+                obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
+                verdict TEXT NOT NULL, of_id INTEGER REFERENCES obligations(id),
+                by TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES events(id));
             -- Twice-daily look at every counter: what was out, and what a person said about it.
             CREATE TABLE IF NOT EXISTS kitchen_checks(
                 id INTEGER PRIMARY KEY, slot TEXT NOT NULL UNIQUE, at TEXT, photo TEXT, dishes TEXT NOT NULL DEFAULT '[]',
@@ -467,6 +472,9 @@ class Store:
             description = "Dish event reopened"
         else:
             raise ValueError("Choose resolve, confirm, reassign, dispute, dismiss, reopen, or start_timer.")
+        if action in ('resolve', 'confirm', 'reassign', 'dispute', 'dismiss', 'reopen'):
+            # A later human decision supersedes the dish judgment, including its training label.
+            self.conn.execute('DELETE FROM dish_reviews WHERE obligation_id=?', (obligation_id,))
         self._event(obligation_id, action, description, {"before": previous, "note": note.strip(), "resident_id": resident_id}, now)
         if action == "dispute" or (action == "resolve" and late):
             self._retain_review_evidence(obligation_id, now)
@@ -738,6 +746,101 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute("UPDATE dish_samples SET label=? WHERE id=?", (int(dish), sample_id))
 
+    @contextmanager
+    def dish_corrections(self):
+        """Composable transaction: a visit and every member correction succeed together."""
+        with self.lock:
+            self.conn.execute('SAVEPOINT dish_corrections')
+            try:
+                yield
+            except BaseException:
+                self.conn.execute('ROLLBACK TO dish_corrections')
+                self.conn.execute('RELEASE dish_corrections')
+                raise
+            else:
+                self.conn.execute('RELEASE dish_corrections')
+
+    def mark_not_dish(self, obligation_ids: list[int], by: str) -> list[dict]:
+        """Dismiss these exact boxes as non-dishes, atomically; teach the kitchen probe 0."""
+        return self._mark_dishes(obligation_ids, 'not_dish', by)
+
+    def mark_clean(self, obligation_ids: list[int], by: str) -> list[dict]:
+        """A real, clean dish: exclude the episode, teach dish identity 1, never invent a wash time."""
+        return self._mark_dishes(obligation_ids, 'clean', by)
+
+    def mark_duplicate(self, obligation_id: int, of_id: int, by: str) -> dict:
+        """Keep originals and evidence; exclude only the duplicate, with an explicit canonical link."""
+        from .house_visits import duplicate_map
+        with self.dish_corrections():
+            aliases = duplicate_map(self)
+            target = aliases.get(of_id, of_id)
+            if target == obligation_id:
+                raise ValueError('A dish cannot duplicate itself, including through another alias.')
+            return self._mark_dishes([obligation_id], 'duplicate', by, of_id=target)[0]
+
+    def _mark_dishes(self, obligation_ids: list[int], verdict: str, by: str, *, of_id: int | None = None) -> list[dict]:
+        if (not isinstance(obligation_ids, (list, tuple)) or not 1 <= len(obligation_ids) <= 200
+                or any(type(i) is not int or i <= 0 for i in obligation_ids)):
+            raise ValueError('Choose between 1 and 200 record IDs.')
+        if not isinstance(by, str) or not by.strip() or len(by) > 200:
+            raise ValueError('A correction needs its reviewer.')
+        ids = list(dict.fromkeys(obligation_ids))
+        with self.dish_corrections():
+            # Validate the entire batch before changing anything.
+            for i in ids:
+                self.obligation(i)
+            if of_id is not None:
+                if type(of_id) is not int or of_id in ids:
+                    raise ValueError('Choose a different canonical record.')
+                canonical = self.obligation(of_id)
+                if canonical['lifecycle'] in ('dismissed', 'disputed'):
+                    raise ValueError('The canonical record must not be dismissed or disputed.')
+            for i in ids:
+                before = dict(self.conn.execute('SELECT * FROM obligations WHERE id=?', (i,)).fetchone())
+                review = self.conn.execute('SELECT * FROM dish_reviews WHERE obligation_id=?', (i,)).fetchone()
+                if review and (review['verdict'], review['of_id']) == (verdict, of_id):
+                    continue
+                reason = {'not_dish': 'Not a dish', 'clean': "It's clean", 'duplicate': f'Same dish as record {of_id}'}[verdict]
+                self.conn.execute("UPDATE obligations SET lifecycle='dismissed',reason=?,overdue_verified=0,review_pending=0 WHERE id=?", (reason, i))
+                people = [dict(r) for r in self.conn.execute('SELECT id,resident_id,hint_resident_id FROM person_samples WHERE obligation_id=?', (i,))]
+                self.conn.execute('UPDATE person_samples SET resident_id=NULL,hint_resident_id=NULL WHERE obligation_id=?', (i,))
+                # Keep legacy dismissal readers/metrics meaningful: clean and duplicate
+                # notes are deliberately not NOT_A_DISH_NOTES, even on a source rollback.
+                self._event(i, 'dismiss', reason, {'dish_correction': True, 'note': reason, 'verdict': verdict, 'of_id': of_id, 'by': by.strip(),
+                            'before': before, 'review_before': dict(review) if review else None, 'people_before': people})
+                event_id = self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+                self.conn.execute('INSERT OR REPLACE INTO dish_reviews VALUES(?,?,?,?,?)', (i, verdict, of_id, by.strip(), event_id))
+            self._refresh_identity_suggestions()
+            return [self.obligation(i) for i in ids]
+
+    def undo_dish_correction(self, obligation_id: int, by: str) -> dict:
+        """Operator undo, including prior labels; refuse to overwrite intervening record decisions."""
+        if not isinstance(by, str) or not by.strip() or len(by) > 200:
+            raise ValueError('An undo needs its reviewer.')
+        with self.dish_corrections():
+            self.obligation(obligation_id)
+            review = self.conn.execute('SELECT * FROM dish_reviews WHERE obligation_id=?', (obligation_id,)).fetchone()
+            if not review:
+                raise ValueError('No active dish correction to undo.')
+            event = self.conn.execute('SELECT data FROM events WHERE id=?', (review['event_id'],)).fetchone()
+            data = json.loads(event['data'])
+            # Camera presence events may continue after a dismissal. Human decisions cannot be overwritten.
+            changed = self.conn.execute("SELECT 1 FROM events WHERE obligation_id=? AND id>? AND event IN ('resolve','confirm','reassign','dispute','dismiss','reopen','start_timer') AND coalesce(json_extract(data,'$.dish_correction'),0)!=1", (obligation_id, review['event_id'])).fetchone()
+            if changed:
+                raise ValueError('This record has a later decision; review it before undoing.')
+            fields = ('lifecycle', 'reason', 'overdue_verified', 'review_pending')
+            self.conn.execute('UPDATE obligations SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',
+                              (*[data['before'][k] for k in fields], obligation_id))
+            for person in data['people_before']:
+                self.conn.execute('UPDATE person_samples SET resident_id=?,hint_resident_id=? WHERE id=?', (person['resident_id'], person['hint_resident_id'], person['id']))
+            self.conn.execute('DELETE FROM dish_reviews WHERE obligation_id=?', (obligation_id,))
+            previous = data['review_before']
+            if previous:
+                self.conn.execute('INSERT INTO dish_reviews VALUES(?,?,?,?,?)', tuple(previous[k] for k in ('obligation_id', 'verdict', 'of_id', 'by', 'event_id')))
+            self._event(obligation_id, 'dish_correction_undone', 'Dish correction undone by operator', {'by': by.strip(), 'correction_event_id': review['event_id']})
+            self._refresh_identity_suggestions()
+            return self.obligation(obligation_id)
+
     def labeled_dish_samples(self) -> list[dict]:
         """Samples with a person's verdict: given directly in a kitchen check, or implied by a Review answer.
 
@@ -745,13 +848,15 @@ class Store:
         "not a dish" means a mistake. Anything else (system closures, open questions) teaches nothing.
         """
         with self.lock:
-            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at, o.reason,
+            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at, o.reason, r.verdict AS dish_review,
                 (SELECT json_extract(e.data,'$.note') FROM events e WHERE e.obligation_id=o.id AND e.event='dismiss' ORDER BY e.id DESC LIMIT 1) note
-                FROM dish_samples s LEFT JOIN obligations o ON o.id=s.obligation_id ORDER BY s.id""").fetchall()
+                FROM dish_samples s LEFT JOIN obligations o ON o.id=s.obligation_id LEFT JOIN dish_reviews r ON r.obligation_id=o.id ORDER BY s.id""").fetchall()
         result = []
         for row in rows:
             label = row["label"]
-            if label is None and row["lifecycle"] is not None:
+            if row['dish_review']:
+                label = {'not_dish': 0, 'clean': 1}.get(row['dish_review'])
+            elif label is None and row["lifecycle"] is not None:
                 note = (row["note"] or "").strip()
                 if row["lifecycle"] == "dismissed" and row['reason'] not in (UNCLAIMED_NOTE, UNPROVABLE_NOTE):
                     label = 0 if note in NOT_A_DISH_NOTES else 1 if note == CANT_TELL_NOTE else None
@@ -1286,28 +1391,6 @@ class Store:
         self._retain_review_evidence(obligation_id, utcnow())
 
     # Personal links: each housemate sees and can dispute only their own records.
-
-    # LANE G MERGE ADAPTERS: replace these exact signatures with Lane G's real verdict methods.
-    # The temporary implementation only persists league exclusions; no lifecycle/training claim.
-    def mark_not_dish(self, obligation_ids, by):
-        from .house_verdicts import mark
-        mark(self, obligation_ids, 'not_dish', by)
-
-    def mark_clean(self, obligation_ids, by):
-        from .house_verdicts import mark
-        mark(self, obligation_ids, 'clean', by)
-
-    def mark_duplicate(self, obligation_id, of_id, by):
-        from .house_verdicts import mark
-        from .house_visits import duplicate_map
-        self.obligation(obligation_id)
-        self.obligation(of_id)
-        aliases = duplicate_map(self)
-        target = aliases.get(of_id, of_id)
-        if target == obligation_id:
-            raise ValueError('A dish cannot duplicate itself, including through another alias.')
-        mark(self, [obligation_id], 'duplicate', by, target)
-    # END LANE G MERGE ADAPTERS.
 
     def create_link(self, resident_id: int) -> str:
         """A new personal link token; any earlier link for this person stops working."""

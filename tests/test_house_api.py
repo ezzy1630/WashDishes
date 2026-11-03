@@ -535,7 +535,7 @@ def test_human_duplicate_inside_a_visit_does_not_block_naming(house_client):
     original, alias = late(client), late(client)
     stored_visit(client, [original, alias])
     with store.conn:
-        store.mark_duplicate(alias['id'], original['id'], client.people[0]['id'])
+        store.mark_duplicate(alias['id'], original['id'], f"resident:{client.people[0]['id']}")
     board = client.get('/house/api/week').json()
     assert len(board['visits']) == 1 and board['visits'][0]['can_name']
     assert board['visits'][0]['dish_ids'] == [original['id']]
@@ -590,10 +590,10 @@ def test_duplicate_chains_cannot_create_cycles(house_client):
     client, store = house_client, house_client.app.state.store
     first, second, third = [late(client) for _ in range(3)]
     with store.conn:
-        store.mark_duplicate(second['id'], first['id'], None)
-        store.mark_duplicate(third['id'], second['id'], None)
+        store.mark_duplicate(second['id'], first['id'], 'operator')
+        store.mark_duplicate(third['id'], second['id'], 'operator')
         with pytest.raises(ValueError, match='itself'):
-            store.mark_duplicate(first['id'], third['id'], None)
+            store.mark_duplicate(first['id'], third['id'], 'operator')
     board = client.get('/house/api/week').json()
     assert len(board['dishes']) == 1 and board['visits'][0]['alias_ids'] == [second['id'], third['id']]
     assert client.post(f"/house/api/dishes/{third['id']}/name", json={'resident_id': client.people[0]['id']}).status_code == 200

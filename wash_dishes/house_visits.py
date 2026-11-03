@@ -72,6 +72,8 @@ def duplicate_map(store, visits=None) -> dict[int, int]:
     # A human's explicit same-dish answer wins over geometric legacy grouping.
     aliases.update({r['obligation_id']: r['of_id'] for r in store.conn.execute(
         "SELECT obligation_id,of_id FROM house_verdicts WHERE verdict='duplicate' AND of_id IS NOT NULL")})
+    aliases.update({r['obligation_id']: r['of_id'] for r in store.conn.execute(
+        "SELECT obligation_id,of_id FROM dish_reviews WHERE verdict='duplicate' AND of_id IS NOT NULL")})
     for oid in aliases:
         target, seen = aliases[oid], {oid}
         while target in aliases and target not in seen:

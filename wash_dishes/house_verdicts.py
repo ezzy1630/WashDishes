@@ -1,9 +1,4 @@
-"""Temporary verdict persistence behind Lane G's exact Store method signatures.
-
-Lane G integration: replace the clearly marked Store adapters with the real
-training/lifecycle methods. These rows independently enforce league exclusion;
-they deliberately do not teach a detector or infer washing from a verdict.
-"""
+"""League exclusion metadata and resident attribution; Store owns corrections and undo."""
 from __future__ import annotations
 
 from .store import stamp

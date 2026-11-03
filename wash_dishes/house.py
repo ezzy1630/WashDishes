@@ -411,6 +411,7 @@ class House:
             if current is None or set(current['dish_ids']) != set(group['dish_ids']):
                 raise HTTPException(409, 'Some dishes in this visit cannot be reviewed. Refresh the week.')
             actor_id = actor['id'] if actor else None
+            reviewer = f'resident:{actor_id}' if actor else 'operator'
             target = None
             if body.verdict == 'duplicate':
                 if not body.of_visit_id or body.of_visit_id == visit_id:
@@ -423,18 +424,14 @@ class House:
                     bounds = league.week_bounds(now=parse_stamp(target_item['followup_at'])) if target_item['followup_at'] else None
                     if not bounds or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
                         raise HTTPException(400, 'Choose an original visit that is still in the league.')
-            with store.conn:
+            with store.dish_corrections():
                 if body.verdict == 'cant_tell':
                     store.conn.execute('INSERT OR IGNORE INTO house_hidden_visits VALUES(?,?)', (actor_id or 0, visit_id))
                 else:
-                    before_keys = ('resident_id', 'lifecycle', 'confidence', 'resolved_at', 'cleaner_id',
-                                   'reason', 'review_pending', 'overdue_verified', 'attribution', 'named_by', 'named_at')
-                    store.conn.execute('INSERT OR REPLACE INTO house_verdict_before VALUES(?,?)',
-                        (visit_id, json.dumps([{'id': item['id'], **{k: item[k] for k in before_keys}} for item in items])))
                     if body.verdict == 'not_dish':
-                        store.mark_not_dish(group['dish_ids'], actor_id)
+                        store.mark_not_dish(group['dish_ids'], reviewer)
                     elif body.verdict == 'clean':
-                        store.mark_clean(group['dish_ids'], actor_id)
+                        store.mark_clean(group['dish_ids'], reviewer)
                     else:
                         for item in items:
                             kinds = {d['kind'] for d in item['dishes']}
@@ -443,8 +440,9 @@ class House:
                             matching = targets if len(targets) == 1 else [t for t in targets if {d['kind'] for d in t['dishes']} == kinds]
                             if len(matching) != 1:
                                 raise HTTPException(400, 'Choose the specific original dish from that visit.')
-                            store.mark_duplicate(item['id'], matching[0]['id'], actor_id)
-                    # Also keep an API-owned exclusion when Lane G replaces the adapters.
+                            store.mark_duplicate(item['id'], matching[0]['id'], reviewer)
+                            house_verdicts.mark(store, [item['id']], 'duplicate', actor_id, matching[0]['id'])
+                    # Keep resident attribution for the league alongside the correction audit.
                     for item in items:
                         if not store.conn.execute('SELECT 1 FROM house_verdicts WHERE obligation_id=?', (item['id'],)).fetchone():
                             house_verdicts.mark(store, [item['id']], body.verdict, actor_id)
@@ -473,13 +471,12 @@ class House:
                     league.assert_unfrozen(store, store.obligation(oid))
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from None
-            with store.conn:
-                previous = store.conn.execute('SELECT data FROM house_verdict_before WHERE visit_id=?', (visit_id,)).fetchone()
-                if previous:
-                    for item in json.loads(previous[0]):
-                        keys = [k for k in item if k != 'id']
-                        store.conn.execute(f"UPDATE obligations SET {','.join(k+'=?' for k in keys)} WHERE id=?", [*(item[k] for k in keys), item['id']])
-                    store.conn.execute('DELETE FROM house_verdict_before WHERE visit_id=?', (visit_id,))
+            with store.dish_corrections():
+                try:
+                    for oid in ids:
+                        store.undo_dish_correction(oid, 'operator')
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
                 store.conn.executemany('DELETE FROM house_verdicts WHERE obligation_id=?', [(oid,) for oid in ids])
                 store.conn.execute('DELETE FROM house_visit_verdicts WHERE visit_id=?', (visit_id,))
                 store._event(None, 'house_visit_verdict_undone', 'The operator reversed a visit verdict.', {'visit_id': visit_id, 'obligation_ids': ids})
