@@ -344,6 +344,22 @@ class House:
                 raise HTTPException(409, 'Some dishes in this visit cannot be reviewed. Refresh the week.')
             with store.conn:
                 at = utcnow()
+                if action == 'name' or (action == 'settle' and body['decision'] == 'them'):
+                    filmstrip = group.get('filmstrip')
+                    capture = json.loads(filmstrip['capture']) if filmstrip else {}
+                    evidence_id = capture.get('identity_evidence_id')
+                    # A name on this visit must never label a camera crop from
+                    # a later passer-by or an ambiguous arrival. One visit has
+                    # one teaching capture, even when it contains several dishes.
+                    for oid in group['dish_ids']:
+                        source = store.conn.execute("""SELECT * FROM evidence WHERE id=? AND obligation_id=? AND kind='snapshot'
+                            AND json_extract(capture,'$.identity_source')='arrival_visit'
+                            AND json_extract(capture,'$.visit_id')=?""", (evidence_id, oid, visit_id)).fetchone()
+                        identity = json.loads(source['capture']) if source else {}
+                        # A later proof may have replaced the active capture.
+                        # Restore this strip's cues without committing the review transaction.
+                        store._replace_person_samples_locked(oid, identity.get('cues', {}), evidence_id or '',
+                            at=parse_stamp(source['created_at']) if source else at, context=identity.get('context'))
                 for oid in group['dish_ids']:
                     self.change(oid, action, body, actor, _in_visit=True, _at=at)
             first = store.obligation(group['dish_ids'][0])

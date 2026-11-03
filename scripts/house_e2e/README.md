@@ -36,6 +36,7 @@ product site, existing `playwright-core` under
 and the specified Python environment (`httpx`, `PyJWT`, `cryptography`, app
 dependencies). Overrides: `HOUSE_E2E_PLAYWRIGHT` (package directory),
 `HOUSE_E2E_CHROME` (executable), `HOUSE_E2E_SUPABASE_JS` (browser ES module).
+Set `HOUSE_E2E_SCRATCH` to keep a run's data and browser profiles in another scratch directory.
 
 ## What the command proves
 

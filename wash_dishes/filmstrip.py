@@ -467,9 +467,53 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
     raise ValueError('Arrival filmstrip exceeds the photo budget.')
 
 
+def identity_frame(journal, frames: list[dict], boxes: list[list[float]], *, arrival_recorded: bool) -> dict | None:
+    """One depicted, continuously tracked visitor, for later HUMAN identity teaching.
+
+    Inspect every journal observation, not just the six displayed frames. Missing
+    tracks, handoffs, gaps or an already-present dish supply no teaching capture.
+    This does not attribute responsibility or relax any automatic proof check.
+    """
+    if not arrival_recorded or not frames:
+        return None
+    observations = list(journal.frames(frames[0]['at'] - .75, frames[-1]['at'] + .75))
+    if (not observations or observations[0]['at'] > frames[0]['at'] + .75
+            or observations[-1]['at'] < frames[-1]['at'] - .75):
+        return None
+    active, previous_at, ended = [], None, False
+    for observation in observations:
+        if previous_at is not None and observation['at'] - previous_at > 2.5:
+            return None
+        previous_at = observation['at']
+        people = [d for d in observation['detections'] if d['kind'] == 'person'
+                  and any(putdown._reach(b, d['box']) <= .1 for b in boxes)]
+        if len(people) > 1:
+            return None
+        if not people:
+            ended |= bool(active)
+            continue
+        if ended or people[0].get('track_id') is None:
+            return None
+        if active and (active[-1][1]['track_id'] != people[0]['track_id']
+                       or putdown.box_iou(active[-1][1]['box'], people[0]['box']) < .4):
+            return None
+        active.append((observation['at'], people[0]))
+    if len(active) < 3 or active[-1][0] - active[0][0] < 1:
+        return None
+    choices = []
+    for frame in frames:
+        if len(frame['person_boxes']) != 1:
+            continue
+        at, person = min(active, key=lambda p: abs(p[0] - frame['at']))
+        if abs(at - frame['at']) <= .75 and putdown.box_iou(person['box'], frame['person_boxes'][0]) >= .4:
+            choices.append(frame | {'person_box': frame['person_boxes'][0]})
+    return max(choices, key=lambda f: f['person_box'][2] * f['person_box'][3], default=None)
+
+
 class Filmstrips:
-    def __init__(self, store, media, journal):
+    def __init__(self, store, media, journal, *, identify=None):
         self.store, self.media, self.journal = store, media, journal
+        self.identify = identify
         self.plans = {}
         with store.lock, store.conn:
             store.conn.execute("""CREATE TABLE IF NOT EXISTS filmstrip_jobs(
@@ -574,6 +618,17 @@ class Filmstrips:
                                 'canonical_obligation_ids': canonical_ids, 'duplicate_of': {str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
                                 'window': found['window'], 'dish_boxes': {str(m['id']): m['box'] for m in members},
                                 'frames': [{k: v for k, v in f.items() if k != 'jpeg'} for f in frames]}
+                    if self.identify:
+                        anchor = identity_frame(self.journal, frames, [m['box'] for m in members],
+                                                arrival_recorded=found['window'].get('arrival_recorded') is True)
+                        if anchor:
+                            try:
+                                captured = self.identify(item['id'], anchor, metadata)
+                            except Exception:
+                                # Identity model failure must not discard usable human context.
+                                captured = None
+                            if captured:
+                                metadata['identity_evidence_id'] = captured
                     with self.store.lock, self.store.conn:
                         self.store.conn.execute("""INSERT INTO evidence(id,obligation_id,filename,kind,created_at,expires_at,label,capture)
                             VALUES(?,?,?,'filmstrip',?,?,'arrival',?)""", (evidence_id,obligation_id,filename,stamp(now),stamp(now+KEEP),json.dumps(metadata)))

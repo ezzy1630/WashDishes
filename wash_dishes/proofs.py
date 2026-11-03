@@ -23,16 +23,14 @@ from .store import Store, parse_stamp, stamp, utcnow
 
 LATE_LABEL = "Matching dish still visible after the deadline%"
 STILL_OUT = timedelta(minutes=30)    # unseen this long means it was taken away
-FOOTAGE = timedelta(hours=20)        # the recording keeps 24 h; older put-downs are gone
 KEEP = timedelta(days=7)
 RETRY = timedelta(minutes=5)
 # ProofChecker.__call__ exposes exact rejection reasons. Keep this one contract
 # fail-closed: other reasons (including handling/uncovering) never authorize rewind.
 ALREADY_THERE = "dish already there in the before picture"
-ARRIVAL_ATTEMPTS = 3
-# One journal search took 351 s on the Jetson (#977, no inference), and the replay's one
-# recovered retry (#901) needed three. Running out only costs a picture, never adds a
-# wrong one; a longer budget only delays later dishes, and few dishes ever retry.
+# A shared deadline bounds all decoding/checks. The number of later rejected
+# episodes must not stop recovery while time remains; every retry still has to
+# be strictly earlier and every returned picture passes the same checks.
 TRACE_SECONDS = 1200
 
 
@@ -66,7 +64,8 @@ class Proofs:
                OR json_extract(p.data,'$.late_at')>=unixepoch(e.created_at)))"""
 
     def _waiting_args(self, now: datetime) -> tuple:
-        return LATE_LABEL, stamp(now), stamp(now - FOOTAGE), stamp(now - STILL_OUT), stamp(now)
+        footage = timedelta(hours=self.store.settings()["buffer_hours"])
+        return LATE_LABEL, stamp(now), stamp(now - footage), stamp(now - STILL_OUT), stamp(now)
 
     def candidate(self, now: datetime | None = None) -> dict | None:
         now = now or utcnow()
@@ -119,8 +118,8 @@ class Proofs:
     def run_once(self, find: Finder, identify: Callable | None = None, now: datetime | None = None,
                  *, check: Callable | None = None, identify_selected: Callable | None = None) -> int | None:
         """Trace the oldest waiting dish. `find` binds the recording and supports an exclusive
-        `earlier_than` arrival cutoff and a shared monotonic `deadline`. It is called at most
-        three times, and only an already-present Before warrants an earlier search.
+        `earlier_than` arrival cutoff and a shared monotonic `deadline`. It is called
+        within one shared deadline, and only an already-present Before warrants an earlier search.
         `identify(obligation_id, jpeg, dish_box, at)` describes whoever is putting it down and
         returns their box, or None when no person is near the dish (then it is not proof of anyone).
         `identify_selected` receives the checker's person_box keyword AFTER the checked
@@ -154,7 +153,7 @@ class Proofs:
         try:
             late_box = (json.loads(item["late_capture"] or "{}") or {}).get("box")
             late_jpeg = self.media.safe_path(item["late_file"]).read_bytes()
-            for attempt in range(ARRIVAL_ATTEMPTS):
+            while True:
                 if time.monotonic() >= deadline:
                     checked = "the put-down search reached its time budget"
                     break
@@ -174,7 +173,7 @@ class Proofs:
                     checked = "the put-down search reached its time budget"
                     break
                 checked = self.check(oid, found, late_jpeg, box, late_box) if self.check else {}
-                if checked != ALREADY_THERE or attempt + 1 == ARRIVAL_ATTEMPTS:
+                if checked != ALREADY_THERE:
                     break
                 # The rejected Before already contains the dish. Its placement must
                 # precede that view, not just precede a different frame of this reach.
@@ -249,7 +248,7 @@ class Proofs:
                         "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
                         "guess_id": row["suggested_resident_id"], "guess_name": row["guess_name"],
                         "guess_basis": basis.get(row["id"]),
-                        "image_url": f"/api/proofs/{row['id']}/image?v={row['resident_id'] if named else 0}"})
+                        "image_url": f"/api/proofs/{row['id']}/image?v={row['resident_id'] if named else 0}.{VERSION}"})
         return sorted(out, key=lambda p: p["put_down_at"], reverse=True)
 
     def _out_rows(self, now: datetime, obligation_id: int | None = None) -> list:

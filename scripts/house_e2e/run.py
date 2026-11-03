@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SCRATCH = Path("/Volumes/Neural/dishwatch-scratch/houseleague/laneE")
+SCRATCH = Path(os.getenv("HOUSE_E2E_SCRATCH", "/Volumes/Neural/dishwatch-scratch/houseleague/laneE"))
 PYTHON = Path("/Volumes/Neural/WashDishes/.venv/bin/python")
 
 

@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from collections import Counter, deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import checks
@@ -47,7 +48,7 @@ class Runtime:
         self.proofs = Proofs(config.root, store, media)
         # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
         self.journal = Journal(config.root / "journal.db")
-        self.filmstrips = Filmstrips(store, media, self.journal)
+        self.filmstrips = Filmstrips(store, media, self.journal, identify=self._identify_arrival)
         self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
@@ -238,6 +239,31 @@ class Runtime:
         if found == JOURNAL_TOO_NEW:
             return find_putdown(self.media.buffer, box, logged, until, earlier_than=earlier_than, deadline=deadline)
         return found
+
+    def _identify_arrival(self, obligation_id: int, frame: dict, visit: dict) -> str | None:
+        """Save the filmstrip's sole visitor as UNNAMED cues; only a human can label them."""
+        from .putdown import _reach
+
+        jpeg, box = frame['jpeg'], frame['person_box']
+        at = datetime.fromtimestamp(frame['at'], timezone.utc)
+        with self.lock:
+            engine = self.local_vision()
+            people = [d for d in engine.people(jpeg)
+                      if any(_reach(b, d['box']) <= .1 for b in visit['dish_boxes'].values())]
+            if len(people) != 1 or box_iou(people[0]['box'], box) < .4:
+                return None
+            cues, crop = engine.describe_person(jpeg, box)
+            faces = engine.enrolled_faces()
+        location = self.store.obligation(obligation_id)['location']
+        context = next((a['id'] for a in monitoring_areas(self.store.settings()) if a.get('name') == location), None)
+        evidence_id = self.media.save_snapshot(obligation_id, crop, 'Person shown in arrival visit', at=at,
+            capture={'identity_source': 'arrival_visit', 'visit_id': visit['visit_id'], 'person_box': box,
+                     'cues': cues, 'context': context})
+        self.store.replace_putdown_samples(obligation_id, cues, evidence_id, at=at, context=context)
+        resident, evidence, _, seen = self.store.suggest_identity(cues, at=at, context=context,
+            enrolled_faces=faces, exclude_obligation=obligation_id)
+        self.store.set_suggestion(obligation_id, resident, evidence, seen)
+        return evidence_id
 
     def _identify_putdown(self, obligation_id: int, jpeg: bytes, dish_box: list[float], at, *, person_box=None) -> list[float] | None:
         """Box of the person putting the dish down, or None if nobody is within reach of it.

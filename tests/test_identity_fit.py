@@ -65,3 +65,47 @@ def test_rebuild_replaces_quarantined_clip_cue_without_deleting_history(store):
     old = store.conn.execute("SELECT embedding FROM person_samples WHERE evidence_id='visit'").fetchone()
     assert json.loads(old[0]) == [0, 0, 1, 0]
     assert add_faces(store, lambda _: [1, 0, 0, 0])['faces_added'] == 0
+
+
+def test_day_out_excludes_all_same_day_confirmations_and_keeps_abstentions(store):
+    from datetime import datetime, timezone
+
+    from wash_dishes.identity_fit import evaluate
+
+    alex = store.add_resident('Alex')['id']
+    at = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
+    for offset in (0, 1):
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+        store.add_person_sample(item['id'], [1, 0, 0, 0], at=at + timedelta(minutes=offset), cue='outfit')
+        store.action(item['id'], 'confirm', resident_id=alex)
+    assert evaluate(store)['correct'] == 2
+    held = evaluate(store, leave_one_day_out=True)
+    assert (held['cases'], held['guesses'], held['abstentions'], held['coverage']) == (2, 0, 2, 0)
+    assert held['precision'] is None
+
+
+def test_day_holdout_is_applied_before_gallery_limit(store):
+    from datetime import datetime, timezone
+
+    alex = store.add_resident('Alex')['id']
+    at = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
+    for day in (-1, 0, 0):
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+        store.add_person_sample(item['id'], [1, 0, 0, 0], at=at + timedelta(days=day), cue='face')
+        store.action(item['id'], 'confirm', resident_id=alex)
+    assert store.suggest_identity({'face': [1, 0, 0, 0]}, at=at, exclude_day='2026-10-21', limit=1)[0] == alex
+
+
+def test_day_holdout_uses_the_same_timezone_as_outfit_matching(store, monkeypatch):
+    from datetime import datetime, timezone
+
+    from wash_dishes.identity_fit import evaluate
+
+    monkeypatch.setenv('WASHDISHES_TIMEZONE', 'UTC')
+    alex = store.add_resident('Alex')['id']
+    for hour in (0, 23):
+        at = datetime(2026, 10, 21, hour, 30, tzinfo=timezone.utc)
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+        store.add_person_sample(item['id'], [1, 0, 0, 0], at=at, cue='face')
+        store.action(item['id'], 'confirm', resident_id=alex)
+    assert evaluate(store, leave_one_day_out=True)['guesses'] == 0
