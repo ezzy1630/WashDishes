@@ -454,3 +454,18 @@ def test_naming_or_dismissing_a_still_out_dish_changes_its_card(authenticated):
     assert after["image_url"] != before[named["id"]]["image_url"]
     assert client.get(after["image_url"]).status_code == 200
     assert client.get(before[wrong["id"]]["image_url"]).status_code == 404
+
+
+def test_home_exposes_failed_search_without_promising_person_or_current_count(authenticated):
+    runtime = authenticated.app.state.runtime
+    item = late_dish(runtime.store, runtime.media)
+    runtime.proofs.run_once(lambda *args, **kwargs: "the recording has a gap while tracing the dish backwards")
+    data = authenticated.get('/api/proofs').json()
+    assert data['items'] == [] and data['checking'] == 0
+    assert data['kitchen'] == {'available': False, 'counts': None, 'observed_at': None}
+    assert data['deadline_minutes'] == runtime.store.settings()['deadline_minutes']
+    [out] = data['out']
+    assert out['id'] == item['id'] and out['resident_name'] is None
+    assert out['search_status'] == 'untraced'
+    assert out['search_reason'] == 'the recording has a gap while tracing the dish backwards'
+    assert out['stages'] == []

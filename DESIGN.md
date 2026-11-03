@@ -150,7 +150,7 @@ Controls have short background and border transitions (120ms); the reduced-motio
 
 ## Shapes
 
-Corners are gently rounded and functional. Proof pictures and the Send button use the send radius; name chips are full pills (chip radius). Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete records use text and one localized saved view, never a placeholder collage.
+Corners are gently rounded and functional. Proof pictures and the Send button use the send radius; name chips are full pills (chip radius). Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete records use a four-stage grid of retained camera photos with explicit missing-photo cells, a plain reason, and an Inspect photos & video link. They have no Send action or name chips. Complete collages and incomplete sequences have separate counts; unavailable tracking is never described as a clean kitchen.
 
 ## Components
 

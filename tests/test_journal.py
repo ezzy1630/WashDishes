@@ -298,6 +298,28 @@ def test_brief_clear_glimpse_during_handling_cannot_be_the_left_frame(tmp_path, 
         assert putdown.find_putdown_journal(journal, tmp_path, BOX, 50, 69) == "the footage has no clear view after the handling finished"
 
 
+def test_departure_occlusion_does_not_discard_the_actual_release(tmp_path, monkeypatch):
+    # The pan is released at 20, but the person still obscures its spot until 28.
+    # Choosing candidates only in the five seconds before the clear Left photo
+    # loses the release and sends the finder backwards to an unrelated episode.
+    person = PERSON | {"box": [.2, .2, .25, .5]}
+    empty, dish = scene(False), scene(True)
+    with Journal(tmp_path / "journal.db") as journal:
+        for t in range(60):
+            nearby = [person] if 18 <= t <= 20 else [PERSON] if 21 <= t <= 28 else []
+            journal.record(t, frame(t, t >= 20, nearby)["detections"])
+        monkeypatch.setattr(putdown, "segments", lambda _: [(0, 60, tmp_path / "clip.ts")])
+        monkeypatch.setattr(putdown, "samples", lambda *args: [putdown.Sample(t, putdown._jpeg_patch(dish if t >= 20 else empty, BOX)) for t in range(60)])
+        monkeypatch.setattr(putdown, "decoded_photos", lambda _, **kw: [(t / 4, dish if t / 4 >= 20 else empty)
+                                                                     for t in range(240) if kw["t0"] <= t / 4 <= kw["t1"]])
+        result = putdown.find_putdown_journal(journal, tmp_path, BOX, 40, 59)
+        assert isinstance(result, dict), result
+        assert result["before"]["at"] < 20
+        assert 18 <= result["putting"]["at"] <= 20.75
+        assert result["left"]["at"] > 28
+        assert result["putting"]["person_box"] == person["box"]
+
+
 def test_neighboring_person_without_box_contact_is_not_a_putting_frame(tmp_path, monkeypatch):
     person = PERSON | {"box": [.2, .2, .19, .5]}
     assert putdown._reach(BOX, person["box"]) < .1

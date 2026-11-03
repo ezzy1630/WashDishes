@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -324,7 +325,24 @@ def create_app(config: Config | None = None) -> FastAPI:
         learning = store.learning()
         # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
         items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
-        return {"items": items, "out": runtime.proofs.out_items(), **runtime.proofs.progress(), "people": ledger.tally(store),
+        out = runtime.proofs.out_items()
+        for item in out:
+            item["stages"] = []
+            try:
+                sequence = runtime.sequences.get(item["id"])
+            except LookupError:
+                continue
+            if not sequence["stale"]:
+                item["stages"] = [{k: stage[k] for k in ("key", "title", "url", "at")} for stage in sequence["stages"]]
+        settings = store.settings()
+        with runtime.live_lock:
+            live = runtime.live
+            fresh = bool(live and time.monotonic() - live["monotonic"] <= 10
+                         and settings["vision_enabled"] and not config.demo)
+            kitchen = {"available": fresh, "counts": live["counts"] if fresh else None,
+                       "observed_at": live["frame_at"] if fresh else None}
+        return {"items": items, "out": out, "kitchen": kitchen, "deadline_minutes": settings["deadline_minutes"],
+                **runtime.proofs.progress(), "people": ledger.tally(store),
                 "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
 
     @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])

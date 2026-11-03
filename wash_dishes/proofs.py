@@ -256,11 +256,13 @@ class Proofs:
         with self.store.lock:
             return self.store.conn.execute(f"""SELECT o.id, o.created_at, o.timing_known, o.dishes, o.location, o.box, o.resident_id,
                     o.confidence, o.suggested_resident_id, r.name resident_name, g.name guess_name,
-                    e.id photo_id, e.filename photo_file, e.created_at photo_at, e.capture photo_capture
+                    e.id photo_id, e.filename photo_file, e.created_at photo_at, e.capture photo_capture,
+                    p.status search_status, json_extract(p.data,'$.reason') search_reason
                 FROM obligations o
                 JOIN evidence e ON e.id=(SELECT id FROM evidence WHERE obligation_id=o.id AND kind='snapshot' AND expired=0
                     AND label LIKE ? AND created_at>=o.due_at ORDER BY created_at DESC, id DESC LIMIT 1)
                 LEFT JOIN residents r ON r.id=o.resident_id LEFT JOIN residents g ON g.id=o.suggested_resident_id
+                LEFT JOIN proofs p ON p.obligation_id=o.id
                 WHERE o.box IS NOT NULL AND o.due_at<=? AND {self.STILL_THERE} AND (? IS NULL OR o.id=?)
                   AND NOT EXISTS (SELECT 1 FROM proofs p WHERE p.obligation_id=o.id AND p.status='ready')
                 ORDER BY o.created_at, o.id""",
@@ -283,6 +285,7 @@ class Proofs:
                         "out_since": row["created_at"], "timing_known": bool(row["timing_known"]), "photo_at": row["photo_at"],
                         "resident_id": row["resident_id"] if named else None, "resident_name": row["resident_name"] if named else None,
                         "guess_id": row["suggested_resident_id"], "guess_name": row["guess_name"], "guess_basis": basis.get(row["id"]),
+                        "search_status": row["search_status"] or "queued", "search_reason": row["search_reason"],
                         # Changes with the photo, the name on it and the design, so a cached copy is never stale.
                         "image_url": f"/api/proofs/out/{row['id']}/image?v={row['photo_id']}.{row['resident_id'] if named else 0}.{VERSION}"})
         return out
