@@ -24,6 +24,8 @@ class Kitchen:
     def __init__(self, store, media, *, settle=30):
         self.store = store
         self.inventory = Inventory(store, media, settle_seconds=settle)
+        # This camera knows its drawn objects are dishes. Real cameras must supply a verdict.
+        self.inventory.verify = lambda image, box: {'dish': True, 'score': .9}
         noise = np.random.default_rng(1).integers(60, 200, (HEIGHT, WIDTH), dtype=np.uint8)
         self.background = cv2.GaussianBlur(noise, (0, 0), 2)
         self.dishes: dict[str, tuple[str, list[float]]] = {}
@@ -131,6 +133,7 @@ def test_handling_photos_are_saved_before_departure_and_survive_restart(kitchen,
     reopened = Store(kitchen.store.root)
     try:
         kitchen.inventory = Inventory(reopened, Media(reopened.root, reopened))
+        kitchen.inventory.verify = lambda image, box: {'dish': True, 'score': .9}
         kitchen.wait(40)
         [record] = kitchen.items()
         stages = {e['capture'].get('stage'): e for e in record['evidence']}

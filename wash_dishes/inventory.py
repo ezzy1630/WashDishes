@@ -16,12 +16,13 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from math import isfinite
 from typing import Any, Callable
 
 from .alignment import shift_box
 from .media import Media
 from .store import CARRY_WINDOW, Store, parse_stamp, stamp
-from .vision import box_iou, merge_detections
+from .vision import box_iou, merge_detections, partial_box, same_dish_family
 
 # An area is settled once nobody has been in it and nothing has moved for this long.
 QUIET_SECONDS = 3.0
@@ -233,6 +234,7 @@ class Zone:
     visit_started: datetime | None = None
     visit_before: bytes | None = None
     visit_before_at: datetime | None = None
+    visit_before_image: Any = None
     # Person track -> the latest frame showing them in this area: who handled what was put down.
     visitors: dict = field(default_factory=dict)
     handling_history: list = field(default_factory=list)
@@ -245,8 +247,14 @@ class Inventory:
         self.store, self.media = store, media
         self.settle_seconds = settle_seconds
         self.items: dict[str, dict] = {item["key"]: item for item in store.load_scene() if item.get("area_id") and item.get("box")}
+        for item in self.items.values():
+            if not item.get('obligation_id') and not item.get('ignored') and item.get('dish_score') is None:
+                # Older scenes could save a proposal without a verifier result before opening it.
+                item['verification_pending'] = True
         self.zones: dict[str, Zone] = {}
         self.in_hand: list[dict] = []
+        self.sink_visits: dict[Any, list[dict]] = {}
+        self.return_candidates: deque[dict] = deque(maxlen=128)
         # Working frames; localized handling originals are also journaled immediately.
         self.evidence: dict[str, dict] = {}
         self.generation: str | None = None
@@ -277,14 +285,18 @@ class Inventory:
         self.generation = None
         self.zones.clear()
         self.in_hand.clear()
+        self.sink_visits.clear()
+        self.return_candidates.clear()
         self.evidence.clear()
 
     def shift(self, dx: float, dy: float) -> None:
         """The camera was nudged: dishes moved on screen with it, and every area needs a fresh baseline."""
-        for item in self.items.values():
+        for item in [*self.items.values(), *self.return_candidates]:
             item["box"] = shift_box(item["box"], dx, dy)
             if item.get('appearance_box'):
                 item['appearance_box'] = shift_box(item['appearance_box'], dx, dy)
+            if item.get('identity_anchor'):
+                item['identity_anchor']['box'] = shift_box(item['identity_anchor']['box'], dx, dy)
         for zone in self.zones.values():
             zone.baseline = zone.previous = None
         self._save()
@@ -293,7 +305,8 @@ class Inventory:
         self.store.save_scene(list(self.items.values()))
 
     def listing(self) -> list[dict]:
-        return [dict(item) for item in self.items.values() if not item.get("ignored") and not item.get("unseen_since")]
+        return [dict(item) for item in self.items.values() if not item.get("ignored") and not item.get("unseen_since")
+                and not item.get('verification_pending')]
 
     def quiet_since(self) -> datetime | None:
         """Since when every area has been still with nobody in it; None while any is in use or unchecked."""
@@ -340,6 +353,22 @@ class Inventory:
             handling_detections = merge_detections([*handling_detections, *detect(handling_area)])
             self.handling_checked[handling_area['id']] = observed_at
             self.next_handling_check = observed_at + timedelta(seconds=5)
+        # Journal person IDs survive brief dish occlusion. Keep only uniquely observed
+        # sink visits; proximity is used for abstention, never for ownership or a clean label.
+        self.sink_visits = {k: v for k, v in self.sink_visits.items() if observed_at-v[-1]['end'] <= timedelta(minutes=30)}
+        for sink in (a for a in areas if a['role'] == 'sink'):
+            visitors = [p for p in people if in_area(p['box'], sink['box']) and p.get('track_id') is not None]
+            if len(visitors) == 1:
+                track = visitors[0]['track_id']
+                visits = self.sink_visits.setdefault(track, [])
+                if visits and observed_at-visits[-1]['end'] <= timedelta(seconds=3):
+                    visits[-1]['end'] = observed_at
+                else:
+                    visits.append({'start': observed_at, 'end': observed_at})
+                    self.sink_visits[track] = visits[-16:]
+            elif len(visitors) > 1:
+                for person in visitors:
+                    self.sink_visits.pop(person['track_id'], None)
         for area in areas:
             zone = self.zones.get(area["id"])
             if zone is None or zone.area["box"] != area["box"]:
@@ -360,6 +389,7 @@ class Inventory:
                 if zone.active_at is None or zone.settled_since is not None:
                     zone.visit_started, zone.visit_before = observed_at, zone.quiet_jpeg
                     zone.visit_before_at = zone.quiet_at
+                    zone.visit_before_image = None
                 zone.active_at, zone.settled_since, zone.touched = observed_at, None, True
                 for person in present:
                     track = person.get('track_id')
@@ -374,6 +404,7 @@ class Inventory:
                         samples.append(visitor.copy())
                     visitor['samples'] = samples[-16:]
                     zone.visitors[track] = visitor
+                    self._remember_sink_return(zone, visitor, image, observed_at)
                     history = [v for v in zone.handling_history if observed_at-v['at'] <= timedelta(minutes=30)]
                     localized = [d for d in visitor['dishes'] if d.get('score', 0) >= START_SCORE
                                  and overlap(d['box'], person['box']) >= .75
@@ -386,6 +417,10 @@ class Inventory:
                             self.media.activity.save(area, generation, candidate)
                             history.append(candidate)
                     zone.handling_history = history[-48:]
+                    for item in self._items_in(zone):
+                        if (item.get('clean_return') and observed_at-parse_stamp(item['returned_at']) > ASSOCIATION_WINDOW
+                                and len(self._handling_dishes(visitor, item['box'], item['kind'])) == 1):
+                            self._resume_dirty_tracking(item, observed_at)
                 continue
             zone.quiet_jpeg = jpeg
             zone.quiet_at = observed_at
@@ -407,7 +442,7 @@ class Inventory:
 
     def _record_seen(self, item: dict, jpeg: bytes, observed_at: datetime) -> None:
         """Only a matched detection can refresh presence or support deadline evidence."""
-        if not item.get("obligation_id") or item.get("ignored") or item["role"] not in ("dirty", "sink"):
+        if not item.get("obligation_id") or item.get("ignored") or item.get('verification_pending') or item.get('clean_return') or item["role"] not in ("dirty", "sink"):
             return
         record = self.store.obligation(item["obligation_id"], now=observed_at)
         self.store.record_seen(item["obligation_id"], observed_at)
@@ -487,6 +522,10 @@ class Inventory:
         found = merge_detections([d for zone, _ in work for d in detect(zone.area)
                                   if d["kind"] != "person" and d.get("score", 0) >= KEEP_SCORE
                                   and (not d.get("detail_area") or d["detail_area"] == (area_for(d["box"], areas) or {}).get("id"))])
+        # A high-confidence rim can arrive on a later scan without the whole box.
+        # Keep the physical item, but never promote a fragment to fresh presence evidence.
+        found = [d for d in found if not any(partial_box(d, old) and self._unchanged(old, image)
+                                           for old in self.items.values())]
         arrivals = []
         for zone, mask in work:
             here = [d for d in found if (area_for(d["box"], areas) or {}).get("id") == zone.area["id"]]
@@ -517,10 +556,12 @@ class Inventory:
         no handler; periodic discovery is not evidence of a new dirty deposit.
         """
         zone.initialized = True
-        pairs, missing, extra = pair(self._items_in(zone), detections)
+        pairs, missing, extra = self._match(zone, detections, observed_at, image)
         for item, detection in pairs:
             self._update(item, detection, observed_at)
             self._remember(item, image)
+            self._retry_verification(item, image, observed_at)
+            self._sync_review(item)
             self._record_seen(item, jpeg, observed_at)
         for item in missing:
             if self._unchanged(item, image):
@@ -550,10 +591,72 @@ class Inventory:
             if any(box_iou(detection['box'], old['box']) >= .3 for old in missing):
                 continue  # An ambiguous match does not establish a second dish.
             if detection["score"] >= START_SCORE:
-                verdict = self.verify(image, detection["box"]) if self.verify and image is not None else None
+                verdict = self._verify_new(image, detection['box'])
                 self._add(zone, detection, observed_at, jpeg, placed_at=None,
-                          ignored=verdict if verdict and not verdict["dish"] else None,
-                          verdict=verdict if verdict and verdict["dish"] else None, image=image)
+                          ignored=verdict if verdict['dish'] is False else None,
+                          verdict=verdict, image=image)
+
+    def _match(self, zone: Zone, detections: list[dict], observed_at: datetime, image: Any) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+        """Use an accepted visual anchor to recover a box that drifted onto a neighbor.
+
+        Resolve before saving sightings: a newly detected whole dish must not get a
+        second obligation while its old track is following one of its fragments.
+        """
+        items = self._items_in(zone)
+        pairs, missing, extra = pair(items, detections)
+        if image is None:
+            return pairs, missing, extra
+        import numpy as np
+        paired = {i['key']: d for i, d in pairs}
+        choices = []
+        for detection in extra:
+            eligible = []
+            for item in items:
+                anchor = item.get('identity_anchor')
+                if (not item.get('obligation_id') or item.get('ignored') or not anchor
+                        or not same_dish_family(item['kind'], detection['kind'])
+                        or not timedelta(0) <= observed_at-parse_stamp(anchor['at']) <= MOVE_WINDOW):
+                    continue
+                score = box_iou(anchor['box'], detection['box'])
+                previous = paired.get(item['key'])
+                if score < .3:
+                    continue
+                patch = appearance(image, anchor['box'])
+                if patch is None or float(np.abs(patch-np.asarray(anchor['appearance'])).mean()) >= APPEARANCE_DISTANCE:
+                    continue
+                record = self.store.obligation(item['obligation_id'])
+                if record['lifecycle'] not in ('resolved', 'cleared', 'dismissed'):
+                    improves = previous is None or score-box_iou(anchor['box'], previous['box']) >= .12
+                    eligible.append((item, improves))
+            if len(eligible) == 1:
+                choices.append((*eligible[0], detection))
+        for item, improves, detection in choices:
+            if sum(i['key'] == item['key'] for i, _, _ in choices) != 1:
+                continue
+            if not improves:
+                # Two overlapping outlines on an unchanged accepted view do not
+                # establish two dishes. Preserve the ambiguous match; do not invent
+                # either a second obligation or a confident identity reassignment.
+                extra = [d for d in extra if d is not detection]
+                self.store.event('dish_proposal_deferred', 'Overlapping outline on an unchanged accepted dish; no evidence of a second dish', item['obligation_id'],
+                                 {'at': stamp(observed_at), 'box': detection['box']})
+                continue
+            old = paired.get(item['key'])
+            pairs = [(i, d) for i, d in pairs if i['key'] != item['key']]
+            pairs.append((item, detection))
+            missing = [i for i in missing if i['key'] != item['key']]
+            extra = [d for d in extra if d is not detection]
+            if old is not None:
+                if box_iou(item['identity_anchor']['box'], old['box']) >= .3:
+                    # Recovering the whole view must not turn its displaced outline
+                    # into a new dish on the same unchanged pixels.
+                    self.store.event('dish_proposal_deferred', 'Displaced overlapping outline on an unchanged accepted dish', item['obligation_id'],
+                                     {'at': stamp(observed_at), 'box': old['box']})
+                else:
+                    extra.append(old)
+            self.store.event('dish_relinked', 'Accepted dish view recovered after a neighboring box captured its track', item['obligation_id'],
+                             {'at': stamp(observed_at), 'box': detection['box']})
+        return pairs, missing, extra
 
     def _refresh(self, zone: Zone, detections: list[dict]) -> None:
         """The light or the view changed: follow dishes that are clearly still there, believe nothing new."""
@@ -572,10 +675,14 @@ class Inventory:
                 if item.get('obligation_id'):
                     self.store.close_unclaimed(item['obligation_id'], at=observed_at)
                 del self.items[item['key']]
-        pairs, missing, extra = pair(self._items_in(zone), detections)
+        pairs, missing, extra = self._match(zone, detections, observed_at, image)
         for item, detection in pairs:
+            if (item.get('clean_return') and observed_at-parse_stamp(item['returned_at']) > ASSOCIATION_WINDOW
+                    and self._touched(zone, mask, item['box']) >= TOUCHED and not self._unchanged(item, image)):
+                self._resume_dirty_tracking(item, observed_at)
             self._update(item, detection, observed_at)
             self._remember(item, image)
+            self._sync_review(item)
         for item in missing:
             if any(box_iou(item['box'], d['box']) >= .3 for d in extra):
                 continue
@@ -607,6 +714,14 @@ class Inventory:
             # Saved with the scene so a restart does not turn detector flicker into a new clock.
             item['appearance'] = patch.round(3).tolist()
             item['appearance_box'] = list(item['box'])
+            if item.get('key') and item.get('last_seen_at'):
+                anchor = item.setdefault('identity_anchor', {'box': list(item['box']), 'appearance': item['appearance'], 'at': item['last_seen_at']})
+                if box_iou(anchor['box'], item['box']) >= .65:
+                    current = appearance(image, anchor['box'])
+                    if current is not None:
+                        import numpy as np
+                        if float(np.abs(current-np.asarray(anchor['appearance'])).mean()) < APPEARANCE_DISTANCE:
+                            anchor['at'] = item['last_seen_at']
 
     @staticmethod
     def _unchanged(item: dict, image: Any) -> bool:
@@ -618,7 +733,7 @@ class Inventory:
 
     @staticmethod
     def _handling_dishes(visitor: dict, box: list[float], kind: str) -> list[dict]:
-        return [d for d in visitor.get('dishes', []) if (d['kind'] == kind or {d['kind'], kind} <= {'pan', 'pot', 'bowl'})
+        return [d for d in visitor.get('dishes', []) if same_dish_family(d['kind'], kind)
                 and overlap(d['box'], visitor['box']) >= .75 and box_iou(d['box'], box) >= .35]
 
     def _handler(self, zone: Zone, box: list[float], kind: str | None = None) -> dict | None:
@@ -662,6 +777,9 @@ class Inventory:
     def _pick_up(self, zone: Zone, item: dict, observed_at: datetime) -> None:
         del self.items[item["key"]]
         if item.get("ignored"):
+            if item.get('human_not_dish'):
+                self.in_hand.append({'item': item, 'at': observed_at, 'from': zone.area,
+                                     'handler': self._handler(zone, item['box'], item['kind'])})
             return
         self._log("removed", zone, item["kind"], observed_at, item.get("dish_score"))
         handler = self._handler(zone, item["box"], item['kind'])
@@ -672,26 +790,41 @@ class Inventory:
 
     def _put_down(self, zone: Zone, detection: dict, observed_at: datetime, jpeg: bytes, image: Any = None) -> None:
         handler = self._handler(zone, detection["box"], detection['kind'])
-        source = self._carried(detection, handler, observed_at)
+        source = self._same_spot(zone, detection, observed_at, image) or self._carried(detection, handler, observed_at)
         if source is None:
             # Only a brand-new box gets a second look; a dish seen being carried here is already known.
-            verdict = self.verify(image, detection["box"]) if self.verify and image is not None else None
-            if verdict and not verdict["dish"]:
-                self._add(zone, detection, observed_at, jpeg, placed_at=None, ignored=verdict, image=image)
+            verdict = self._verify_new(image, detection['box'])
+            if verdict['dish'] is not True:
+                self._add(zone, detection, observed_at, jpeg, placed_at=None, ignored=verdict if verdict['dish'] is False else None, verdict=verdict, image=image)
                 return
             self._log("added", zone, detection["kind"], observed_at, verdict["score"] if verdict else None)
             self._add(zone, detection, observed_at, jpeg, placed_at=zone.active_at or observed_at, handler=handler, verdict=verdict, image=image)
             return
-        self._log("added", zone, detection["kind"], observed_at)
         item, origin = source["item"], source["from"]
         self.items[item["key"]] = item
         item.update(area_id=zone.area["id"], role=zone.area["role"], box=detection["box"], last_seen_at=stamp(observed_at))
-        item.pop('background', None)
+        if not source.get('same_spot'):
+            item.pop('background', None)
         self.evidence.pop(item["key"], None)
         linked = self.store.obligation(item["obligation_id"]) if item.get("obligation_id") else None
+        self._sync_review(item, linked)
+        if item.get('human_not_dish'):
+            return
+        self._log("added", zone, detection["kind"], observed_at)
         if linked and linked["lifecycle"] in ("resolved", "dismissed", "cleared"):
             item["obligation_id"], linked = None, None
-        if origin["role"] in ("clean", "storage") and zone.area["role"] in ("dirty", "sink") and linked is None:
+        if source.get('same_spot'):
+            self._update(item, detection, observed_at)
+            self._remember(item, image)
+            if linked:
+                self.store.event('dish_relinked', 'Same dish recovered at its previous spot after a short occlusion', linked['id'])
+            return
+        if self._rinsed_return(source, handler, detection, observed_at, image) and linked is None:
+            # This is an abstention about dirty state, not a claim that washing was complete.
+            item.update(clean_return=True, returned_at=stamp(observed_at), background=True, timing_known=False, placed_at=None)
+            self.store.event('clean_return_deferred', 'Sink-to-surface return after localized sink handling; dirty state requires fresh evidence',
+                             data={'track_key': item['key'], 'from': origin['id'], 'to': zone.area['id'], 'handler_track': handler['track']})
+        elif origin["role"] in ("clean", "storage") and zone.area["role"] in ("dirty", "sink") and linked is None:
             # A clean dish taken out and put down is a new use, with a photo of where it came from.
             item.update(placed_at=stamp(zone.active_at or observed_at), timing_known=True, sink_seen=zone.area["role"] == "sink")
             self.evidence[item["key"]] = {"handler": handler, "taken": source.get("handler"), "taken_from": origin["name"], "taken_at": source["at"], "frame": jpeg, "frame_at": observed_at, **self._visit(zone)}
@@ -706,6 +839,148 @@ class Inventory:
                 self.notable = "Put to dry or away"
                 self.media.save_snapshot(linked["id"], jpeg, "Possible clean destination; washing quality unverified", at=observed_at)
                 self.media.request_event_clip(linked["id"], "Possible cleanup transition", at=zone.active_at or observed_at)
+        item.pop('identity_anchor', None)
+        self._remember(item, image)
+
+    def _verify_new(self, image: Any, box: list[float]) -> dict:
+        try:
+            verdict = self.verify(image, box) if self.verify and image is not None else None
+            score = verdict.get('score') if isinstance(verdict, dict) else None
+            valid_score = (isinstance(verdict, dict) and 'score' in verdict
+                           and (score is None or (type(score) in (int, float) and isfinite(score) and 0 <= score <= 1)))
+            if verdict and type(verdict.get('dish')) is bool and valid_score:
+                return verdict
+            reason = verdict.get('reason', 'The dish checker returned no valid verdict.') if isinstance(verdict, dict) else 'The dish checker returned no verdict.'
+        except Exception as error:
+            reason = f'The dish checker failed ({type(error).__name__}).'
+        self.store.event('dish_verification_deferred', reason, data={'box': box})
+        return {'dish': None, 'score': None, 'reason': reason}
+
+    def _retry_verification(self, item: dict, image: Any, observed_at: datetime) -> None:
+        if not item.get('verification_pending'):
+            return
+        verdict = self._verify_new(image, item['box'])
+        if verdict['dish'] is None:
+            return
+        item.pop('verification_pending', None)
+        item['dish_score'] = verdict.get('score')
+        self.evidence.pop(item['key'], None)
+        if verdict['dish'] is False:
+            item['ignored'] = True
+            item['rejection_reason'] = verdict.get('reason', 'The dish checker rejected this proposal')
+            self.store.event('dish_rejected', item['rejection_reason'], data={'box': item['box'], 'score': item['dish_score']})
+        else:
+            # Confirmation now cannot establish that the earlier unverified box held this dish.
+            item.update(first_seen_at=stamp(observed_at), placed_at=None, timing_known=False, background=True)
+            item.pop('identity_anchor', None)
+            self._remember(item, image)
+            if verdict.get('sample'):
+                item['sample'] = verdict['sample']
+
+    def _sync_review(self, item: dict, record: dict | None = None) -> None:
+        if not item.get('obligation_id'):
+            return
+        record = record or self.store.obligation(item['obligation_id'])
+        if record['lifecycle'] == 'dismissed' and record['reason'] == 'Not a dish':
+            item.update(human_not_dish=True, ignored=True)
+        elif item.pop('human_not_dish', False):
+            item.pop('ignored', None)
+
+    def _same_spot(self, zone: Zone, detection: dict, observed_at: datetime, image: Any) -> dict | None:
+        """Recover the physical track before creating a UUID; require geometry AND appearance."""
+        candidates = [e for e in self.in_hand if e['from']['id'] == zone.area['id']
+                      and timedelta(0) <= observed_at-e['at'] <= ASSOCIATION_WINDOW
+                      and same_dish_family(e['item']['kind'], detection['kind'])
+                      and box_iou(e['item']['box'], detection['box']) >= .55
+                      and self._unchanged(e['item'], image)]
+        # A second overlapping live item or two missing candidates makes identity ambiguous.
+        if len(candidates) != 1 or any(box_iou(i['box'], detection['box']) >= .3 for i in self._items_in(zone)):
+            return None
+        chosen = candidates[0]
+        self.in_hand.remove(chosen)
+        return chosen | {'same_spot': True}
+
+    def _remember_sink_return(self, zone: Zone, visitor: dict, image: Any, observed_at: datetime) -> None:
+        if zone.area['role'] != 'dirty' or not any(v['end']-v['start'] >= timedelta(seconds=4)
+                and timedelta(0) <= observed_at-v['end'] <= ASSOCIATION_WINDOW
+                for v in self.sink_visits.get(visitor.get('track'), [])):
+            return
+        for dish in visitor['dishes']:
+            if dish['kind'] not in ('pan', 'pot', 'bowl', 'lid') or dish.get('score', 0) < KEEP_SCORE:
+                continue
+            x, y, w, h = dish['box']
+            px, py, pw, ph = visitor['box']
+            reach = max(px-x-w/2, 0, x+w/2-px-pw) + max(py-y-h/2, 0, y+h/2-py-ph)
+            # An outstretched hand need not fall inside the detector's torso box (#1643).
+            others = [v for v in zone.visitors.values() if v.get('track') != visitor.get('track')
+                      and observed_at-v['at'] <= timedelta(seconds=3)]
+            if reach > .05 or others or not self._changed_since_before(zone, dish['box'], image):
+                continue
+            candidate = {'box': list(dish['box']), 'kind': dish['kind'], 'at': observed_at, 'track': visitor['track']}
+            self._remember(candidate, image)
+            if 'appearance' in candidate:
+                self.return_candidates.append(candidate)
+
+    def _resume_dirty_tracking(self, item: dict, observed_at: datetime) -> None:
+        # Later use cannot inherit the earlier clean-return frame or its clock.
+        item.pop('clean_return', None)
+        item.pop('returned_at', None)
+        item.update(first_seen_at=stamp(observed_at), placed_at=stamp(observed_at), timing_known=True, background=False)
+        self.evidence.pop(item['key'], None)
+
+    @staticmethod
+    def _changed_since_before(zone: Zone, box: list[float], image: Any) -> bool:
+        """Sink proximity cannot turn an already stationary dish into a clean return."""
+        if not zone.visit_before or image is None:
+            return False
+        import cv2
+        import numpy as np
+        if zone.visit_before_image is None:
+            try:
+                # Decode once per visit, rather than once per dish/person frame.
+                zone.visit_before_image = cv2.imdecode(np.frombuffer(zone.visit_before, np.uint8), cv2.IMREAD_GRAYSCALE)
+            except cv2.error:
+                return False
+        if zone.visit_before_image is None:
+            return False
+        before = appearance(zone.visit_before_image, box)
+        current = appearance(image, box)
+        return before is not None and current is not None and float(np.abs(before-current).mean()) >= APPEARANCE_DISTANCE
+
+    def _possible_sink_return(self, zone: Zone, detection: dict, observed_at: datetime, image: Any = None) -> bool:
+        if detection['kind'] not in ('pan', 'pot', 'bowl', 'lid'):
+            return False
+        if any(timedelta(0) <= observed_at-c['at'] <= timedelta(minutes=10)
+               and same_dish_family(c['kind'], detection['kind']) and box_iou(c['box'], detection['box']) >= .55
+               and self._unchanged(c, image) for c in self.return_candidates):
+            return True
+        handler = self._handler(zone, detection['box'], detection['kind'])
+        if (not handler or len(self._handling_dishes(handler, detection['box'], detection['kind'])) != 1
+                or not self._changed_since_before(zone, detection['box'], image)):
+            return False
+        return any(sink['end']-sink['start'] >= timedelta(seconds=4)
+                   and timedelta(0) <= handler['at']-sink['end'] <= ASSOCIATION_WINDOW
+                   and timedelta(0) <= observed_at-handler['at'] <= timedelta(minutes=10)
+                   for sink in self.sink_visits.get(handler.get('track'), []))
+
+    def _rinsed_return(self, source: dict, handler: dict | None, detection: dict, observed_at: datetime, image: Any) -> bool:
+        """A short return after repeated, uniquely localized sink handling by the same track.
+
+        Neither proximity nor sink residence alone is washing evidence. Keep this narrow
+        abstention separate from human clean labels and from cleanup of an existing record.
+        """
+        import numpy as np
+        if source['from']['role'] not in ('sink', 'clean') or not handler or handler.get('track') is None:
+            return False
+        item = source['item']
+        patch = appearance(image, detection['box']) if image is not None else None
+        if patch is None or 'appearance' not in item or float(np.abs(patch-np.asarray(item['appearance'])).mean()) >= APPEARANCE_DISTANCE:
+            return False
+        samples = [v for z in self.zones.values() if z.area['role'] == 'sink'
+                   for v in [*z.handling_history, *[s for visitor in z.visitors.values() for s in visitor.get('samples', [])]]
+                   if v.get('track') == handler['track'] and timedelta(0) <= observed_at-v['at'] <= ASSOCIATION_WINDOW
+                   and len(self._handling_dishes(v, item.get('appearance_box', item['box']), item['kind'])) == 1]
+        return len(samples) >= 2 and max(v['at'] for v in samples)-min(v['at'] for v in samples) >= timedelta(seconds=4)
 
     def _carried(self, detection: dict, handler: dict | None, observed_at: datetime) -> dict | None:
         """A short, unambiguous transfer by the same observed handler; kind alone is insufficient."""
@@ -714,7 +989,7 @@ class Inventory:
         candidates = [e for e in self.in_hand
                       if timedelta(0) <= observed_at - e['at'] <= ASSOCIATION_WINDOW
                       and e['handler'] and e['handler'].get('track') == handler['track']
-                      and (e['item']['kind'] == detection['kind'] or detection['kind'] in e['item'].get('kind_votes', {}))]
+                      and same_dish_family(e['item']['kind'], detection['kind'])]
         if len(candidates) != 1:
             return None
         chosen = candidates[0]
@@ -735,10 +1010,18 @@ class Inventory:
         self._remember(self.items[key], image)
         if ignored:
             # Judged not a dish: remembered where it sits, so the same thing isn't "new" at every look.
-            self.items[key].update(ignored=True, dish_score=ignored["score"])
+            reason = ignored.get('reason', 'The dish checker rejected this proposal')
+            self.items[key].update(ignored=True, dish_score=ignored["score"], rejection_reason=reason)
+            self.store.event('dish_rejected', reason, data={'box': detection['box'], 'score': ignored['score']})
             return
         if verdict:
-            self.items[key].update(dish_score=verdict["score"], sample=verdict["sample"])
+            self.items[key].update(dish_score=verdict.get('score'), verification_pending=verdict['dish'] is None)
+            if verdict.get('sample'):
+                self.items[key]['sample'] = verdict['sample']
+        if zone.area['role'] == 'dirty' and self._possible_sink_return(zone, detection, observed_at, image):
+            self.items[key].update(clean_return=True, returned_at=stamp(observed_at))
+            self.store.event('clean_return_deferred', 'New cookware after the same track used the sink; dirty state is ambiguous',
+                             data={'track_key': key, 'box': detection['box'], 'area': zone.area['id']})
         self.evidence[key] = {"handler": handler, "frame": jpeg, "frame_at": observed_at, **self._visit(zone)}
 
     @staticmethod
@@ -760,7 +1043,7 @@ class Inventory:
     def _open_waiting(self, observed_at: datetime) -> None:
         opened = False
         for item in list(self.items.values()):
-            if item.get("obligation_id") or item.get("unseen_since") or item.get("ignored") or item["role"] not in ("dirty", "sink"):
+            if item.get("obligation_id") or item.get("unseen_since") or item.get("ignored") or item.get('verification_pending') or item.get('clean_return') or item["role"] not in ("dirty", "sink"):
                 continue
             zone = self.zones.get(item["area_id"])
             if zone is None or zone.settled_since is None:
@@ -784,6 +1067,9 @@ class Inventory:
         departure = zone.quiet_jpeg if zone.quiet_at and zone.quiet_at <= observed_at else None
         departure_at = zone.quiet_at if departure else evidence.get('frame_at') or observed_at
         frame = departure or frame
+        # The proposal can change boxes before it settles. Bind identity recovery
+        # to the exact rectangle and original a reviewer will see on the record.
+        self._anchor_opening(item, frame, departure_at)
         baseline = not item.get("timing_known")
         self.notable = "Dish left unattended"
         handler_key = f"{self.generation}:{handler['track']}" if handler and handler.get("track") is not None else None
@@ -823,6 +1109,26 @@ class Inventory:
             taken = evidence.get("taken")
             if taken:
                 self.media.save_snapshot(record["id"], taken["frame"], f"Taken from {evidence['taken_from']}", at=taken["at"])
+
+    @staticmethod
+    def _anchor_opening(item: dict, jpeg: bytes | None, at: datetime) -> None:
+        anchor = None
+        if jpeg:
+            try:
+                import cv2
+                import numpy as np
+                image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+                patch = appearance(image, item['box']) if image is not None else None
+                if patch is not None:
+                    anchor = {'box': list(item['box']), 'appearance': patch.round(3).tolist(), 'at': stamp(at)}
+            except Exception:
+                # Missing/unreadable media cannot establish an identity anchor.
+                pass
+        if anchor is None and item.get('appearance_box') == item['box'] and item.get('appearance') is not None:
+            anchor = {'box': list(item['box']), 'appearance': item['appearance'], 'at': item['last_seen_at']}
+        item.pop('identity_anchor', None)
+        if anchor is not None:
+            item['identity_anchor'] = anchor
 
     def _describe_handler(self, obligation_id: int, handler: dict, context: str) -> None:
         if not self.describe:

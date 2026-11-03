@@ -377,6 +377,8 @@ def test_visit_verdict_excludes_everyone_is_attributed_and_operator_can_undo(hou
 def test_cant_tell_is_private_hide_without_label_or_audit_verdict(house_client):
     client, store = house_client, house_client.app.state.store
     item = late(client)
+    sample = store.add_dish_sample([1.] + [0.] * 511, .9)
+    store.link_dish_sample(sample, item['id'])
     path = f"/house/api/visits/dish-{item['id']}/verdict"
     assert client.get('/house/api/week').json()['unreviewed_count'] == 1
     assert client.post(path, json={'verdict': 'cant_tell'}).json()['hidden']
@@ -386,6 +388,8 @@ def test_cant_tell_is_private_hide_without_label_or_audit_verdict(house_client):
     assert len(board['visits']) == 1 and board['unreviewed_count'] == 1 and board['verdicts'] == []
     assert store.conn.execute('SELECT count(*) FROM house_verdicts').fetchone()[0] == 0
     assert store.conn.execute("SELECT count(*) FROM events WHERE event='house_visit_verdict'").fetchone()[0] == 0
+
+    assert store.remembered_objects() == [] and store.labeled_dish_samples() == []
 
 
 def test_duplicate_requires_another_original_and_allows_detector_kind_corrections(house_client):
@@ -540,7 +544,7 @@ def test_human_duplicate_inside_a_visit_does_not_block_naming(house_client):
     original, alias = late(client), late(client)
     stored_visit(client, [original, alias])
     with store.conn:
-        store.mark_duplicate(alias['id'], original['id'], client.people[0]['id'])
+        store.mark_duplicate(alias['id'], original['id'], f"resident:{client.people[0]['id']}")
     board = client.get('/house/api/week').json()
     assert len(board['visits']) == 1 and board['visits'][0]['can_name']
     assert board['visits'][0]['dish_ids'] == [original['id']]
@@ -595,10 +599,10 @@ def test_duplicate_chains_cannot_create_cycles(house_client):
     client, store = house_client, house_client.app.state.store
     first, second, third = [late(client) for _ in range(3)]
     with store.conn:
-        store.mark_duplicate(second['id'], first['id'], None)
-        store.mark_duplicate(third['id'], second['id'], None)
+        store.mark_duplicate(second['id'], first['id'], 'operator')
+        store.mark_duplicate(third['id'], second['id'], 'operator')
         with pytest.raises(ValueError, match='itself'):
-            store.mark_duplicate(first['id'], third['id'], None)
+            store.mark_duplicate(first['id'], third['id'], 'operator')
     board = client.get('/house/api/week').json()
     assert len(board['dishes']) == 1 and board['visits'][0]['alias_ids'] == [second['id'], third['id']]
     assert client.post(f"/house/api/dishes/{third['id']}/name", json={'resident_id': client.people[0]['id']}).status_code == 200
@@ -864,3 +868,29 @@ def test_media_predicate_cache_budget_and_live_expiry(house_client, monkeypatch)
         house.store.conn.execute('UPDATE evidence SET expires_at=? WHERE id=?', (stamp(utcnow() - timedelta(seconds=1)), eid))
     monkeypatch.setattr(house_visits, 'catalog', catalog)
     assert client.get(url).status_code == 404
+
+
+def test_visit_correction_undo_rolls_back_all_members_after_later_decision(house_client):
+    client, store = house_client, house_client.app.state.store
+    items = [late(client), late(client, kind='bowl')]
+    visit(client, items)
+    assert client.post('/house/api/visits/trip-one/verdict', json={'verdict': 'not_dish'}).status_code == 200
+    store.action(items[1]['id'], 'reopen')
+    operator(client)
+    assert client.post('/api/league/visits/trip-one/undo-verdict', json={}).status_code == 409
+    assert store.obligation(items[0]['id'])['lifecycle'] == 'dismissed'
+    assert store.conn.execute('SELECT count(*) FROM house_visit_verdicts').fetchone()[0] == 1
+    assert store.conn.execute('SELECT count(*) FROM dish_reviews').fetchone()[0] == 1
+
+
+def test_duplicate_visit_correction_rolls_back_if_later_member_has_no_target(house_client):
+    client, store = house_client, house_client.app.state.store
+    items = [late(client), late(client, kind='cup')]
+    targets = [late(client), late(client, kind='bowl')]
+    visit(client, items)
+    visit(client, targets, 'target-trip')
+    response = client.post('/house/api/visits/trip-one/verdict', json={'verdict': 'duplicate', 'of_visit_id': 'target-trip'})
+    assert response.status_code == 400
+    assert all(store.obligation(i['id'])['lifecycle'] == 'open' for i in items)
+    assert store.conn.execute('SELECT count(*) FROM dish_reviews').fetchone()[0] == 0
+    assert store.conn.execute('SELECT count(*) FROM house_verdicts').fetchone()[0] == 0

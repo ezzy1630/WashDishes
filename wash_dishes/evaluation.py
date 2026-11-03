@@ -86,6 +86,9 @@ def replay(footage: Path, root: Path, areas: list[dict], start: datetime, end: d
             if verify:
                 from .verifier import DishVerifier, store_hook
                 inventory.verify = store_hook(DishVerifier(root), store, threshold=verify_threshold)
+            else:
+                # Explicit diagnostic opt-out; production inventory always requires a verdict.
+                inventory.verify = lambda image, box: {'dish': True, 'score': None}
             aligned_at = None
             for at, jpeg in frames(footage, start, end, fps):
                 analysis = vision.analyze(jpeg)
@@ -182,7 +185,7 @@ def evaluate_frames(root: Path, store: Store, *, dish_detector: Path | None = No
 
     from .dataset import Dataset, frame_scores
     from .inventory import area_for
-    from .verifier import DishVerifier
+    from .verifier import NEGATIVE_MARGIN, DishVerifier
     from .vision import LocalVision, merge_detections
     dataset = Dataset(root, store)
     items = [i for i in dataset._labels() if i.get('correction') and i.get('holdout') and i['status'] == 'labeled']
@@ -204,7 +207,10 @@ def evaluate_frames(root: Path, store: Store, *, dish_detector: Path | None = No
                 if detection['kind'] == 'person' or detection['score'] < .35:
                     continue
                 verdict = verifier.score(verifier.features(vision.last_image, detection['box'])) if verifier.ready else None
-                if verdict is None or verdict[1]:
-                    accepted.append(detection)
+                if verdict is not None and verdict[1]:
+                    negative = verifier.negative(vision.last_image, detection['box'])
+                    if ((negative is None or negative['margin'] <= NEGATIVE_MARGIN)
+                            and not verifier.empty_spot(vision.last_image, detection['box'], areas)):
+                        accepted.append(detection)
             predictions[item['id']] = accepted
     return frame_scores(items, predictions) | {'snapshot': receipt.hexdigest(), 'scope': 'reserved_stills_area_detector_and_verifier'}

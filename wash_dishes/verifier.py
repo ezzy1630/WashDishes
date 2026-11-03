@@ -12,6 +12,7 @@ Model files are prepared explicitly (`models verifier`); this module never downl
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime
@@ -40,6 +41,12 @@ KEEP_PROOF = 0.80
 MIN_EXAMPLES = 60
 MIN_AUC = 0.7
 FOLDS = 5
+DISH_WORDS = ('plate', 'bowl', 'cup', 'mug', 'drinking glass', 'cooking pot', 'frying pan', 'fork', 'knife', 'spoon', 'cookware lid')
+NON_DISH_WORDS = ('soda can', 'capped bottle', 'jar', 'plastic food container', 'kitchen scale',
+                  'empty stove burner', 'empty sink basin', 'spice container', 'cardboard box', 'towel', 'sponge', 'cutting board')
+# Same conservative margin used by the proof checker; this is a veto, not a dirty-state classifier.
+NEGATIVE_MARGIN = .05
+log = logging.getLogger(__name__)
 
 
 def context_crop(image: Any, box: Sequence[float], scale: float = 2.0, minimum: float = 0.035) -> Any:
@@ -152,6 +159,7 @@ class DishVerifier:
         self.path = self.root / "models" / PROBE_NAME
         self.kitchen_path = self.root / "models" / KITCHEN_PROBE_NAME
         self._loaded: dict[Path, tuple[float, dict | None]] = {}
+        self._negative_text = None
 
     def _load(self, path: Path) -> dict | None:
         """The probe saved at path, reread only when the file changes."""
@@ -163,8 +171,12 @@ class DishVerifier:
         if path not in self._loaded or self._loaded[path][0] != mtime:
             try:
                 saved = json.loads(path.read_text())
-                probe = saved | {"weights": np.asarray(saved["weights"], dtype=np.float32)}
-            except (OSError, ValueError, KeyError):
+                weights = np.asarray(saved['weights'], dtype=np.float32)
+                if (weights.ndim != 1 or not len(weights) or not np.isfinite(weights).all()
+                        or not np.isfinite(saved['bias']) or not 0 <= saved['threshold'] <= 1):
+                    raise ValueError('Invalid probe parameters')
+                probe = saved | {"weights": weights}
+            except (OSError, ValueError, KeyError, TypeError):
                 probe = None
             self._loaded[path] = (mtime, probe)
         return self._loaded[path][1]
@@ -188,7 +200,62 @@ class DishVerifier:
             return None
         value = _value(probe, vector)
         kitchen = self.kitchen()
+        if self.kitchen_path.exists() and kitchen is None:
+            return None
+        if not np.isfinite(value):
+            return None
         return value, value >= probe["threshold"] and (kitchen is None or _value(kitchen, vector) >= kitchen["threshold"])
+
+    def negative(self, image: Any, box: Sequence[float]) -> dict | None:
+        """Reject obvious kitchen negatives using a tight crop and the existing local CLIP."""
+        if not isinstance(self.embed, Embedder):
+            return None
+        import open_clip
+        import torch
+        if self._negative_text is None:
+            with self.embed.lock, torch.no_grad():
+                self.embed._load()
+                tokens = open_clip.get_tokenizer('ViT-B-32')([f'a photo of a {word} on a kitchen counter.' for word in DISH_WORDS + NON_DISH_WORDS]).to(self.embed._device)
+                features = self.embed._model.encode_text(tokens).float()
+                self._negative_text = torch.nn.functional.normalize(features, dim=-1).cpu().numpy()
+        vector = self.embed([context_crop(image, box, scale=1.2, minimum=0)])[0]
+        scores = self._negative_text @ vector
+        index = int(np.argmax(scores[len(DISH_WORDS):]))
+        return {'label': NON_DISH_WORDS[index], 'margin': float(scores[len(DISH_WORDS)+index]-scores[:len(DISH_WORDS)].max())}
+
+    def empty_spot(self, image: Any, box: list[float], areas: list[dict]) -> bool:
+        """Compare only the proposed spot with an operator-captured empty-area reference.
+
+        References contain high-pass texture, not colour. Use a near-exact match; a
+        non-match or missing reference cannot establish that a dish is present or dirty.
+        """
+        import cv2
+
+        from .inventory import area_for
+        from .vision import LocalVision
+        area = area_for(box, areas)
+        if area is None:
+            return False
+        path = self.root / 'references' / f"{area['id']}.npy"
+        if not path.is_file():
+            return False
+        reference = np.load(path, allow_pickle=False)
+        # Share the exact representation used by capture_reference, without loading models.
+        engine = LocalVision(self.root)
+        engine._cv, engine._np = cv2, np
+        current = engine._zone_texture(image, area['box'])
+        if reference.shape != current.shape or not np.isfinite(reference).all():
+            return False
+        ax, ay, aw, ah = area['box']
+        rows, cols = current.shape
+        x, y, w, h = box
+        # Do not judge a proposal from a sliver clipped at the reference boundary.
+        if x < ax or y < ay or x+w > ax+aw or y+h > ay+ah:
+            return False
+        left, right = int((x-ax)/aw*cols), int((x+w-ax)/aw*cols)
+        top, bottom = int((y-ay)/ah*rows), int((y+h-ay)/ah*rows)
+        difference = np.abs(current[top:bottom, left:right]-reference[top:bottom, left:right])
+        return difference.size >= 16 and float(difference.mean()) < 1 and float((difference > 10).mean()) < .005
 
     def proof(self, vector: np.ndarray) -> bool | None:
         """Sure enough it is a dish to show in a proof picture; None until a kitchen probe is adopted."""
@@ -208,19 +275,31 @@ def store_hook(verifier: DishVerifier, store: Store, *, threshold: float | None 
     def verify(image: Any, box: list[float]) -> dict | None:
         try:
             if not verifier.ready:
-                return None
+                log.warning('New dish deferred: verifier model/probe is unavailable')
+                return {'dish': None, 'score': None, 'reason': 'Verifier model/probe unavailable'}
             vector = verifier.features(image, box)
+            from .inventory import area_for
+            remembered = store.remembered_match(vector.tolist(), area_for(box, store.settings()['areas']))
+            if remembered:
+                return {'dish': None, 'score': None, 'reason': f"Remembered object #{remembered['id']} (similarity {remembered['similarity']:.6f}); awaiting review"}
             scored = verifier.score(vector)
-        except Exception:
-            # Optional: a missing package or a GPU hiccup means no second look, never a lost dish.
-            return None
+            negative = verifier.negative(image, box) if scored and scored[1] else None
+            empty = verifier.empty_spot(image, box, store.settings()['areas']) if scored and scored[1] else False
+        except Exception as error:
+            log.warning('New dish deferred: verifier failed (%s)', type(error).__name__)
+            return {'dish': None, 'score': None, 'reason': f'Verifier failed ({type(error).__name__})'}
         if scored is None:
-            return None
+            return {'dish': None, 'score': None, 'reason': 'Verifier returned no score'}
         value, dish = scored
+        reason = 'accepted' if dish else 'dish probe rejected'
+        if negative and negative['margin'] > NEGATIVE_MARGIN:
+            dish, reason = False, f"Looks like {negative['label']}"
+        if empty:
+            dish, reason = False, 'Matches the empty-area reference at this spot'
         if threshold is not None:
             dish = value >= threshold
         sample = store.add_dish_sample(vector.tolist(), value)
-        return {"dish": dish, "score": round(value, 4), "sample": sample}
+        return {"dish": dish, "score": round(value, 4), "sample": sample, "reason": reason}
     return verify
 
 
