@@ -747,3 +747,38 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
   .send-bar .btn.primary { max-width: none; }
   .send-card.placeholder .send-bar i { max-width: none; }
 }
+
+/* Weekly kitchen duty: the same ruled rows as People, with readable metadata. */
+.league, .league-settings, .house-signin { --tx3: #919aa4; }
+.league select, .league input, .league-settings input, .league-settings select, .house-signin input { min-height: 42px; }
+.league-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
+.league h2, .league-alltime h2 { font-size: 19px; }
+.league-heading .field { max-width: 180px; }
+.league-pick { font-size: 17px; font-weight: 550; line-height: 1.45; }
+.league-duty { margin-top: 8px; color: var(--tx2); }
+.league-standings { margin: 20px 0 12px; border-top: 1px solid var(--ln); }
+.league-standings li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--ln); }
+.league-standings a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.league-points { color: var(--tx2); white-space: nowrap; }
+.league-points b { color: var(--tx); font-size: 19px; font-weight: 600; }
+.league-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.league-note { font-size: 13px; color: var(--tx3); margin-top: 8px; }
+.league-dishes { margin-top: 20px; border-top: 1px solid var(--ln); }
+.league-dishes > summary { padding: 14px 0; cursor: pointer; }
+.league-dish { border-bottom: 1px solid var(--ln); }
+.league-dish > summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; cursor: pointer; }
+.league-dish summary small { display: block; color: var(--tx3); font-size: 13px; margin-top: 4px; }
+.league-dish > .stack { padding-bottom: 20px; }
+.league-verdict { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--ln); }
+.league-photo { width: 100%; height: auto; border-radius: 6px; }
+.league-alltime { margin-top: 40px; --tx3: #919aa4; }
+.league-alltime .send-sub { font-size: 14px; margin: 6px 0 16px; }
+.league-settings { display: grid; gap: 24px; }
+.house-signin { padding: 14px 0; border-top: 1px solid var(--ln); }
+.house-signin p { color: var(--tx2); font-size: 13px; }
+.house-signin .btn { justify-self: start; }
+.house-signin input { min-width: 0; width: 100%; }
+@media (max-width: 760px) {
+  .league-heading { align-items: end; }
+  .league-heading .field { max-width: 160px; }
+}

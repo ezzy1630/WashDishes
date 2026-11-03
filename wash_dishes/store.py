@@ -165,7 +165,9 @@ class Store:
                 self.conn.execute(f"ALTER TABLE person_samples ADD COLUMN {name} {definition}")
         if "capture" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(evidence)")}:
             self.conn.execute("ALTER TABLE evidence ADD COLUMN capture TEXT NOT NULL DEFAULT '{}'")
-        self.conn.execute("PRAGMA user_version=7")
+        from .house_schema import migrate
+        migrate(self.conn)
+        self.conn.execute("PRAGMA user_version=8")
         self.conn.commit()
         (root / "history.db").chmod(0o600)
 
@@ -370,6 +372,9 @@ class Store:
                        now: datetime) -> dict:
         """Caller owns the transaction, including when several review facts change together."""
         item = self.obligation(obligation_id, now=now)
+        if action in ('confirm', 'reassign', 'dispute'):
+            from .league import assert_unfrozen
+            assert_unfrozen(self, item, now=now)
         previous = {key: item[key] for key in ("resident_id", "lifecycle", "confidence", "resolved_at", "overdue_verified")}
         if action == "resolve":
             if item["lifecycle"] == "dismissed":
@@ -401,6 +406,9 @@ class Store:
                 self._retain_review_evidence(obligation_id, now)
             # Each human decision labels the saved appearance of whoever handled the dish.
             self.conn.execute("UPDATE person_samples SET resident_id=? WHERE obligation_id=?", (resident_id, obligation_id))
+            self.conn.execute("UPDATE obligations SET named_by=NULL,named_at=? WHERE id=?", (stamp(now), obligation_id))
+            if item['dispute_state'] == 'open':
+                self.conn.execute("UPDATE obligations SET dispute_state='upheld',dispute_settled_by=NULL,dispute_settled_at=? WHERE id=?", (stamp(now), obligation_id))
             if item["suggested_resident_id"] is not None and item["suggestion_correct"] is None:
                 self.conn.execute("UPDATE obligations SET suggestion_correct=? WHERE id=?", (int(item["suggested_resident_id"] == resident_id), obligation_id))
             description = f"Responsibility confirmed as {resident['name']}"
@@ -1144,6 +1152,21 @@ class Store:
         self._retain_review_evidence(obligation_id, utcnow())
 
     # Personal links: each housemate sees and can dispute only their own records.
+
+    # LANE G MERGE ADAPTERS: replace these exact signatures with Lane G's real verdict methods.
+    # The temporary implementation only persists league exclusions; no lifecycle/training claim.
+    def mark_not_dish(self, obligation_ids, by):
+        from .house_verdicts import mark
+        mark(self, obligation_ids, 'not_dish', by)
+
+    def mark_clean(self, obligation_ids, by):
+        from .house_verdicts import mark
+        mark(self, obligation_ids, 'clean', by)
+
+    def mark_duplicate(self, obligation_id, of_id, by):
+        from .house_verdicts import mark
+        mark(self, [obligation_id], 'duplicate', by, of_id)
+    # END LANE G MERGE ADAPTERS.
 
     def create_link(self, resident_id: int) -> str:
         """A new personal link token; any earlier link for this person stops working."""
