@@ -691,12 +691,11 @@ def _find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logg
         for at, jpeg, _, nearby, _ in states:
             if earlier_than is not None and at >= earlier_than:
                 continue
-            earliest = arrival.clear - 8 if arrival.left_behind else settled_at - 3
+            earliest = arrival.clear - 8 if arrival.left_behind else min(settled_at - 3, arrival.appeared - 3)
             latest = left[0] if arrival.left_behind else min(left[0], settled_at + .5)
-            # Candidates may be selected by a later checker. Keep every alternative
-            # near the refined arrival, not an earlier approach with a visible arm.
-            if not arrival.left_behind:
-                earliest = max(earliest, left[0] - 5)
+            # A departing body can hide a released dish for several seconds. Keep
+            # the release at the observed arrival, even when the clear Left view
+            # comes later; exact person/contact and proof checks still decide it.
             if not max(before[0], earliest) < at < latest:
                 continue
             exact_retry = earlier_than is not None and people is not None
@@ -718,8 +717,14 @@ def _find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logg
             # Prefer a visible dish/spot at the edge of a person's reach over an opaque body.
             rank = .25 * _distance(patch, dish_patch) + 2 * _body_cover(box, person) + _reach(box, person) + .35 * abs(settled_at - at)
             ranked.append((rank, at, jpeg, person))
+        recent = [c for c in ranked if c[1] > left[0] - 5]
+        if any(_overlap(box, c[3]) >= .5 for c in recent):
+            ranked = recent
         candidates, attempted = [], []
-        for _, at, jpeg, person in sorted(ranked):
+        # Spend the bounded exact-frame budget on contact witnesses first. A run
+        # of later retracting-arm pictures must not exhaust it without checking
+        # the actual release. The returned pictures still need exact contact.
+        for _, at, jpeg, person in sorted(ranked, key=lambda c: (_overlap(box, c[3]) < .5, c[0])):
             _check_deadline(deadline)
             # Resolve a quick hand release more finely than the 1–4 fps journal.
             # Earlier approaches need fewer checks; inference remains bounded.

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -15,7 +17,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import checks, demo, ledger
+from . import house as house_api
 from .config import Config, camera_url
+from .house_auth import HouseConfig
 from .incidents import ReviewConflict
 from .media import Media
 from .proof import proof_archive
@@ -152,9 +156,10 @@ class BodyLimit:
         return await self.app(scope, bounded_receive, send)
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+def create_app(config: Config | None = None, *, house_tunnel_port: int = 8788) -> FastAPI:
     config = config or Config.environment()
     config.prepare()
+    house_config = HouseConfig.load(config.root)
     store = Store(config.root)
     media = Media(config.root, store)
     access = Access(config.root, config.password, config.demo)
@@ -167,15 +172,19 @@ def create_app(config: Config | None = None) -> FastAPI:
         if config.workers:
             runtime.start()
         try:
-            yield
+            async with app.state.house.scheduler(config.workers):
+                yield
         finally:
             runtime.stop()
             store.close()
 
     app = FastAPI(title="Dish watch", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.house_tunnel_port = house_tunnel_port
     app.state.store, app.state.media, app.state.runtime, app.state.access, app.state.config = store, media, runtime, access, config
     hosts = ["localhost", "127.0.0.1", "[::1]", "*.ts.net", "testserver"]
     hosts += [h.strip() for h in os.getenv("WASHDISHES_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    if house_config.public_origin:
+        hosts.append(urlsplit(house_config.public_origin).hostname)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     app.add_middleware(BodyLimit)
 
@@ -188,7 +197,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         if length > 9 * 1024 * 1024:
             return JSONResponse({"detail": "Uploads must be smaller than 8 MB."}, status_code=413)
         origin = request.headers.get("origin")
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if not request.url.path.startswith('/house/') and request.method not in ("GET", "HEAD", "OPTIONS"):
             expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
             if (origin and origin != expected) or request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "Cross-origin changes are not allowed."}, status_code=403)
@@ -319,13 +328,49 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # ---- Send (home) and People: proof pictures, and who has been named on them.
     @app.get("/api/proofs", dependencies=[Depends(authenticated)])
-    def proofs():
+    def proofs(ready_only: bool = False):
         # The home page reads only this, so it stays small and fast whatever else the dashboard holds.
         learning = store.learning()
         # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
         items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
-        return {"items": items, "out": runtime.proofs.out_items(), **runtime.proofs.progress(), "people": ledger.tally(store),
+        if ready_only:
+            return {"items": items, "people": ledger.tally(store)}
+        out = runtime.proofs.out_items()
+        for item in out:
+            item["stages"] = []
+            try:
+                sequence = runtime.sequences.get(item["id"])
+            except LookupError:
+                continue
+            if not sequence["stale"]:
+                item["stages"] = [{k: stage[k] for k in ("key", "title", "url", "at")} for stage in sequence["stages"]]
+        settings = store.settings()
+        with runtime.live_lock:
+            live = runtime.live
+            fresh = bool(live and time.monotonic() - live["monotonic"] <= 10
+                         and settings["vision_enabled"] and not config.demo)
+            kitchen = {"available": fresh, "counts": live["counts"] if fresh else None,
+                       "observed_at": live["frame_at"] if fresh else None}
+        return {"items": items, "out": out, "kitchen": kitchen, "deadline_minutes": settings["deadline_minutes"],
+                **runtime.proofs.progress(), "people": ledger.tally(store),
                 "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
+
+    @app.get('/api/operator-status', dependencies=[Depends(authenticated)])
+    def operator_status():
+        from .filmstrip import footage_segments
+        settings = store.settings()
+        with runtime.live_lock:
+            analyzed_at = runtime.live.get('analyzed_at') if runtime.live else None
+        # Recorder intervals are approximate; gaps must not count as saved footage.
+        try:
+            intervals = footage_segments(media.buffer)
+            seconds = sum(min(10, max(0, end - start)) for start, end, _ in intervals)
+        except OSError:
+            seconds = None
+        return {'mode': 'snapshot' if config.snapshot else 'demo' if config.demo else 'live',
+                'server_time': stamp(), 'camera': runtime.camera_status(),
+                'vision_enabled': settings['vision_enabled'], 'analyzed_at': analyzed_at,
+                'footage_hours': seconds / 3600 if seconds is not None else None}
 
     @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])
     def proof_image(obligation_id: int):
@@ -511,6 +556,15 @@ def create_app(config: Config | None = None) -> FastAPI:
             runtime.local_vision().clear_enrollment(resident_id)
         store.event("face_removed", "A housemate's local face samples were removed", data={"resident_id": resident_id})
         return {"enrolled_samples": 0}
+
+    @app.get('/api/remembered-objects', dependencies=[Depends(authenticated)])
+    def remembered_objects():
+        return {'items': store.remembered_objects()}
+
+    @app.delete('/api/remembered-objects/{exemplar_id}', dependencies=[Depends(authenticated)])
+    def forget_object(exemplar_id: int):
+        store.forget_object(exemplar_id)
+        return {'ok': True}
 
     @app.patch("/api/settings", dependencies=[Depends(authenticated)])
     def settings(body: dict):
@@ -700,4 +754,5 @@ def create_app(config: Config | None = None) -> FastAPI:
     def index():
         return FileResponse(static / "index.html", headers={"Cache-Control": "no-cache"})
 
+    house_api.install(app, authenticated, config=house_config)
     return app

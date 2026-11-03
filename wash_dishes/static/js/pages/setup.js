@@ -1,8 +1,8 @@
 // Settings: the camera link, the areas it watches, the rules, detection and storage.
-import { fill, h, icon, api, state, emit, toast, field, form, bytes, busy, safeURL, head, ago, pct } from "../core.js";
+import { fill, h, icon, api, state, emit, toast, field, form, bytes, busy, safeURL, head, ago, pct, activeResidents } from "../core.js";
 import { ROLE_COLORS, viewState } from "../live.js";
 
-const SECTIONS = [["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
+const SECTIONS = [["league", "Kitchen duty"], ["remembered", "Remembered non-dishes"], ["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
 const ROLES = { dirty: "Counter · dishes get left here", sink: "Sink", clean: "Rack · clean dishes", storage: "Cabinet · put away" };
 const ROLE_SHORT = { dirty: "counter", sink: "sink", clean: "rack", storage: "cabinet" };
 
@@ -11,9 +11,13 @@ export function setupPage(main) {
   const sections = demo ? [...SECTIONS, ["demo", "Demo"]] : SECTIONS;
   const nav = h("nav", { class: "subnav", "aria-label": "Settings sections" }, sections.map(([id, label]) => h("a", { href: `#/setup/${id}`, "data-id": id, onclick: e => { e.preventDefault(); document.getElementById(`s-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); history.replaceState(null, "", `#/setup/${id}`); } }, label)),
     h("a", { href: "#/model", class: "subnav-out" }, "Train the detector", icon("arrowRight", 13)));
+  const rememberedBox = h("div", { class: "card-body stack" });
   const camStatus = h("div");
   const storageBox = h("div");
+  const leagueBox = h('div', { class: 'card-body league-settings' }, h('p', { class: 'tx2' }, 'Loading kitchen duty rules…'));
   const content = h("div", { class: "col" },
+    section('league', 'Kitchen duty', 'Weekly points for late dishes. The house can vote to switch duty off.', leagueBox),
+    section("remembered", "Remembered non-dishes", "Objects marked Not a dish or It’s clean. Near-exact matches in the same area wait for review. Up to 64 are kept; removing one allows new records again.", rememberedBox),
     section("camera", "Camera", "The kitchen camera on your local network. Its password never leaves the Jetson.", camStatus, h("div", { class: "card-body" }, cameraForm())),
     section("areas", "Counter areas", "Where dishes get left, washed and put away, drawn on today's picture.", areaEditor()),
     section("rules", "Rules", "How long a dish can sit, and how long photos and footage are kept.", h("div", { class: "card-body" }, rulesForm())),
@@ -28,6 +32,22 @@ export function setupPage(main) {
 
   function section(id, title, sub, ...children) {
     return h("section", { class: "setup-sec card", id: `s-${id}`, "data-id": id }, head(title, sub), ...children);
+  }
+
+  async function loadRemembered() {
+    try {
+      const data = await api('/api/remembered-objects');
+      if (!rememberedBox.isConnected) return;
+      fill(rememberedBox, data.items.length ? data.items.map(item => h('div', { class: 'row-actions' },
+        h('span', {}, `Record ${item.obligation_id} · ${item.area_name} · ${item.verdict === 'clean' ? 'It’s clean' : 'Not a dish'} · ${item.by_name} · ${ago(item.created_at)}`),
+        h('button', { type: 'button', class: 'btn quiet sm', 'aria-label': `Forget record ${item.obligation_id}`, onclick: e => busy(e.currentTarget, async () => {
+          await api(`/api/remembered-objects/${item.id}`, { method: 'DELETE' });
+          toast('Object forgotten.'); await loadRemembered();
+        }) }, 'Remove'))) : h('p', { class: 'tx2' }, 'No remembered objects yet.'));
+    } catch {
+      fill(rememberedBox, h('p', { role: 'alert' }, 'Could not load remembered objects.'),
+        h('button', { class: 'btn sm', onclick: loadRemembered }, 'Retry'));
+    }
   }
 
   function renderStatus() {
@@ -72,6 +92,41 @@ export function setupPage(main) {
     f.append(h("div", { class: "form-grid" }, num("Grace period (minutes)", "deadline_minutes", 1, 1440, "How long a dish can sit before it counts as late. Applies to new dishes."), num("Storage limit (GB)", "storage_limit_gb", 0.1, 2000, "Cap for camera footage and evidence.", "0.1")),
       h("div", { class: "form-grid four" }, num("Rolling footage (hours)", "buffer_hours", 0.1, 72, "", "0.1"), num("Keep clips (days)", "evidence_days", 1, 90), num("Keep photos (days)", "photo_days", 1, 730), num("Keep disputed (days)", "review_days", 1, 365)));
     f.finish(); return f;
+  }
+
+  async function loadLeague() {
+    try {
+      const { rules, on_duty: duty } = await api('/api/league/config');
+      if (!leagueBox.isConnected) return;
+      const f = form(async fd => {
+        await api('/api/league/rules', { method: 'PATCH', body: {
+          enabled: fd.has('enabled'), weights: { pan: Number(fd.get('pan')), pot: Number(fd.get('pot')), default: Number(fd.get('default')) },
+          min_points: Number(fd.get('min_points')), min_lead: Number(fd.get('min_lead')),
+        } });
+        toast('Kitchen duty rules saved.'); await loadLeague();
+      }, { submit: 'Save kitchen duty rules' });
+      const num = (text, name, value, min = 0, max = 100) => field(text, h('input', { type: 'number', name, value, min, max, step: 1, required: true }));
+      f.append(check('enabled', 'Assign kitchen duty', rules.enabled, 'When off, standings still show and kitchen duty clears.'),
+        h('div', { class: 'form-grid three' }, num('Pan points', 'pan', rules.weights.pan), num('Pot points', 'pot', rules.weights.pot), num('Other dish points', 'default', rules.weights.default)),
+        h('div', { class: 'form-grid' }, num('Minimum points', 'min_points', rules.min_points, 1, 10000), num('Minimum lead', 'min_lead', rules.min_lead, 0, 10000)),
+        h('p', { class: 'help' }, 'Per-dish points. Both thresholds needed; no ties.'));
+      f.append(h('p', { class: 'help' }, 'Mon–Sun; closes Mon noon. Closed scores freeze.'));
+      f.finish();
+      const override = form(async fd => {
+        const value = fd.get('resident_id');
+        await api('/api/league/duty', { method: 'POST', body: { resident_id: value ? Number(value) : null } });
+        toast('Kitchen duty updated.'); await loadLeague();
+      }, { submit: 'Set duty after house vote' });
+      override.append(field('Who is on kitchen duty?', h('select', { name: 'resident_id', disabled: !rules.enabled },
+        h('option', { value: '' }, 'Nobody'), ...activeResidents().sort((a, b) => a.name.localeCompare(b.name)).map(r => h('option', { value: r.id, selected: r.id === duty?.resident_id }, r.name))),
+        duty ? `${duty.name} since ${new Date(duty.since).toLocaleDateString()}. ${duty.why}` : 'Nobody is on duty. A house vote can override the weekly result.'),
+        h('p', { class: 'help' }, 'This sets duty now. The next qualifying closed week can replace it.'));
+      override.finish();
+      if (!rules.enabled) override.querySelector('button[type="submit"]').disabled = true;
+      fill(leagueBox, f, h('div', { class: 'divider' }), override);
+    } catch (error) {
+      if (leagueBox.isConnected) fill(leagueBox, h('p', { class: 'form-error' }, error.message), h('button', { type: 'button', class: 'btn', onclick: loadLeague }, 'Try again'));
+    }
   }
 
   function alertsForm() {
@@ -205,7 +260,7 @@ export function setupPage(main) {
       h("div", { class: "form-actions" }, error, h("button", { type: "button", class: "btn quiet", onclick: () => { areas = saved(); current = areas[0]?.id; renderList(); draw(); } }, "Reset"), h("button", { type: "button", class: "btn primary", disabled: demo, onclick: save }, "Save areas")));
   }
 
-  renderStatus(); renderStorage();
+  renderStatus(); renderStorage(); loadLeague(); loadRemembered();
   const initial = location.hash.split("/")[2];
   if (initial) requestAnimationFrame(() => document.getElementById(`s-${initial}`)?.scrollIntoView({ block: "start" }));
   return { update(kind) { if (kind === "data") { renderStatus(); renderStorage(); } }, destroy() { spy.disconnect(); } };

@@ -40,7 +40,7 @@ const DASHBOARD_MS = 8000, HISTORY_MS = 60000, QUIET_MS = 60000;
 // does not pull both every few seconds.
 const lean = () => Boolean(PAGES[state.route.page]?.standalone);
 const app = document.querySelector("#app");
-let page = null, timers = [], refreshing = null, historyToken = 0;
+let page = null, timers = [], refreshing = null, refreshingFull = false, historyToken = 0;
 
 // ---- Brand mark: a plate seen from above with one dish-coloured dot waiting on it.
 function brandMark(size = 22) {
@@ -159,11 +159,14 @@ function renderStatus() {
 }
 
 // ---- Data
-async function refresh() {
-  if (refreshing) return refreshing;
+async function refresh(full = false) {
+  if (refreshing) return full && !refreshingFull ? refreshing.then(() => refresh(true)) : refreshing;
+  const statusOnly = !full && lean();
+  refreshingFull = !statusOnly;
   refreshing = (async () => {
     try {
-      const data = await api("/api/dashboard");
+      const result = await api(statusOnly ? '/api/operator-status' : '/api/dashboard');
+      const data = statusOnly ? { ...result, lean: true, settings: { vision_enabled: result.vision_enabled } } : result;
       state.data = data; state.serverOffset = Date.parse(data.server_time) - Date.now(); state.lastSync = Date.now(); state.error = "";
       emit("data");
     } catch (e) {
@@ -188,7 +191,7 @@ async function loadHistory() {
 function showFatal(message) {
   if (!shell.main) return;
   page?.destroy(); page = null;
-  fill(shell.main, h("div", { class: "full-state" }, icon("alert", 28), h("h1", {}, "Couldn't open the dashboard"), h("p", {}, message), h("button", { type: "button", class: "btn primary", onclick: async () => { await refresh(); if (state.data) route(); } }, icon("refresh", 15), h("span", {}, "Try again"))));
+  fill(shell.main, h("div", { class: "full-state" }, icon("alert", 28), h("h1", {}, "Couldn't open the dashboard"), h("p", {}, message), h("button", { type: "button", class: "btn primary", onclick: async () => { await refresh(true); if (state.data && !state.data.lean) route(); } }, icon("refresh", 15), h("span", {}, "Try again"))));
 }
 
 function startLoops() {
@@ -222,9 +225,13 @@ function parseHash() {
 function route() {
   if (!state.session?.authenticated || !shell.main) return;
   const next = parseHash(), first = !page;
-  if (!state.data && !PAGES[next.page].standalone) {
+  if ((!state.data || state.data.lean) && !PAGES[next.page].standalone) {
     page?.destroy(); page = null; fill(shell.main, h("div", { class: "full-state boot" }, h("p", {}, "Loading…")));
-    refresh().then(() => { if (state.data && !page) route(); });
+    refresh(true).then(() => {
+      if (page || parseHash().page !== next.page) return;
+      if (state.data && !state.data.lean) route();
+      else showFatal(state.error || 'Could not load this page. Try again.');
+    });
     return;
   }
   if (page?.beforeLeave && !page.beforeLeave()) {

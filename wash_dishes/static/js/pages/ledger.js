@@ -15,7 +15,9 @@ function everyone(main) {
   const note = h('div', { class: 'tally-note' });
   fill(main, h('div', { class: 'page people-page' },
     h('header', { class: 'send-head' }, h('h1', { id: 'page-title', tabindex: '-1' }, 'People'),
-      h('p', { class: 'send-sub' }, 'Dishes left out, from the pictures you named.')), list, note));
+      h('p', { class: 'send-sub' }, 'All-time named proofs and each person’s history.')),
+    h('section', { class: 'league-alltime' }, h('h2', {}, 'All-time named pictures'),
+      h('p', { class: 'send-sub' }, 'Every proof picture you named, including dishes later washed.'), list, note)));
   api('/api/people').then(({ people }) => {
     if (!alive) return;
     list.removeAttribute('aria-busy');
@@ -26,7 +28,7 @@ function everyone(main) {
       h('span', { class: 'tally-name' }, cap(p.name), h('small', {}, `Last one ${day(p.last_at)}`)),
       h('b', { class: 'tally-count', 'aria-label': `${p.count} ${p.count === 1 ? 'dish' : 'dishes'}` }, String(p.count)),
       icon('chevronRight', 16)))));
-    fill(note, named.length ? null : h('p', {}, 'Nobody has been named yet. On Send, tap who put each dish down.'),
+    fill(note, named.length ? null : h('p', {}, 'No named proof pictures yet. Review who used or left dishes on Send.'),
       rest.length ? h('p', {}, `${named.length ? 'No named pictures yet' : 'Everyone'}: ${rest.map(p => cap(p.name)).join(', ')}.`) : null);
   }, e => { if (alive) { list.removeAttribute('aria-busy'); fill(list, h('li', { class: 'send-empty' }, `Could not load people. ${e.message}`)); } });
   return { update() {}, destroy() { alive = false; } };

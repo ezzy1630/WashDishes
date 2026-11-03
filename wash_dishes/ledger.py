@@ -17,7 +17,8 @@ from pathlib import Path
 from .collage import STAGES, VERSION, dish_name, place, render
 from .store import Store, stamp
 
-COUNTS = "o.confidence='confirmed' AND o.lifecycle NOT IN ('disputed','dismissed')"
+COUNTS = """o.confidence='confirmed' AND o.lifecycle NOT IN ('disputed','dismissed')
+    AND NOT EXISTS (SELECT 1 FROM house_verdicts v WHERE v.obligation_id=o.id)"""
 NAMED = f"""FROM proofs p JOIN obligations o ON o.id=p.obligation_id JOIN residents r ON r.id=o.resident_id
     WHERE p.status='ready' AND {COUNTS}"""
 _render_lock = threading.Lock()
@@ -63,7 +64,8 @@ def picture(store: Store, obligation_id: int) -> bytes:
     the kept photos once per design and name."""
     with store.lock:
         row = store.conn.execute(f"""SELECT p.data, o.dishes, o.location, r.id resident_id, r.name FROM proofs p JOIN obligations o ON o.id=p.obligation_id
-            LEFT JOIN residents r ON r.id=o.resident_id AND {COUNTS} WHERE p.status='ready' AND p.obligation_id=?""", (obligation_id,)).fetchone()
+            LEFT JOIN residents r ON r.id=o.resident_id AND {COUNTS} WHERE p.status='ready' AND p.obligation_id=?
+            AND NOT EXISTS (SELECT 1 FROM house_verdicts v WHERE v.obligation_id=o.id)""", (obligation_id,)).fetchone()
     folder = Path(store.root) / "proofs" / str(obligation_id)
     if row is None or not all((folder / f"{key}.jpg").exists() for key in STAGES):
         raise LookupError("This proof picture is no longer kept.")

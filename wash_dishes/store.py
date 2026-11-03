@@ -7,12 +7,14 @@ import os
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_SETTINGS, validate_settings
 from .evidence import evidence_timeline
+from .remembered import MAX_EXEMPLARS, SIMILARITY_THRESHOLD, similarity, unit_embedding
 
 # Legacy ranking features remain useful for fit diagnostics. Displaying a guess additionally requires
 # an absolute visual match and separation from the next resident; clothing never crosses local dates.
@@ -27,7 +29,7 @@ UNCLAIMED_NOTE = "Gone before anyone knew whose it was"
 CANT_TELL_NOTE = "Can't tell whose it was"
 # A dish picked up and not put down again in view within this time was carried away (inventory.MOVE_WINDOW).
 CARRY_WINDOW = timedelta(minutes=30)
-# An unnamed dish the camera has not seen for this long is gone; nobody names the owner of a dish that is no longer out.
+# Camera records without a fresh matching sighting for this long stop being currently out.
 UNPROVABLE_AFTER = timedelta(hours=24)
 UNPROVABLE_NOTE = "Gone before anyone named whose it was"
 # Closed by the camera after the deadline: the dish is no longer out, but it was out late.
@@ -35,7 +37,11 @@ TAKEN_LATE_NOTE = "Taken away after its deadline and not put down again in view.
 WASHED_LATE_NOTE = "Seen going through the sink onto a clean rack after its deadline. Still late; washing itself was not verified."
 REMOVED_REVIEWED_NOTE = 'Removal confirmed by a person; washing was not observed.'
 PUT_AWAY_NOTE = 'Placed in a drying or storage area. Washing itself was not observed.'
-CAMERA_CLOSED_NOTES = (TAKEN_LATE_NOTE, WASHED_LATE_NOTE, REMOVED_REVIEWED_NOTE, PUT_AWAY_NOTE)
+LEFT_OUT_UNKNOWN_NOTE = "Left out past its observed deadline; owner unknown. No longer visible; washing was not observed."
+MISSING_NOTE = "No recent sighting; location and washing outcome unknown. No new left-out verdict."
+REMOVED_UNVERIFIED_NOTE = "Taken away, but continuous presence past the deadline was not verified. Washing was not observed."
+CAMERA_CLOSED_NOTES = (TAKEN_LATE_NOTE, WASHED_LATE_NOTE, REMOVED_REVIEWED_NOTE, PUT_AWAY_NOTE,
+                       LEFT_OUT_UNKNOWN_NOTE, MISSING_NOTE, REMOVED_UNVERIFIED_NOTE)
 # Camera naming turns on only once human-checked suggestions are measured accurate enough, over the
 # most recent checks so a drop in accuracy turns it off again. Every fifth eligible record stays a
 # human spot check, because corrections of camera-named records alone would only ever record mistakes.
@@ -118,6 +124,15 @@ class Store:
                 filename TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL, label TEXT NOT NULL, expired INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS evidence_expiry ON evidence(expired,expires_at);
+            CREATE INDEX IF NOT EXISTS evidence_obligation ON evidence(obligation_id,created_at);
+            CREATE TABLE IF NOT EXISTS arrival_visits(
+                id TEXT PRIMARY KEY, evidence_id TEXT REFERENCES evidence(id),
+                created_at TEXT NOT NULL, metadata TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS arrival_visit_members(
+                obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
+                visit_id TEXT NOT NULL REFERENCES arrival_visits(id));
+            CREATE INDEX IF NOT EXISTS arrival_members_visit ON arrival_visit_members(visit_id);
+            CREATE INDEX IF NOT EXISTS events_kind_time ON events(event,created_at);
             CREATE TABLE IF NOT EXISTS evidence_sequences(
                 obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
                 fingerprint TEXT NOT NULL, image_id TEXT REFERENCES evidence(id),
@@ -139,6 +154,16 @@ class Store:
                 id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, embedding TEXT NOT NULL, score REAL,
                 obligation_id INTEGER REFERENCES obligations(id), label INTEGER);
             CREATE INDEX IF NOT EXISTS dish_samples_obligation ON dish_samples(obligation_id);
+            CREATE TABLE IF NOT EXISTS remembered_objects(
+                id INTEGER PRIMARY KEY, obligation_id INTEGER NOT NULL REFERENCES obligations(id),
+                event_id INTEGER NOT NULL REFERENCES events(id), embedding TEXT NOT NULL,
+                area_id TEXT NOT NULL, area_name TEXT NOT NULL, area_role TEXT NOT NULL,
+                by TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(event_id));
+            CREATE TABLE IF NOT EXISTS dish_reviews(
+                obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
+                verdict TEXT NOT NULL, of_id INTEGER REFERENCES obligations(id),
+                by TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES events(id));
             -- Twice-daily look at every counter: what was out, and what a person said about it.
             CREATE TABLE IF NOT EXISTS kitchen_checks(
                 id INTEGER PRIMARY KEY, slot TEXT NOT NULL UNIQUE, at TEXT, photo TEXT, dishes TEXT NOT NULL DEFAULT '[]',
@@ -151,7 +176,7 @@ class Store:
                                  # NULL: named by a person. 'camera': named automatically. 'camera_reviewed': a person then confirmed or corrected it.
                                  ("attribution", "TEXT"),
                                  # Where the dish was in the "left unattended" photo: [x, y, w, h], for training from Review answers.
-                                 ("box", "TEXT"), ("archived_at", "TEXT")):
+                                 ("box", "TEXT"), ("archived_at", "TEXT"), ("left_out_at", "TEXT"), ("closure_kind", "TEXT")):
             if name not in columns:
                 self.conn.execute(f"ALTER TABLE obligations ADD COLUMN {name} {definition}")
         resident_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(residents)")}
@@ -165,7 +190,9 @@ class Store:
                 self.conn.execute(f"ALTER TABLE person_samples ADD COLUMN {name} {definition}")
         if "capture" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(evidence)")}:
             self.conn.execute("ALTER TABLE evidence ADD COLUMN capture TEXT NOT NULL DEFAULT '{}'")
-        self.conn.execute("PRAGMA user_version=7")
+        from .house_schema import migrate
+        migrate(self.conn)
+        self.conn.execute("PRAGMA user_version=8")
         self.conn.commit()
         (root / "history.db").chmod(0o600)
 
@@ -288,13 +315,37 @@ class Store:
         else:
             status = "overdue" if item["timing_known"] and parse_stamp(item["due_at"]) <= now else ("pending" if item["timing_known"] else "review")
         item.update(status=status, dishes=json.loads(item["dishes"]), overdue_verified=bool(item["overdue_verified"]), timing_known=bool(item["timing_known"]),
-                    closed_by_camera=item["lifecycle"] == "resolved" and item["reason"] in CAMERA_CLOSED_NOTES,
+                    closed_by_camera=item["lifecycle"] == "resolved" and (item["closure_kind"] is not None or item["reason"] in CAMERA_CLOSED_NOTES),
                     box=json.loads(item["box"]) if item.get("box") else None)
         item["followup_at"] = item["due_at"]
         if not item["timing_known"]:
             item["due_at"] = None
-        item["evidence"] = [dict(e) | {"capture": json.loads(e["capture"]), "url": None if e["expired"] else f"/api/evidence/{e['id']}", "expired": bool(e["expired"])} for e in self.conn.execute("SELECT id,kind,created_at,expires_at,label,expired,capture FROM evidence WHERE obligation_id=? ORDER BY created_at", (item["id"],))]
+        item["evidence"] = [dict(e) | {"capture": json.loads(e["capture"]), "url": None if e["expired"] else f"/api/evidence/{e['id']}", "expired": bool(e["expired"])} for e in self.conn.execute("""SELECT id,kind,created_at,expires_at,label,expired,capture FROM evidence
+            WHERE obligation_id=? OR id IN (SELECT v.evidence_id FROM arrival_visits v
+                JOIN arrival_visit_members m ON m.visit_id=v.id WHERE m.obligation_id=?)
+            ORDER BY created_at""", (item["id"], item["id"]))]
+        visit = self.conn.execute('SELECT visit_id FROM arrival_visit_members WHERE obligation_id=?', (item['id'],)).fetchone()
+        item['arrival_visit_id'] = visit[0] if visit else None
         return item
+
+    def arrival_visit(self, visit_id: str) -> dict:
+        """Shared arrival evidence plus the members' current, existing camera guess.
+
+        Consensus is read at request time so corrections cannot leave a stale guess
+        cached in a JPEG. No new inference, naming or teaching happens here.
+        """
+        with self.lock:
+            row = self.conn.execute('SELECT * FROM arrival_visits WHERE id=?', (visit_id,)).fetchone()
+            if not row:
+                raise LookupError('Arrival visit not found.')
+            result = json.loads(row['metadata']) | {'visit_id': visit_id, 'evidence_id': row['evidence_id']}
+            members = self.conn.execute("""SELECT o.id,o.suggested_resident_id FROM obligations o
+                JOIN arrival_visit_members m ON m.obligation_id=o.id WHERE m.visit_id=? ORDER BY o.id""", (visit_id,)).fetchall()
+            guesses = {r['suggested_resident_id'] for r in members}
+            agreed = next(iter(guesses)) if len(guesses) == 1 else None
+            result['suggested_resident_id'] = agreed
+            result['suggestion_basis'] = self.suggestion_basis([r['id'] for r in members]) if agreed is not None else {}
+            return result
 
     def obligation(self, obligation_id: int, *, now: datetime | None = None) -> dict:
         with self.lock:
@@ -370,6 +421,9 @@ class Store:
                        now: datetime) -> dict:
         """Caller owns the transaction, including when several review facts change together."""
         item = self.obligation(obligation_id, now=now)
+        if action in ('confirm', 'reassign', 'dispute'):
+            from .league import assert_unfrozen
+            assert_unfrozen(self, item, now=now)
         previous = {key: item[key] for key in ("resident_id", "lifecycle", "confidence", "resolved_at", "overdue_verified")}
         if action == "resolve":
             if item["lifecycle"] == "dismissed":
@@ -379,28 +433,30 @@ class Store:
                 raise ValueError("Cleanup must fall between deposit time and now.")
             cleaner = self._resident(cleaner_id)
             late = item["confidence"] == "confirmed" and item["timing_known"] and when > parse_stamp(item["due_at"])
-            self.conn.execute("UPDATE obligations SET lifecycle='resolved', resolved_at=?,cleaner_id=?,overdue_verified=?,review_pending=0,reason=? WHERE id=?", (stamp(when), cleaner_id, int(late), note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET lifecycle='resolved', closure_kind=NULL,resolved_at=?,cleaner_id=?,overdue_verified=?,review_pending=0,reason=? WHERE id=?", (stamp(when), cleaner_id, int(late), note.strip(), obligation_id))
             description = f"{self.dish_description(item['dishes'])} marked clean" + (f" by {cleaner['name']}" if cleaner else "")
         elif action in ("confirm", "reassign"):
             resident = self._resident(resident_id)
             if not resident:
                 raise ValueError("Choose the responsible housemate to confirm ownership.")
             lifecycle = ("resolved" if item["resolved_at"] else "open") if item["lifecycle"] in ("disputed", "dismissed") else item["lifecycle"]
-            camera_closed = item["lifecycle"] == "resolved" and item["reason"] in CAMERA_CLOSED_NOTES
+            camera_closed = item["closed_by_camera"]
             late = (bool(item["timing_known"] and item["resolved_at"] and parse_stamp(item["resolved_at"]) > parse_stamp(item["due_at"]))
                     if lifecycle == "resolved" and not camera_closed else item["overdue_verified"])
             # The camera photographs a dish still out after its deadline before anyone is named.
             # Keep the after-deadline sighting separately from the dirty-dish verdict.
             # Naming alone cannot trigger an accusation; the incident review gate owns that.
-            photographed_late = (lifecycle == "open" or camera_closed) and not late and item["timing_known"] and self.conn.execute(
-                "SELECT 1 FROM evidence WHERE obligation_id=? AND expired=0 AND label LIKE 'Matching dish still visible after the deadline%' AND created_at>=?",
-                (obligation_id, item["due_at"])).fetchone() is not None
+            photographed_late = ((lifecycle == "open" or camera_closed) and not late and item["timing_known"]
+                                 and self.observed_left_out_at(item) is not None)
             late = late or photographed_late
-            self.conn.execute("UPDATE obligations SET resident_id=?, confidence='confirmed',lifecycle=?,review_pending=0,overdue_verified=?,reason=?,attribution=CASE WHEN attribution IS NULL THEN NULL ELSE 'camera_reviewed' END WHERE id=?", (resident_id, lifecycle, int(late), note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET resident_id=?, confidence='confirmed',lifecycle=?,review_pending=0,overdue_verified=?,reason=?,attribution=CASE WHEN attribution IS NULL THEN NULL ELSE 'camera_reviewed' END WHERE id=?", (resident_id, lifecycle, int(late), note.strip() or (item["reason"] if camera_closed else ""), obligation_id))
             if photographed_late:
                 self._retain_review_evidence(obligation_id, now)
             # Each human decision labels the saved appearance of whoever handled the dish.
             self.conn.execute("UPDATE person_samples SET resident_id=? WHERE obligation_id=?", (resident_id, obligation_id))
+            self.conn.execute("UPDATE obligations SET named_by=NULL,named_at=? WHERE id=?", (stamp(now), obligation_id))
+            if item['dispute_state'] == 'open':
+                self.conn.execute("UPDATE obligations SET dispute_state='upheld',dispute_settled_by=NULL,dispute_settled_at=? WHERE id=?", (stamp(now), obligation_id))
             if item["suggested_resident_id"] is not None and item["suggestion_correct"] is None:
                 self.conn.execute("UPDATE obligations SET suggestion_correct=? WHERE id=?", (int(item["suggested_resident_id"] == resident_id), obligation_id))
             description = f"Responsibility confirmed as {resident['name']}"
@@ -408,7 +464,7 @@ class Store:
             if item["timing_known"] or item["lifecycle"] != "open":
                 raise ValueError("Only an open backlog entry without a known deadline can start a timer.")
             due = now + timedelta(minutes=self.settings()["deadline_minutes"])
-            self.conn.execute("UPDATE obligations SET timing_known=1,due_at=?,deadline_notified=0,overdue_verified=0 WHERE id=?", (stamp(due), obligation_id))
+            self.conn.execute("UPDATE obligations SET timing_known=1,due_at=?,deadline_notified=0,overdue_verified=0,left_out_at=NULL WHERE id=?", (stamp(due), obligation_id))
             description = "Backlog cleanup grace started by a person; original deposit time remains unknown"
         elif action == "dispute":
             self.conn.execute("UPDATE obligations SET lifecycle='disputed',reason=?,review_pending=1 WHERE id=?", (note.strip() or "Ownership or cleanup needs review", obligation_id))
@@ -419,10 +475,13 @@ class Store:
             self.conn.execute("UPDATE person_samples SET resident_id=NULL,hint_resident_id=NULL WHERE obligation_id=?", (obligation_id,))
             description = "Dish event dismissed"
         elif action == "reopen":
-            self.conn.execute("UPDATE obligations SET lifecycle='open',resolved_at=NULL,cleaner_id=NULL,overdue_verified=0,review_pending=0,reason=? WHERE id=?", (note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET lifecycle='open',closure_kind=NULL,resolved_at=NULL,cleaner_id=NULL,overdue_verified=0,left_out_at=NULL,review_pending=0,reason=? WHERE id=?", (note.strip(), obligation_id))
             description = "Dish event reopened"
         else:
             raise ValueError("Choose resolve, confirm, reassign, dispute, dismiss, reopen, or start_timer.")
+        if action in ('resolve', 'confirm', 'reassign', 'dispute', 'dismiss', 'reopen'):
+            # A later human decision supersedes the dish judgment, including its training label.
+            self.conn.execute('DELETE FROM dish_reviews WHERE obligation_id=?', (obligation_id,))
         self._event(obligation_id, action, description, {"before": previous, "note": note.strip(), "resident_id": resident_id}, now)
         if action == "dispute" or (action == "resolve" and late):
             self._retain_review_evidence(obligation_id, now)
@@ -432,7 +491,7 @@ class Store:
 
     def _retain_review_evidence(self, obligation_id: int, at: datetime) -> None:
         until = stamp(at + timedelta(days=self.settings()["review_days"]))
-        self.conn.execute("UPDATE evidence SET expires_at=max(expires_at,?) WHERE obligation_id=? AND expired=0", (until, obligation_id))
+        self.conn.execute("UPDATE evidence SET expires_at=max(expires_at,?) WHERE obligation_id=? AND expired=0 AND kind!='filmstrip'", (until, obligation_id))
 
     def record_seen(self, obligation_id: int, at: datetime | None = None, *, reliable: bool = True) -> None:
         """Only the matching visible dish track can provide continuing dirty evidence."""
@@ -441,11 +500,16 @@ class Store:
             item = self.obligation(obligation_id, now=at)
             if item['archived_at']:
                 return
+            observed_late = (reliable and item["lifecycle"] == "open" and not item["review_pending"]
+                             and at >= parse_stamp(item["followup_at"])
+                             and (item['left_out_at'] is not None or not self._deadline_gap(item, at)))
             overdue = reliable and item["lifecycle"] == "open" and item["confidence"] == "confirmed" and not item["review_pending"] and item["timing_known"] and at >= parse_stamp(item["due_at"])
             decision = self.conn.execute('SELECT data FROM incident_decisions WHERE obligation_id=?', (obligation_id,)).fetchone()
             if decision and json.loads(decision[0]).get('condition') == 'clean':
-                overdue = False
-            self.conn.execute("UPDATE obligations SET last_seen_at=?,overdue_verified=max(overdue_verified,?) WHERE id=?", (stamp(at), int(overdue), obligation_id))
+                overdue = observed_late = False
+            overdue = overdue and observed_late
+            self.conn.execute("UPDATE obligations SET last_seen_at=?,overdue_verified=max(overdue_verified,?),left_out_at=coalesce(left_out_at,?) WHERE id=?",
+                              (stamp(at), int(overdue), stamp(at) if observed_late else None, obligation_id))
             if overdue and not item["overdue_verified"]:
                 self._retain_review_evidence(obligation_id, at)
 
@@ -454,8 +518,11 @@ class Store:
             item = self.obligation(obligation_id)
             if item["lifecycle"] != "open" or item['archived_at']:
                 return False
-            lifecycle = 'resolved' if item['overdue_verified'] else 'cleared'
-            self.conn.execute("UPDATE obligations SET lifecycle=?,resolved_at=?,review_pending=0,reason=? WHERE id=?", (lifecycle, stamp(at), PUT_AWAY_NOTE, obligation_id))
+            observed = self.observed_left_out_at(item)
+            early = (at or utcnow()) < parse_stamp(item['followup_at'])
+            lifecycle = 'cleared' if early and not observed else 'resolved'
+            self.conn.execute("UPDATE obligations SET lifecycle=?,closure_kind='removed',resolved_at=?,review_pending=0,reason=?,left_out_at=? WHERE id=?",
+                              (lifecycle, stamp(at), PUT_AWAY_NOTE, observed, obligation_id))
             self._event(obligation_id, "cleanup_candidate", "Put to dry or away; washing not verified", at=at)
             return True
 
@@ -471,21 +538,91 @@ class Store:
                 self._event(row["id"], "deadline_passed", "Cleanup deadline passed; current dish state may need review", at=now)
             return len(rows)
 
-    def _retire_unprovable(self, now: datetime) -> int:
-        """Close unnamed dishes that have been gone for a day.
+    def _deadline_gap(self, item: dict, at: datetime) -> bool:
+        """A timer cannot bridge a recording/identity gap, even for an unnamed dish."""
+        return self.conn.execute("""SELECT 1 FROM events WHERE
+            (obligation_id IS NULL OR obligation_id=?) AND event IN
+            ('observation_gap','dish_continuity_uncertain','dish_not_seen')
+            AND created_at>? AND created_at<=? LIMIT 1""",
+            (item['id'], item['created_at'], stamp(at))).fetchone() is not None
 
-        Naming only happens while a dish is still out (household decision, 2026-10-20: nobody cares about a dish
-        from days ago that is no longer there), so an unnamed one that is gone will never count.
-        On 2026-10-15 thirty of them buried the few that could. Appearance labels are kept (no
-        dismiss event, so nothing is learned as "not a dish"), and a person can still reopen or name one.
+    def observed_left_out_at(self, item: dict) -> str | None:
+        """Presence after the follow-up, independently of ownership or washing.
+
+        The raw deadline is also the startup inventory's observation-based follow-up.
+        Legacy recovery uses retained capture metadata (even when the JPEG has expired),
+        never the mere passing of time or a late removal timestamp.
         """
-        rows = self.conn.execute("""SELECT o.id FROM obligations o WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.resident_id IS NULL AND o.timing_known=1
-            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?""",
-            (stamp(now), stamp(now - UNPROVABLE_AFTER))).fetchall()
+        due = item.get('followup_at') or item['due_at']
+        if not due:
+            return None
+        decision = self.conn.execute('SELECT data FROM incident_decisions WHERE obligation_id=?', (item['id'],)).fetchone()
+        if decision and json.loads(decision[0]).get('condition') == 'clean':
+            return None
+        if item.get('left_out_at'):
+            return item['left_out_at']
+        rows = self.conn.execute("""SELECT created_at FROM evidence WHERE obligation_id=? AND kind='snapshot'
+            AND created_at>=? AND (label LIKE 'Matching dish still visible after the deadline%'
+            OR json_extract(capture,'$.stage')='later') ORDER BY created_at""", (item['id'], due)).fetchall()
         for row in rows:
-            self.conn.execute("UPDATE obligations SET lifecycle='dismissed',review_pending=0,reason=? WHERE id=?", (UNPROVABLE_NOTE, row["id"]))
-            self._event(row["id"], "retired_unprovable", UNPROVABLE_NOTE, at=now)
+            at = parse_stamp(row['created_at'])
+            if not self._deadline_gap(item, at):
+                return row['created_at']
+        return None
+
+    def _close_missing(self, item: dict, now: datetime, *, observed: str | None = None, missing: bool = False) -> None:
+        # resolved means the episode ended; these reasons explicitly exclude a washing claim.
+        reason = MISSING_NOTE if missing or not observed else LEFT_OUT_UNKNOWN_NOTE if item['resident_id'] is None else TAKEN_LATE_NOTE
+        self.conn.execute("""UPDATE obligations SET lifecycle='resolved',resolved_at=?,cleaner_id=NULL,closure_kind=?,
+            review_pending=0,reason=?,left_out_at=? WHERE id=?""",
+            (stamp(now), 'missing' if missing or not observed else 'removed', reason, observed, item['id']))
+        self._event(item['id'], 'left_out_closed' if observed else 'closed_missing', reason,
+                    {'last_seen_at': item['last_seen_at'], 'left_out_at': observed}, now)
+
+    def _retire_unprovable(self, now: datetime) -> int:
+        """Stop presenting stale camera records as currently out, including archived/named backlog.
+
+        No fresh matching detection for a day is an unknown outcome, never an on-time
+        success or a new late verdict. Existing observed lateness remains historical.
+        """
+        rows = self.conn.execute("""SELECT * FROM obligations WHERE lifecycle='open' AND source IN ('vision','baseline')
+            AND coalesce(last_seen_at,created_at)<=?""", (stamp(now - UNPROVABLE_AFTER),)).fetchall()
+        for row in rows:
+            item = dict(row)
+            self._close_missing(item, now, observed=self.observed_left_out_at(item), missing=True)
         return len(rows)
+
+    def repair_left_out(self, *, since: datetime | None = None, dry_run: bool = True,
+                        now: datetime | None = None) -> dict:
+        """One-off, idempotent repair of automatic dismissals and stale open episodes.
+
+        since limits dismissal recovery by deposit date. Stale opens are always checked,
+        including older archived records: they must not remain out forever.
+        Human dismissals/disputes and genuinely early removals are never reinterpreted.
+        """
+        now = now or utcnow()
+        changes = []
+        with self.lock, self.conn:
+            rows = self.conn.execute("""SELECT * FROM obligations WHERE
+                (lifecycle='dismissed' AND reason IN (?,?) AND created_at>=?) OR
+                (lifecycle='open' AND source IN ('vision','baseline') AND coalesce(last_seen_at,created_at)<=?)
+                ORDER BY id""", (UNCLAIMED_NOTE, UNPROVABLE_NOTE, stamp(since) if since else '',
+                                  stamp(now - UNPROVABLE_AFTER))).fetchall()
+            for row in rows:
+                item = dict(row)
+                observed = self.observed_left_out_at(item)
+                if item['lifecycle'] == 'dismissed' and not observed:
+                    continue
+                category = ('restored_left_out' if item['lifecycle'] == 'dismissed'
+                            else 'stale_left_out' if observed else 'stale_missing')
+                changes.append({'id': item['id'], 'category': category, 'from': item['lifecycle'],
+                                'to': 'resolved', 'left_out_at': observed, 'last_seen_at': item['last_seen_at']})
+                if not dry_run:
+                    self._close_missing(item, now, observed=observed, missing=item['lifecycle'] == 'open')
+                    self._event(item['id'], 'repair_left_out', 'Restored automatic closure without inventing ownership or washing',
+                                changes[-1], now)
+        return {'dry_run': dry_run, 'counts': {key: sum(c['category'] == key for c in changes)
+                for key in ('restored_left_out', 'stale_left_out', 'stale_missing')}, 'changes': changes}
 
     def _close_taken(self, now: datetime) -> int:
         """Stop showing a dish as still out once the camera saw it go: carried off after its deadline,
@@ -509,9 +646,10 @@ class Store:
                 self._event(row["id"], "cleared_before_deadline", "Washed or put away before the deadline; no late dish recorded", {"moved_at": row["moved_at"]}, now)
                 continue
             # Lateness still needs the after-deadline photo; closing the record never adds it.
-            self.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=?,review_pending=0,reason=? WHERE id=?",
-                              (row["moved_at"], WASHED_LATE_NOTE if washed else TAKEN_LATE_NOTE, row["id"]))
-            self._event(row["id"], "taken_after_deadline", "No longer out; it was out past its deadline", {"moved_at": row["moved_at"]}, now)
+            observed = self.observed_left_out_at(self.obligation(row['id']))
+            self.conn.execute("UPDATE obligations SET lifecycle='resolved',closure_kind='removed',resolved_at=?,review_pending=0,reason=?,left_out_at=? WHERE id=?",
+                              (row["moved_at"], (WASHED_LATE_NOTE if washed else TAKEN_LATE_NOTE) if observed else REMOVED_UNVERIFIED_NOTE, observed, row["id"]))
+            self._event(row["id"], "taken_after_deadline", "No longer out; observed past its deadline" if observed else "No longer out; deadline continuity was unverified", {"moved_at": row["moved_at"]}, now)
         return len(rows)
 
     def _clear_removed(self, now: datetime) -> int:
@@ -550,7 +688,7 @@ class Store:
             for resident in self.residents():
                 rows = self.conn.execute("SELECT * FROM obligations WHERE archived_at IS NULL AND resident_id=? AND confidence='confirmed' AND timing_known=1 AND lifecycle IN ('open','resolved')", (resident["id"],)).fetchall()
                 # An unobserved outcome cannot be treated as an on-time success in a rate.
-                eligible = [r for r in rows if r['id'] in late_ids or (r["lifecycle"] == "resolved" and r['reason'] not in CAMERA_CLOSED_NOTES)]
+                eligible = [r for r in rows if r['id'] in late_ids or (r["lifecycle"] == "resolved" and r['closure_kind'] is None and r['reason'] not in CAMERA_CLOSED_NOTES)]
                 overdue = sum(r['id'] in late_ids for r in eligible)
                 cleaned_for_others = self.conn.execute("SELECT count(*) FROM obligations WHERE archived_at IS NULL AND cleaner_id=? AND resident_id!=? AND lifecycle='resolved' AND confidence='confirmed'", (resident["id"], resident["id"])).fetchone()[0]
                 dish_count = lambda items: sum(d["quantity"] for r in items for d in json.loads(r["dishes"]))  # noqa: E731
@@ -615,6 +753,148 @@ class Store:
         with self.lock, self.conn:
             self.conn.execute("UPDATE dish_samples SET label=? WHERE id=?", (int(dish), sample_id))
 
+    @contextmanager
+    def dish_corrections(self):
+        """Composable transaction: a visit and every member correction succeed together."""
+        with self.lock:
+            self.conn.execute('SAVEPOINT dish_corrections')
+            try:
+                yield
+            except BaseException:
+                self.conn.execute('ROLLBACK TO dish_corrections')
+                self.conn.execute('RELEASE dish_corrections')
+                raise
+            else:
+                self.conn.execute('RELEASE dish_corrections')
+
+    def mark_not_dish(self, obligation_ids: list[int], by: str) -> list[dict]:
+        """Dismiss these exact boxes as non-dishes, atomically; teach the kitchen probe 0."""
+        return self._mark_dishes(obligation_ids, 'not_dish', by)
+
+    def mark_clean(self, obligation_ids: list[int], by: str) -> list[dict]:
+        """A real, clean dish: exclude the episode, teach dish identity 1, never invent a wash time."""
+        return self._mark_dishes(obligation_ids, 'clean', by)
+
+    def mark_duplicate(self, obligation_id: int, of_id: int, by: str) -> dict:
+        """Keep originals and evidence; exclude only the duplicate, with an explicit canonical link."""
+        from .house_visits import duplicate_map
+        with self.dish_corrections():
+            aliases = duplicate_map(self)
+            target = aliases.get(of_id, of_id)
+            if target == obligation_id:
+                raise ValueError('A dish cannot duplicate itself, including through another alias.')
+            return self._mark_dishes([obligation_id], 'duplicate', by, of_id=target)[0]
+
+    def _mark_dishes(self, obligation_ids: list[int], verdict: str, by: str, *, of_id: int | None = None) -> list[dict]:
+        if (not isinstance(obligation_ids, (list, tuple)) or not 1 <= len(obligation_ids) <= 200
+                or any(type(i) is not int or i <= 0 for i in obligation_ids)):
+            raise ValueError('Choose between 1 and 200 record IDs.')
+        if not isinstance(by, str) or not by.strip() or len(by) > 200:
+            raise ValueError('A correction needs its reviewer.')
+        ids = list(dict.fromkeys(obligation_ids))
+        with self.dish_corrections():
+            # Validate the entire batch before changing anything.
+            for i in ids:
+                self.obligation(i)
+            if of_id is not None:
+                if type(of_id) is not int or of_id in ids:
+                    raise ValueError('Choose a different canonical record.')
+                canonical = self.obligation(of_id)
+                if canonical['lifecycle'] in ('dismissed', 'disputed'):
+                    raise ValueError('The canonical record must not be dismissed or disputed.')
+            for i in ids:
+                before = dict(self.conn.execute('SELECT * FROM obligations WHERE id=?', (i,)).fetchone())
+                review = self.conn.execute('SELECT * FROM dish_reviews WHERE obligation_id=?', (i,)).fetchone()
+                if review and (review['verdict'], review['of_id']) == (verdict, of_id):
+                    continue
+                reason = {'not_dish': 'Not a dish', 'clean': "It's clean", 'duplicate': f'Same dish as record {of_id}'}[verdict]
+                self.conn.execute("UPDATE obligations SET lifecycle='dismissed',reason=?,overdue_verified=0,review_pending=0 WHERE id=?", (reason, i))
+                people = [dict(r) for r in self.conn.execute('SELECT id,resident_id,hint_resident_id FROM person_samples WHERE obligation_id=?', (i,))]
+                self.conn.execute('UPDATE person_samples SET resident_id=NULL,hint_resident_id=NULL WHERE obligation_id=?', (i,))
+                # Keep legacy dismissal readers/metrics meaningful: clean and duplicate
+                # notes are deliberately not NOT_A_DISH_NOTES, even on a source rollback.
+                self._event(i, 'dismiss', reason, {'dish_correction': True, 'note': reason, 'verdict': verdict, 'of_id': of_id, 'by': by.strip(),
+                            'before': before, 'review_before': dict(review) if review else None, 'people_before': people})
+                event_id = self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+                self.conn.execute('INSERT OR REPLACE INTO dish_reviews VALUES(?,?,?,?,?)', (i, verdict, of_id, by.strip(), event_id))
+                if verdict in ('not_dish', 'clean'):
+                    self._remember_corrected_object(i, event_id, by.strip())
+            self._refresh_identity_suggestions()
+            return [self.obligation(i) for i in ids]
+
+    def undo_dish_correction(self, obligation_id: int, by: str) -> dict:
+        """Operator undo, including prior labels; refuse to overwrite intervening record decisions."""
+        if not isinstance(by, str) or not by.strip() or len(by) > 200:
+            raise ValueError('An undo needs its reviewer.')
+        with self.dish_corrections():
+            self.obligation(obligation_id)
+            review = self.conn.execute('SELECT * FROM dish_reviews WHERE obligation_id=?', (obligation_id,)).fetchone()
+            if not review:
+                raise ValueError('No active dish correction to undo.')
+            event = self.conn.execute('SELECT data FROM events WHERE id=?', (review['event_id'],)).fetchone()
+            data = json.loads(event['data'])
+            # Camera presence events may continue after a dismissal. Human decisions cannot be overwritten.
+            changed = self.conn.execute("SELECT 1 FROM events WHERE obligation_id=? AND id>? AND event IN ('resolve','confirm','reassign','dispute','dismiss','reopen','start_timer') AND coalesce(json_extract(data,'$.dish_correction'),0)!=1", (obligation_id, review['event_id'])).fetchone()
+            if changed:
+                raise ValueError('This record has a later decision; review it before undoing.')
+            fields = ('lifecycle', 'reason', 'overdue_verified', 'review_pending')
+            self.conn.execute('UPDATE obligations SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',
+                              (*[data['before'][k] for k in fields], obligation_id))
+            for person in data['people_before']:
+                self.conn.execute('UPDATE person_samples SET resident_id=?,hint_resident_id=? WHERE id=?', (person['resident_id'], person['hint_resident_id'], person['id']))
+            self.conn.execute('DELETE FROM remembered_objects WHERE event_id=?', (review['event_id'],))
+            self.conn.execute('DELETE FROM dish_reviews WHERE obligation_id=?', (obligation_id,))
+            previous = data['review_before']
+            if previous:
+                self.conn.execute('INSERT INTO dish_reviews VALUES(?,?,?,?,?)', tuple(previous[k] for k in ('obligation_id', 'verdict', 'of_id', 'by', 'event_id')))
+            self._event(obligation_id, 'dish_correction_undone', 'Dish correction undone by operator', {'by': by.strip(), 'correction_event_id': review['event_id']})
+            self._refresh_identity_suggestions()
+            return self.obligation(obligation_id)
+
+    def _remember_corrected_object(self, obligation_id: int, event_id: int, by: str) -> None:
+        item = self.obligation(obligation_id)
+        areas = [a for a in self.settings()['areas'] if a['name'] == item['location'] and a['role'] in ('dirty', 'sink')]
+        sample = self.conn.execute('SELECT embedding FROM dish_samples WHERE obligation_id=? ORDER BY id DESC LIMIT 1', (obligation_id,)).fetchone()
+        # Historical records may lack linked features. A correction must not invent them.
+        if len(areas) != 1 or not sample:
+            return
+        try:
+            embedding = unit_embedding(json.loads(sample['embedding']))
+        except (ValueError, TypeError):
+            return
+        area = areas[0]
+        self.conn.execute('INSERT INTO remembered_objects(obligation_id,event_id,embedding,area_id,area_name,area_role,by,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                          (obligation_id, event_id, json.dumps(embedding), area['id'], area['name'], area['role'], by, stamp()))
+        self.conn.execute('DELETE FROM remembered_objects WHERE id NOT IN (SELECT id FROM remembered_objects ORDER BY id DESC LIMIT ?)', (MAX_EXEMPLARS,))
+
+    def remembered_objects(self) -> list[dict]:
+        with self.lock:
+            items = [dict(r) for r in self.conn.execute("""SELECT m.id,m.obligation_id,m.area_id,m.area_name,m.by,m.created_at,r.verdict
+                FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id
+                ORDER BY m.id DESC""")]
+            people = {f"resident:{r['id']}": r['name'] for r in self.conn.execute('SELECT id,name FROM residents')}
+            return [item | {'by_name': people.get(item['by'], 'The operator' if item['by'] == 'operator' else 'A housemate')} for item in items]
+
+    def forget_object(self, exemplar_id: int) -> None:
+        with self.lock, self.conn:
+            if not self.conn.execute('DELETE FROM remembered_objects WHERE id=?', (exemplar_id,)).rowcount:
+                raise LookupError('That remembered object was not found.')
+            self._event(None, 'remembered_object_removed', 'The operator removed a remembered object.', {'exemplar_id': exemplar_id, 'by': 'operator'})
+
+    def remembered_match(self, embedding: list[float], area: dict | None) -> dict | None:
+        if not area or area['role'] not in ('dirty', 'sink'):
+            return None
+        vector = unit_embedding(embedding)
+        with self.lock:
+            rows = self.conn.execute("""SELECT m.id,m.embedding FROM remembered_objects m
+                JOIN dish_reviews r ON r.event_id=m.event_id
+                WHERE m.area_id=? AND m.area_role=?""", (area['id'], area['role'])).fetchall()
+            for row in rows:
+                score = similarity(vector, json.loads(row['embedding']))
+                if score >= SIMILARITY_THRESHOLD:
+                    return {'id': row['id'], 'similarity': score}
+        return None
+
     def labeled_dish_samples(self) -> list[dict]:
         """Samples with a person's verdict: given directly in a kitchen check, or implied by a Review answer.
 
@@ -622,15 +902,17 @@ class Store:
         "not a dish" means a mistake. Anything else (system closures, open questions) teaches nothing.
         """
         with self.lock:
-            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at,
+            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at, o.reason, r.verdict AS dish_review,
                 (SELECT json_extract(e.data,'$.note') FROM events e WHERE e.obligation_id=o.id AND e.event='dismiss' ORDER BY e.id DESC LIMIT 1) note
-                FROM dish_samples s LEFT JOIN obligations o ON o.id=s.obligation_id ORDER BY s.id""").fetchall()
+                FROM dish_samples s LEFT JOIN obligations o ON o.id=s.obligation_id LEFT JOIN dish_reviews r ON r.obligation_id=o.id ORDER BY s.id""").fetchall()
         result = []
         for row in rows:
             label = row["label"]
-            if label is None and row["lifecycle"] is not None:
+            if row['dish_review']:
+                label = {'not_dish': 0, 'clean': 1}.get(row['dish_review'])
+            elif label is None and row["lifecycle"] is not None:
                 note = (row["note"] or "").strip()
-                if row["lifecycle"] == "dismissed":
+                if row["lifecycle"] == "dismissed" and row['reason'] not in (UNCLAIMED_NOTE, UNPROVABLE_NOTE):
                     label = 0 if note in NOT_A_DISH_NOTES else 1 if note == CANT_TELL_NOTE else None
                 elif row["confidence"] == "confirmed" and row["attribution"] != "camera":
                     label = 1
@@ -712,14 +994,18 @@ class Store:
                                   (f"Not at {location} when monitoring resumed; it may have been moved or cleaned while unobserved.", obligation_id))
                 self._event(obligation_id, "dish_not_seen", f"Not visible at {location} after an observation gap; outcome unknown")
 
-    def close_unclaimed(self, obligation_id: int) -> bool:
-        """A dish already there when watching began, now gone, with nobody named: nothing anyone can answer."""
+    def close_unclaimed(self, obligation_id: int, *, at: datetime | None = None) -> bool:
+        """Close an unnamed startup episode; preserve a dish observed out past its follow-up."""
         with self.lock, self.conn:
             item = self.obligation(obligation_id)
             if item["lifecycle"] != "open" or item["timing_known"] or item["resident_id"] is not None:
                 return False
-        self.action(obligation_id, "dismiss", note=UNCLAIMED_NOTE)
-        return True
+            observed = self.observed_left_out_at(item)
+            if observed:
+                self._close_missing(item, at or utcnow(), observed=observed)
+            else:
+                self._action_locked(obligation_id, "dismiss", note=UNCLAIMED_NOTE, now=at or utcnow())
+            return True
 
     def unclaimed(self) -> list[int]:
         with self.lock:
@@ -730,8 +1016,8 @@ class Store:
         tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
         start = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.lock:
-            rows = self.conn.execute("SELECT reason FROM obligations WHERE archived_at IS NULL AND lifecycle='resolved' AND resolved_at>=? AND resolved_at<?", (stamp(start), stamp(start + timedelta(days=1)))).fetchall()
-            return sum(r['reason'] not in CAMERA_CLOSED_NOTES for r in rows)
+            rows = self.conn.execute("SELECT reason,closure_kind FROM obligations WHERE archived_at IS NULL AND lifecycle='resolved' AND resolved_at>=? AND resolved_at<?", (stamp(start), stamp(start + timedelta(days=1)))).fetchall()
+            return sum(r['closure_kind'] is None and r['reason'] not in CAMERA_CLOSED_NOTES for r in rows)
 
     def add_evidence(self, obligation_id: int, evidence_id: str, filename: str, kind: str, label: str, *, at: datetime | None = None, expires: datetime | None = None, capture: dict | None = None) -> None:
         at = at or utcnow()
@@ -781,7 +1067,8 @@ class Store:
                           cue: str = "outfit", context: str | None = None) -> int:
         with self.lock, self.conn:
             proof = self.conn.execute("""SELECT 1 FROM person_samples s JOIN evidence e ON e.id=s.evidence_id
-                WHERE s.obligation_id=? AND e.label='Who put it down (from footage)' AND s.evidence_id IS NOT ?""",
+                WHERE s.obligation_id=? AND (e.label='Who put it down (from footage)'
+                    OR json_extract(e.capture,'$.identity_source')='arrival_visit') AND s.evidence_id IS NOT ?""",
                                      (obligation_id, evidence_id)).fetchone()
             if proof:
                 raise ValueError("A proof's person sample can only be replaced by its put-down picture.")
@@ -792,12 +1079,17 @@ class Store:
     def replace_putdown_samples(self, obligation_id: int, cues: dict[str, list[float]], evidence_id: str,
                                *, at: datetime, context: str | None = None) -> None:
         """Replace the capture atomically. A name on an older picture cannot label a new person."""
+        with self.lock, self.conn:
+            self._replace_person_samples_locked(obligation_id, cues, evidence_id, at=at, context=context)
+
+    def _replace_person_samples_locked(self, obligation_id: int, cues: dict[str, list[float]], evidence_id: str,
+                                       *, at: datetime, context: str | None = None) -> None:
+        """Caller owns the transaction, including replacement during a visit confirmation."""
         rows = [(obligation_id, stamp(at), json.dumps([round(v, 5) for v in vector]), evidence_id, cue, context)
                 for cue, vector in cues.items()]
-        with self.lock, self.conn:
-            self.conn.execute("DELETE FROM person_samples WHERE obligation_id=?", (obligation_id,))
-            self.conn.executemany("""INSERT INTO person_samples(obligation_id,resident_id,created_at,embedding,evidence_id,cue,context)
-                VALUES(?,NULL,?,?,?,?,?)""", rows)
+        self.conn.execute("DELETE FROM person_samples WHERE obligation_id=?", (obligation_id,))
+        self.conn.executemany("""INSERT INTO person_samples(obligation_id,resident_id,created_at,embedding,evidence_id,cue,context)
+            VALUES(?,NULL,?,?,?,?,?)""", rows)
 
     def clear_unlabeled_samples(self, obligation_id: int) -> None:
         """Drop the camera's own captures for a dish when better ones (from the put-down footage) replace them."""
@@ -843,11 +1135,12 @@ class Store:
 
     def suggest_identity(self, cues: dict[str, list[float]], *, at: datetime | None = None, context: str | None = None,
                          enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
-                         exclude_obligation: int | None = None, before: datetime | None = None) -> tuple[int | None, float | None, float | None, dict]:
+                         exclude_obligation: int | None = None, before: datetime | None = None,
+                         exclude_day: str | None = None) -> tuple[int | None, float | None, float | None, dict]:
         """Return a discriminating visual match, ranking diagnostics and its supported basis."""
         weights = self.identity_weights()
         features = self.cue_features(cues, at=at or utcnow(), context=context, enrolled_faces=enrolled_faces,
-                                    limit=limit, exclude_obligation=exclude_obligation, before=before)
+                                    limit=limit, exclude_obligation=exclude_obligation, before=before, exclude_day=exclude_day)
         ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in values.items()), resident, seen)
                          for resident, values, seen in features),
                         key=lambda r: r[0], reverse=True)
@@ -880,7 +1173,8 @@ class Store:
 
     def cue_features(self, cues: dict[str, list[float]], *, at: datetime, context: str | None = None,
                      enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
-                     exclude_obligation: int | None = None, before: datetime | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
+                     exclude_obligation: int | None = None, before: datetime | None = None,
+                     exclude_day: str | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
         """How strongly each cue points at each housemate, before weighting: (resident, features, similarities).
 
         Face and head carry across days. An outfit is strong evidence only against sightings from the
@@ -888,6 +1182,12 @@ class Store:
         a head was when standing at the same area. exclude_obligation leaves one sighting's own samples
         out, so it can be scored as if new.
         """
+        day_start = day_end = None
+        if exclude_day is not None:
+            tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
+            day = date.fromisoformat(exclude_day)
+            day_start = stamp(datetime.combine(day, datetime.min.time(), tz))
+            day_end = stamp(datetime.combine(day + timedelta(days=1), datetime.min.time(), tz))
         with self.lock:
             rows = self.conn.execute("""SELECT s.resident_id who, s.cue, s.context, s.created_at, s.embedding
                 FROM person_samples s JOIN residents r ON r.id=s.resident_id JOIN obligations o ON o.id=s.obligation_id
@@ -895,8 +1195,9 @@ class Store:
                 WHERE r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.attribution IS NOT 'camera'
                 AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip')
                 AND (? IS NULL OR s.obligation_id IS NOT ?) AND (? IS NULL OR s.created_at<?)
+                AND (? IS NULL OR s.created_at<? OR s.created_at>=?)
                 ORDER BY s.id DESC LIMIT ?""", (exclude_obligation, exclude_obligation, stamp(before) if before else None,
-                                               stamp(before) if before else None, limit)).fetchall()
+                                               stamp(before) if before else None, day_start, day_start, day_end, limit)).fetchall()
         samples: dict[int, list] = {}
         for row in rows:
             samples.setdefault(row["who"], []).append(row)

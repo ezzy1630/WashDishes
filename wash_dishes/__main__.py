@@ -11,6 +11,7 @@ def main() -> None:
     serve = sub.add_parser("serve")
     serve.add_argument("--demo", action="store_true", help="Use a separate data root and illustrative events")
     serve.add_argument("--port", type=int, default=8787)
+    serve.add_argument("--tunnel-port", type=int, default=8788, help="House-only loopback listener for cloudflared")
     serve.add_argument("--host", default="127.0.0.1", help="Loopback by default; use Tailscale Serve for remote access")
     sub.add_parser("access-key", help="Print the generated household key locally")
     models = sub.add_parser("models", help="Explicit one-time local model preparation")
@@ -49,8 +50,28 @@ def main() -> None:
     verifier = sub.add_parser("train-verifier", help="Retrain the kitchen probe from people's answers about detections; adopted only if it holds up")
     verifier.add_argument("--holdout", action="append", default=[], metavar="TRUTH_JSON", help="Keep this evaluation window's frames out of training")
     verifier.add_argument("--frames", action="store_true", help="Retrain the general probe over the labeled frames instead (loads the detector and CLIP: stop live analysis first)")
+    repair = sub.add_parser("repair-left-out", help="Restore observed left-out dismissals and close stale camera episodes")
+    repair.add_argument("--since", help="Recover auto-dismissals deposited since this local date (YYYY-MM-DD); stale opens have no date cutoff")
+    repair.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing records")
+    reset = sub.add_parser("league-reset-start", help="Start the league this week and remove pre-start frozen results")
+    reset.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing the database")
     args = parser.parse_args()
     config = Config.environment(demo=getattr(args, "demo", False))
+    if args.command == "league-reset-start":
+        import json
+        import sqlite3
+
+        from .league import reset_start
+        # Require an existing database; even a dry run must not prepare directories,
+        # migrate schemas, initialize settings or create a new empty history.db.
+        database = (config.root / 'history.db').resolve()
+        mode = 'ro' if args.dry_run else 'rw'
+        conn = sqlite3.connect(database.as_uri() + '?mode=' + mode, uri=True, timeout=10)
+        try:
+            print(json.dumps(reset_start(conn, dry_run=args.dry_run), indent=2))
+        finally:
+            conn.close()
+        return
     config.prepare()
     if args.command == "serve":
         import uvicorn
@@ -60,7 +81,32 @@ def main() -> None:
             print("Isolated demo at http://127.0.0.1:%s — access key: demo" % args.port)
         else:
             print("Dish watch at http://127.0.0.1:%s — run 'washdishes access-key' for the household key." % args.port)
-        uvicorn.run(create_app(config), host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="127.0.0.1", log_level="warning")
+        import asyncio
+        from contextlib import ExitStack
+
+        if args.port == args.tunnel_port:
+            parser.error('--port and --tunnel-port must be different')
+        # Both sockets feed one app/store/scheduler. Do not enable Uvicorn proxy
+        # rewriting: limiter identity on the private listener is the actual peer.
+        with ExitStack() as stack:
+            tailnet = stack.enter_context(uvicorn.Config(None, host=args.host, port=args.port, log_level='warning').bind_socket())
+            tunnel = stack.enter_context(uvicorn.Config(None, host='127.0.0.1', port=args.tunnel_port, log_level='warning').bind_socket())
+            server = uvicorn.Server(uvicorn.Config(create_app(config, house_tunnel_port=args.tunnel_port),
+                proxy_headers=False, log_level='warning'))
+            asyncio.run(server.serve(sockets=[tailnet, tunnel]))
+    elif args.command == "repair-left-out":
+        import json
+        import os
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from .store import Store
+        since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))) if args.since else None
+        store = Store(config.root)
+        try:
+            print(json.dumps(store.repair_left_out(since=since, dry_run=args.dry_run), indent=2))
+        finally:
+            store.close()
     elif args.command == "access-key":
         from .security import Access
         Access(config.root, config.password)

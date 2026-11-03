@@ -7,9 +7,9 @@ export const canSendFiles = Boolean(probe && navigator.canShare?.({ files: [prob
 
 // `preload` fetches the picture into memory once it has been shown. iOS opens the share sheet only
 // straight from a tap; downloading first would use that tap up, so the file has to be ready.
-export function sendButton(url, filename, { label = 'Send', kind = 'primary' } = {}) {
+export function sendButton(url, filename, { label = 'Send', kind = 'primary', downloadLabel = 'Download' } = {}) {
   if (!canSendFiles) {
-    const link = h('a', { class: `btn ${kind}`, href: url, download: filename }, icon('download', 16), h('span', {}, 'Download'));
+    const link = h('a', { class: `btn ${kind}`, href: url, download: filename }, icon('download', 16), h('span', {}, downloadLabel));
     return { el: link, preload() {} };
   }
   let file = null, loading = null;

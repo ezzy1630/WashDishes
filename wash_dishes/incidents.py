@@ -47,8 +47,10 @@ def confirmed_late(item: dict, decision: dict, sequence: dict) -> bool:
 def outcome(item: dict) -> str:
     if item['lifecycle'] == 'open' and item['review_pending']:
         return 'unknown'
+    if item['lifecycle'] == 'resolved' and (item.get('closure_kind') == 'missing' or item['reason'].startswith('No recent sighting;')):
+        return 'unknown'
     if item['lifecycle'] == 'resolved':
-        return 'removed' if item['reason'] in CAMERA_CLOSED_NOTES else 'washed'
+        return 'removed' if item.get('closure_kind') == 'removed' or item['reason'] in CAMERA_CLOSED_NOTES else 'washed'
     return {'open': 'out', 'cleared': 'removed', 'dismissed': 'dismissed', 'disputed': 'disputed'}[item['lifecycle']]
 
 
@@ -168,6 +170,9 @@ class Incidents:
         # All facts commit together. Derived images can retry without losing the answer.
         with self.sequences.lock, self.media.lock, self.store.lock, self.store.conn:
             item = self.store.obligation(oid)
+            if body['responsibility'] != 'keep' or body['outcome'] == 'disputed':
+                from .league import assert_unfrozen
+                assert_unfrozen(self.store, item)
             if body['revision'] != self._revision(item):
                 raise ReviewConflict('This incident changed. Reload its evidence before saving your decision.')
             previous = self._decision(oid)
@@ -193,6 +198,7 @@ class Incidents:
                 if item['lifecycle'] in ('dismissed', 'disputed'):
                     raise ValueError('Reopen this incident before assigning responsibility.')
                 self.store.conn.execute("UPDATE obligations SET resident_id=?,confidence='confirmed',review_pending=0 WHERE id=?", (person_id, oid))
+                self.store.conn.execute("UPDATE obligations SET named_by=NULL,named_at=?,attribution=CASE WHEN attribution IS NULL THEN NULL ELSE 'camera_reviewed' END WHERE id=?", (stamp(now), oid))
                 self.store._event(oid, 'confirm', 'Responsibility confirmed from handling and departure evidence', {'resident_id': person_id})
             if body['identity'] == 'named':
                 if person_id is None:
@@ -230,7 +236,7 @@ class Incidents:
             current = self.store.obligation(oid)
             # Recognition alone never creates an offense. A clean item is not a dirty dish.
             if body['condition'] == 'clean' or checks.get('later') is False:
-                self.store.conn.execute('UPDATE obligations SET overdue_verified=0 WHERE id=?', (oid,))
+                self.store.conn.execute('UPDATE obligations SET overdue_verified=0,left_out_at=NULL WHERE id=?', (oid,))
             elif (body['condition'] == 'used' and checks.get('later') is True and manifest['past_deadline']
                   and current['confidence'] == 'confirmed' and current['lifecycle'] in ('open', 'resolved')
                   and not current['review_pending']):

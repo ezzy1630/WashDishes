@@ -153,11 +153,36 @@ def merge_focus(full: list[dict], focused: list[dict], focus: Sequence[float]) -
     return merged
 
 
+def same_dish_family(a: str, b: str) -> bool:
+    return a == b or {a, b} <= {'pan', 'pot', 'bowl', 'lid'}
+
+
+def partial_box(a: dict, b: dict) -> bool:
+    """A substantially smaller, contained fragment of the same dish family.
+
+    Do not erase a cup sitting inside cookware, or similarly sized adjacent dishes.
+    Box geometry alone cannot distinguish two stacked plates from one plate's rim.
+    """
+    if a['kind'] == 'person' or b['kind'] == 'person' or not same_dish_family(a['kind'], b['kind']):
+        return False
+    x, y, w, h = a['box']
+    bx, by, bw, bh = b['box']
+    area = w*h
+    intersection = max(0, min(x+w, bx+bw)-max(x, bx)) * max(0, min(y+h, by+bh)-max(y, by))
+    # A compact bowl nested in a pan is a separate dish. The audit's rim/sliver
+    # boxes occupy a thin strip relative to the enclosing cookware's shape.
+    relative = (w / max(bw, 1e-9), h / max(bh, 1e-9))
+    strip = min(relative) <= .55 * max(relative)
+    return 0 < area <= .4*bw*bh and intersection / area >= .9 and strip
+
+
 def merge_detections(detections: list[dict]) -> list[dict]:
     """One box per object across overlapping looks, including renamed dishes."""
     kept: list[dict] = []
-    for detection in sorted(detections, key=lambda d: -d["score"]):
-        if all(box_iou(detection["box"], other["box"]) < 0.5 for other in kept):
+    whole = [d for d in detections if not any(partial_box(d, other) for other in detections)]
+    for detection in sorted(whole, key=lambda d: -d["score"]):
+        if all((detection['kind'] == 'person') != (other['kind'] == 'person')
+               or box_iou(detection["box"], other["box"]) < 0.5 for other in kept):
             kept.append(detection)
     return kept
 

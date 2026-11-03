@@ -21,7 +21,7 @@ from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 3
+VERSION = 4
 
 WIDTH, MARGIN, GAP = 1600, 32, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2

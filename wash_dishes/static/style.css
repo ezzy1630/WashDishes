@@ -681,7 +681,6 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .send-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 48px 32px; align-items: start; }
 .send-card { display: grid; gap: 16px; min-width: 0; }
 .send-photo { display: block; aspect-ratio: 1600 / 1572; border-radius: 12px; overflow: hidden; background: var(--s2); }
-.send-card.out .send-photo { aspect-ratio: 1600 / 1474; }
 .send-photo img { width: 100%; height: 100%; object-fit: contain; }
 .send-bar { display: flex; align-items: center; gap: 12px; }
 .send-bar .btn { height: 44px; padding: 0 18px; border-radius: 12px; font-size: 15px; }
@@ -700,17 +699,9 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .send-record:hover { color: var(--tx); }
 .send-more { display: flex; gap: 4px; margin: -6px 0 0 -10px; }
 .send-more .btn { color: var(--tx3); }
-.send-section { grid-column: 1 / -1; display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--ln); }
-.send-section:first-child { padding-top: 0; border-top: 0; }
-.send-section h2 { font-size: 19px; line-height: 1.3; letter-spacing: -.015em; }
-.send-section p { font-size: 15px; color: var(--tx2); }
-.send-foot { margin-top: 40px; font-size: 13px; color: var(--tx3); }
-.send-foot:empty { display: none; }
 .send-card.placeholder .send-bar i { flex: 1; max-width: 320px; height: 52px; border-radius: 12px; background: var(--s2); }
 
 .send-empty { display: grid; gap: 14px; justify-items: start; max-width: 560px; padding: 24px; border: 1px solid var(--ln); border-radius: 14px; background: var(--s1); color: var(--tx2); }
-.send-coming { display: grid; gap: 6px; font-size: 17px; color: var(--tx); }
-.send-coming b { font-weight: 650; }
 
 /* ---- People: a ranked list; each row opens that person's pictures. */
 .tally { display: grid; border-top: 1px solid var(--ln); }
@@ -739,3 +730,125 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
   .send-bar .btn.primary { max-width: none; }
   .send-card.placeholder .send-bar i { max-width: none; }
 }
+
+/* Weekly kitchen duty: the same ruled rows as People, with readable metadata. */
+.league, .league-settings, .house-signin { --tx3: #919aa4; }
+.league select, .league input, .league-settings input, .league-settings select, .house-signin input { min-height: 42px; }
+.league-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
+.league h2, .league-alltime h2 { font-size: 19px; }
+.league-heading .field { max-width: 180px; }
+.league-pick { font-size: 17px; font-weight: 550; line-height: 1.45; }
+.league-duty { margin-top: 8px; color: var(--tx2); }
+.league-standings { margin: 20px 0 12px; border-top: 1px solid var(--ln); }
+.league-standings li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--ln); }
+.league-standings a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.league-points { color: var(--tx2); white-space: nowrap; }
+.league-points b { color: var(--tx); font-size: 19px; font-weight: 600; }
+.league-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.league-note { font-size: 13px; color: var(--tx3); margin-top: 8px; }
+.league-dishes { margin-top: 20px; border-top: 1px solid var(--ln); }
+.league-dishes > summary { padding: 14px 0; cursor: pointer; }
+.league-dish { border-bottom: 1px solid var(--ln); }
+.league-dish > summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; cursor: pointer; }
+.league-dish summary small { display: block; color: var(--tx3); font-size: 13px; margin-top: 4px; }
+.league-dish > .stack { padding-bottom: 20px; }
+.league-verdict { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--ln); }
+.league-photo { width: 100%; height: auto; border-radius: 6px; }
+.league-alltime { margin-top: 40px; --tx3: #919aa4; }
+.league-alltime .send-sub { font-size: 14px; margin: 6px 0 16px; }
+.league-settings { display: grid; gap: 24px; }
+.house-signin { padding: 14px 0; border-top: 1px solid var(--ln); }
+.house-signin p { color: var(--tx2); font-size: 13px; }
+.house-signin .btn { justify-self: start; }
+.house-signin input { min-width: 0; width: 100%; }
+@media (max-width: 760px) {
+  .league-heading { align-items: end; }
+  .league-heading .field { max-width: 160px; }
+}
+
+/* League review shares Send's name chips and the site's four quiet answers. */
+.league .name-chip, .league .btn, .league summary, .league .link { min-height: 44px; }
+.league-zero { margin-bottom: 20px; }
+.league-verdict-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.league-verdict-buttons .btn { white-space: normal; }
+.league-duplicate[hidden] { display: none; }
+
+/* Operator home: a weekly decision, one visit, then a result to share. */
+.operator-home { --tx3: #919aa4; max-width: 1080px; }
+.operator-home h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.025em; }
+.operator-home h2 { font-size: 19px; line-height: 1.35; }
+.operator-home h3 { font-size: 16px; line-height: 1.4; }
+.operator-home .btn, .operator-home .name-chip, .operator-home summary, .operator-home .link { min-height: 44px; }
+.operator-home .link { display: inline-flex; align-items: center; }
+.operator-home .btn { white-space: normal; height: auto; padding-block: 10px; }
+.home-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.home-section-head select { width: auto; max-width: 170px; min-height: 44px; background: var(--s2); border: 1px solid var(--ln2); border-radius: 9px; padding: 8px 12px; }
+.week-summary { padding-bottom: 20px; border-bottom: 1px solid var(--ln2); }
+.week-duty { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; color: var(--tx2); font-size: 13px; }
+.week-duty strong { color: var(--tx); font-weight: 600; }
+.week-standings { display: flex; gap: 24px; margin-top: 14px; flex-wrap: wrap; }
+.week-standings li { display: flex; align-items: baseline; gap: 12px; }
+.week-standings a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.week-standings b { font-weight: 600; }
+.week-next { margin-top: 12px; font-weight: 550; }
+.week-summary .league-note { margin-top: 4px; }
+.visit-review { margin-top: 28px; scroll-margin-top: 76px; }
+.visit-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin: 14px 0 12px; }
+.visit-heading p, .visit-heading > span { font-size: 13px; color: var(--tx2); }
+.visit-heading > span { text-align: right; flex: none; }
+.visit-content { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.visit-media img { width: 100%; height: auto; border-radius: 8px; }
+.visit-media a { display: block; background: var(--s1); }
+.visit-controls { display: grid; gap: 16px; }
+.visit-caution { color: var(--tx2); font-size: 13px; }
+.visit-controls .send-guess { font-size: 13px; }
+.visit-controls .league-note { margin: 0; }
+.visit-controls .league-duplicate { display: grid; gap: 12px; }
+.visit-controls .name-chip { padding-inline: 14px; border-radius: 22px; }
+.visit-record { margin-top: 8px; color: var(--tx2); font-size: 13px; }
+.media-unavailable { display: grid; place-content: center; min-height: 200px; padding: 24px; color: var(--tx2); background: var(--s1); }
+.review-empty { padding: 28px 0 12px; }
+.review-empty p { color: var(--tx2); max-width: 60ch; margin-top: 6px; }
+.review-empty a { margin-top: 8px; }
+.review-receipt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--ln); }
+.review-receipt span { font-size: 13px; color: var(--tx2); }
+.home-ready { margin-top: 36px; border-top: 1px solid var(--ln2); padding-top: 24px; }
+.home-send-grid { display: grid; gap: 32px; margin-top: 18px; align-items: start; }
+.home-send-grid.has-proofs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.week-share { display: grid; gap: 12px; }
+.week-share p { font-size: 14px; max-width: 55ch; }
+.week-share .send-bar .btn { min-height: 48px; font-size: 15px; }
+.week-image-preview { color: var(--tx2); font-size: 13px; }
+.week-image-preview summary { cursor: pointer; padding-block: 10px; }
+.week-image-preview img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; }
+.home-proofs { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+.week-history { margin-top: 28px; border-block: 1px solid var(--ln); }
+.week-history > summary { padding: 16px 0; cursor: pointer; }
+.week-history .league-dish summary { padding: 12px 0; cursor: pointer; }
+.week-history .visit-card { padding-bottom: 16px; }
+.week-history .league-verdict .btn { justify-self: start; }
+.home-health { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 20px; color: var(--tx3); font-size: 12px; }
+.home-warning { display: flex; align-items: start; gap: 12px; padding: 16px; margin-bottom: 20px; border: 1px solid rgba(239,95,85,.3); border-radius: 12px; background: var(--late-bg); color: #ffb3ac; }
+.home-warning > .icon { margin-top: 3px; }
+.home-warning .link { font-size: 13px; }
+@media (max-width: 760px) {
+  .operator-home { padding-top: 16px; }
+  .week-duty { display: grid; gap: 2px; margin-top: 8px; }
+  .week-standings { gap: 10px 20px; margin-top: 10px; }
+  .week-standings li { gap: 8px; font-size: 13px; }
+  .visit-content, .home-send-grid.has-proofs { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .visit-review { margin-top: 22px; }
+  .visit-heading { gap: 12px; }
+  .visit-heading > span { max-width: 96px; }
+  .visit-controls { gap: 12px; }
+  .home-ready { margin-top: 28px; }
+  .home-send-grid { gap: 28px; }
+  .operator-home .name-chips { gap: 8px; }
+  .home-warning { margin-bottom: 16px; }
+}
+.home-mode { color: #a9c4ff; font-size: 13px; margin-bottom: 12px; }
+
+.operator-home .weak-evidence-link { display: inline-flex; align-items: center; min-height: 44px; padding: 4px 0; border: 0; background: transparent; color: var(--tx2); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.operator-home .weak-evidence-link[hidden] { display: none; }
+.operator-home .weak-evidence-link:hover { color: var(--tx); }
+.visit-review > .league-note { margin: 0 0 16px; }

@@ -68,6 +68,10 @@ class Thresholds:
     # margin avoids teaching a whole location is invalid after one rejected object.
     remembered_cosine: float = 0.97
     remembered_overlap: float = 0.50
+    # Same bounds as putdown._matches: a box that grows to include neighboring
+    # cookware cannot establish the same individual dish from colour/CLIP alone.
+    minimum_area_ratio: float = 0.30
+    maximum_area_ratio: float = 3.30
 
 
 def _image(jpeg: bytes) -> np.ndarray:
@@ -197,6 +201,11 @@ class ProofChecker:
             return {"status": "rejected", "reason": "the dish box is outside the picture", "checks": {}}
         if not found["before"]["at"] < found["putting"]["at"] <= found["left"]["at"]:
             return {"status": "rejected", "reason": "the proof pictures are out of order", "checks": {}}
+        area_ratio = late_box[2] * late_box[3] / (box[2] * box[3])
+        if not self.thresholds.minimum_area_ratio <= area_ratio <= self.thresholds.maximum_area_ratio:
+            reason = "the later dish box changed size too much to establish the same item"
+            return {"status": "rejected", "reason": reason,
+                    "checks": {"late": {"area_ratio": area_ratio}, "thresholds": vars(self.thresholds), "failures": [reason]}}
         try:
             images = [_image(found[k]["jpeg"]) for k in ("before", "left")] + [_image(late_jpeg)]
         except ValueError as error:
@@ -304,7 +313,11 @@ class ProofChecker:
             reasons.append("a different dish is in that spot later")
         checks["failures"] = reasons
         if reasons:
-            return {"status": "rejected", "reason": reasons[0], "checks": checks}
+            # A late, wrong episode can fail the dish probe AND already contain
+            # the target in Before. Keep the rejection, but let the bounded worker
+            # trace its actual arrival before making the final dish decision.
+            reason = "dish already there in the before picture" if "dish already there in the before picture" in reasons else reasons[0]
+            return {"status": "rejected", "reason": reason, "checks": checks}
         result = {"checks": checks, "putting": putting}
         if busy:
             result.update(status="waiting", reason="someone is still at the dish; waiting for a clear later picture")
