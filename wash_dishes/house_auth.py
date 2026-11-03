@@ -64,6 +64,8 @@ class JWTVerifier:
         self.lock = threading.Lock()
         self.keys: list[dict] = []
         self.fetched_at = 0.0
+        self.attempted_at: float | None = None
+        self.refresh_failed = False
 
     def fetch_jwks(self) -> dict:
         return request_json(f'{self.config.supabase_url}/auth/v1/.well-known/jwks.json')
@@ -82,24 +84,39 @@ class JWTVerifier:
                 kid = header.get('kid')
                 if not isinstance(kid, str) or not 1 <= len(kid) <= 200:
                     raise jwt.InvalidTokenError()
-                with self.lock:
-                    elapsed = time.monotonic() - self.fetched_at
-                    match = next((k for k in self.keys if k.get('kid') == kid), None)
-                    # Refresh on rotation, but random kids cannot force a network request per attempt.
-                    if not self.keys or elapsed >= 600 or (match is None and elapsed >= 30):
-                        payload = self.fetch_jwks()
-                        if not isinstance(payload.get('keys'), list):
-                            raise ValueError('Invalid JWKS.')
-                        self.keys = [k for k in payload['keys'] if isinstance(k, dict)]
-                        self.fetched_at = time.monotonic()
-                        match = next((k for k in self.keys if isinstance(k, dict) and k.get('kid') == kid), None)
-                    if not match or match.get('kty') != ('EC' if algorithm == 'ES256' else 'RSA'):
-                        raise jwt.InvalidTokenError()
-                    if algorithm == 'ES256' and match.get('crv') != 'P-256':
-                        raise jwt.InvalidTokenError()
-                    if match.get('alg', algorithm) != algorithm or match.get('use', 'sig') != 'sig':
-                        raise jwt.InvalidTokenError()
-                    key = jwt.PyJWK.from_dict(match, algorithm=algorithm).key
+                match = next((k for k in self.keys if k.get('kid') == kid), None)
+                elapsed = time.monotonic() - self.fetched_at
+                # Healthy cached keys do not contend with a rotation fetch or each other.
+                if not self.keys or elapsed >= 600 or (match is None and elapsed >= 30):
+                    if not self.lock.acquire(blocking=False):
+                        raise HTTPException(503, 'House sign-in is temporarily unavailable. Try again shortly.')
+                    try:
+                        now = time.monotonic()
+                        elapsed = now - self.fetched_at
+                        match = next((k for k in self.keys if k.get('kid') == kid), None)
+                        needs_refresh = not self.keys or elapsed >= 600 or (match is None and elapsed >= 30)
+                        cooling_down = self.attempted_at is not None and now - self.attempted_at < 30
+                        if needs_refresh and not cooling_down:
+                            self.attempted_at = now
+                            self.refresh_failed = True
+                            payload = self.fetch_jwks()
+                            if not isinstance(payload.get('keys'), list):
+                                raise ValueError('Invalid JWKS.')
+                            self.keys = [k for k in payload['keys'] if isinstance(k, dict)]
+                            self.fetched_at = time.monotonic()
+                            self.refresh_failed = False
+                            match = next((k for k in self.keys if k.get('kid') == kid), None)
+                        elif needs_refresh and (self.refresh_failed or elapsed >= 600):
+                            raise HTTPException(503, 'House sign-in is temporarily unavailable. Try again shortly.')
+                    finally:
+                        self.lock.release()
+                if not match or match.get('kty') != ('EC' if algorithm == 'ES256' else 'RSA'):
+                    raise jwt.InvalidTokenError()
+                if algorithm == 'ES256' and match.get('crv') != 'P-256':
+                    raise jwt.InvalidTokenError()
+                if match.get('alg', algorithm) != algorithm or match.get('use', 'sig') != 'sig':
+                    raise jwt.InvalidTokenError()
+                key = jwt.PyJWK.from_dict(match, algorithm=algorithm).key
             else:
                 raise jwt.InvalidTokenError()
             claims = jwt.decode(token, key, algorithms=[algorithm], audience='authenticated',

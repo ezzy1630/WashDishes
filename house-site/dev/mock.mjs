@@ -287,7 +287,19 @@ function week(start, user) {
                 : "Weekly pick: 5 points · 3 ahead.",
           },
     dishes: records.map((d) => permissions(d, user)),
-    visits: visits(records, user),
+    visits: visits(records, user).filter(
+      (v) => !["not_dish", "clean", "duplicate"].includes(v.verdict?.kind),
+    ),
+    verdicts: visits(records, user)
+      .filter((v) =>
+        ["not_dish", "clean", "duplicate"].includes(v.verdict?.kind),
+      )
+      .map((v) => ({
+        visit_id: v.id,
+        title: v.title,
+        ...v.verdict,
+        of_visit_id: null,
+      })),
     unnamed_count: records.filter(
       (d) => !d.resident && (!d.verdict || d.verdict.kind === "cant_tell"),
     ).length,
@@ -374,14 +386,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const route = pathname.slice("/house/api".length);
-      if (route === "/login-names") {
-        json(
-          res,
-          200,
-          residents.map(({ slug, name }) => ({ slug, name })),
-        );
-        return;
-      }
       if (route === "/join" && req.method === "POST") {
         const b = await body(req);
         const ok =

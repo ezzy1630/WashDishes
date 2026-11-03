@@ -10,22 +10,41 @@ Environment variables override uppercase keys in the private data root's
 optional `SUPABASE_JWT_SECRET` (legacy HS256), `HOUSE_SITE_ORIGIN` (one HTTPS
 browser origin) and `HOUSE_PUBLIC_ORIGIN` (HTTPS tunnel origin). No paths/wildcards.
 The Vercel client must never receive the secret key. Cloudflare ingress must allow
-only `^/house/` and refuse other paths. App middleware also refuses **all**
-non-`/house/` requests carrying `Cf-Connecting-IP`, even with an operator session.
+only `^/house/` and refuse other paths. Its ingress upstream must be:
+
+```yaml
+service: http://127.0.0.1:8788
+```
+
+`serve` runs both listeners in one process: the existing private/Tailscale upstream
+at `127.0.0.1:8787` (`--host`/`--port`) and the tunnel-only loopback listener at
+`127.0.0.1:8788` (`--tunnel-port`). Ports must differ. The ASGI `server` port
+identifies ingress; Uvicorn proxy-header rewriting is disabled. The tunnel socket
+returns 404 for every non-`/house/` path, with or without edge headers or an operator
+session. Only this socket may use `Cf-Connecting-IP` as limiter identity, after IP
+parsing (invalid values return 400). Private requests use the actual peer address,
+ignoring CF/X-Forwarded-For identity claims. As defense in depth the private listener
+also refuses non-`/house/` requests carrying `Cf-Connecting-IP` (403).
 
 Authenticated calls use `Authorization: Bearer <Supabase access token>`; cookies
 are unnecessary. ES256/RS256 use `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`
-(10-minute cache; unknown-key refresh at most every 30 seconds). HS256 requires
+(10-minute cache; refresh attempts, including failures/empty results, at most every 30 seconds; single-flight refresh with fast 503 for concurrent waiters). HS256 requires
 the explicit legacy secret. Require `sub`, `exp`, `aud=authenticated`, and
 `iss={SUPABASE_URL}/auth/v1`; map `sub` to an active resident's `auth_user_id`.
 User-editable token metadata grants no access. Only `HOUSE_SITE_ORIGIN` gets CORS,
 without credentials. Authenticated writes: 20 attempts/user/minute. Join:
-5 attempts/IP/15 minutes. Limits reset on restart. Demo/snapshot accounts are off.
+5 attempts/IP/15 minutes, in a separate capacity pool from resident writes.
+Week reads: 60 attempts/resident/minute, 240 globally/minute, at most two computations in flight
+and one per resident. Signed media replay has its own budget: 120 attempts/IP/minute,
+600 globally/minute, at most eight visibility checks in flight. Excess work fails promptly with 429.
+Week-scoped data is copied under the store lock; formatting, signing and JPEG-header
+I/O run outside it. Media eligibility is cached (at most 2048 predicates), invalidated
+by database writes and week closure; evidence expiry/deletion is always live.
+Limits reset on restart. Demo/snapshot accounts are off.
 
 ## Read contract
 
 - `GET /house/api/me` → `{"resident":{"id":1,"name":"Alex"},"house":"Highest House"}`.
-- Public `GET /house/api/login-names` → `[{"slug":"alex","name":"Alex"}]`, active accounts only.
 - `GET /house/api/week?start=YYYY-MM-DD` (Monday; default current) → shape below.
 
 ```text
@@ -63,7 +82,7 @@ WeekResponse = {
          reason: string},
   on_duty: {resident_id: integer, name: string, since: UTC_ISO, why: string}|null,
   dishes: [Dish], visits: [Visit], unnamed_count: integer, unreviewed_count: integer,
-  verdicts: [{visit_id: string, title: string, verdict: "not_dish"|"clean"|"duplicate",
+  verdicts: [{visit_id: string, title: string, kind: "not_dish"|"clean"|"duplicate",
               by: Person|null, at: UTC_ISO, of_visit_id: string|null}],
   weeks: [{start: LOCAL_DATE, pick_name: string|null, closed: boolean}]
 }
@@ -164,8 +183,11 @@ another housemate, excluding both disputer and namer, or the operator. “Them�
 restores points; “not them” returns it to unnamed. Closed weeks refuse names and
 disputes, including operator reassignment. Events retain earlier actions.
 
-Verdicts need no dispute process: Not a dish, It's clean, and Same dish as another
-exclude every member for everyone, with who answered and when retained in
+Residents may apply Not a dish, It's clean, and Same dish as another only when
+every canonical member is unnamed, undisputed and nameable by that resident.
+The permission is checked atomically under the visit lock/transaction; otherwise
+409: "Already named — use That wasn't me to dispute it." Operator verdicts retain
+full power and undo. These global verdicts exclude every member for everyone, with who answered and when retained in
 `verdicts` and the events table. Duplicate requires a different eligible original
 visit, or `of_visit_id="dish-<id>"` to choose one exact dish within a visit.
 A person's exact-dish choice can override incorrect detector kind labels;
@@ -173,7 +195,7 @@ ambiguous multi-dish targets ask for a specific original. `cant_tell` writes **n
 verdict event**, just hides that visit/dishes for the current user; standings for
 named dishes remain unchanged. `unreviewed_count` counts visible visits with no
 human name or global verdict; `unnamed_count` remains a dish count for compatibility.
-Verdict returns the previous Visit with `verdict` (verdict/by/at/of_visit_id),
+Verdict returns the previous Visit with `verdict: {kind, by, at, of_visit_id}` (`by` is null for operator),
 `hidden` (true for cant_tell), and false can_* flags. Closed weeks refuse verdicts.
 The operator can undo global verdicts with
 `POST /api/league/visits/{id}/undo-verdict {}`; scores and eligibility restore.
@@ -195,7 +217,13 @@ single use, hash stored, new link revokes the old. Public
 returns `{"login":"resident-slug"}`. Admin `POST /auth/v1/admin/users` creates
 `<slug>@highest-house.ezzyrappeport.com` with `email_confirm=true`; an existing
 `auth_user_id` uses `PUT /auth/v1/admin/users/{id}` to reset the password. No email.
-Slugs are persistent, unique ASCII; the site must use the returned slug. Failed
+Slugs are persistent, unique ASCII; join uses the returned slug directly.
+There is no public roster or login-name endpoint. Sign-in accepts "Your name" text,
+normalizes case/NFKD to ASCII, replaces non-alphanumeric runs with `-`, trims outer
+hyphens and limits the base to 40 characters (empty becomes `housemate`), matching
+`slug_for`. Collision-suffixed logins use their assigned slug. Authentication failures
+show the same generic name/password error. Only the last successful login name is
+remembered in localStorage (best-effort; no password). Failed
 upstream calls leave tokens usable. Passwords/tokens never enter events or logs.
 
 Media: absolute `{HOUSE_PUBLIC_ORIGIN}/house/media/{id}?exp=<unix>&sig=<hmac>`,

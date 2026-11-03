@@ -40,7 +40,7 @@ def week_times(week: dict) -> tuple[datetime, datetime]:
     return tuple(datetime.combine(date.fromisoformat(week[k]), time(), tz) for k in ('start', 'end'))
 
 
-def left_out(store: Store, start: datetime, end: datetime) -> list[dict]:
+def left_out(store: Store, start: datetime, end: datetime, *, visits=None, ids: list[int] | None = None) -> list[dict]:
     """The ONE eligibility predicate for the house league (deadline week, not deposit week).
 
     Include open/disputed and resolved-after-deadline real dishes with an observation-based deadline and
@@ -57,7 +57,8 @@ def left_out(store: Store, start: datetime, end: datetime) -> list[dict]:
     with store.lock:
         rows = store.conn.execute('''SELECT o.*, EXISTS(SELECT 1 FROM events n WHERE n.obligation_id=o.id
                 AND n.event IN ('confirm','reassign','house_named')) human_named FROM obligations o
-            WHERE julianday(o.due_at)>=julianday(?) AND julianday(o.due_at)<julianday(?)
+            WHERE (? IS NULL OR o.id IN (SELECT value FROM json_each(?)))
+            AND julianday(o.due_at)>=julianday(?) AND julianday(o.due_at)<julianday(?)
             AND julianday(o.due_at)<=julianday(?)
             AND o.lifecycle IN ('open','disputed','resolved')
             AND (o.resolved_at IS NULL OR julianday(o.resolved_at)>julianday(o.due_at))
@@ -71,8 +72,8 @@ def left_out(store: Store, start: datetime, end: datetime) -> list[dict]:
             AND NOT EXISTS (SELECT 1 FROM incident_decisions d WHERE d.obligation_id=o.id
                 AND (json_extract(d.data,'$.condition') IN ('clean','not_dish')
                      OR json_extract(d.data,'$.checks.later')=0))
-            ORDER BY o.due_at DESC,o.id DESC''', (stamp(start), stamp(end), stamp(utcnow()))).fetchall()
-        aliases = house_visits.duplicate_map(store)
+            ORDER BY o.due_at DESC,o.id DESC''', (json.dumps(ids) if ids is not None else None, json.dumps(ids), stamp(start), stamp(end), stamp(utcnow()))).fetchall()
+        aliases = house_visits.duplicate_map(store, visits if visits is not None else house_visits.catalog(store, [r['id'] for r in rows]))
         return [dict(r) | {'dishes': json.loads(r['dishes'])} for r in rows if r['id'] not in aliases]
 
 
@@ -157,13 +158,15 @@ def _save_duty(store: Store, value: dict | None) -> None:
 
 def _live(store: Store, week: dict) -> dict:
     settings = rules(store)
-    dishes = left_out(store, *week_times(week))
-    board = standings(dishes, store.residents(), settings)
+    start, end = week_times(week)
+    week_ids = [r[0] for r in store.conn.execute('SELECT id FROM obligations WHERE julianday(due_at)>=julianday(?) AND julianday(due_at)<julianday(?)', (stamp(start), stamp(end)))]
+    catalog = house_visits.catalog(store, week_ids)
+    dishes = left_out(store, start, end, visits=catalog)
     ids = {d['id'] for d in dishes}
-    aliases = house_visits.duplicate_map(store)
-    groups = [g for g in house_visits.catalog(store) if ids.intersection(g['dish_ids'])]
-    return {'week': week, 'rules': settings, 'standings': board, 'pick': pick(board, settings), 'dishes': dishes,
-            'visit_groups': groups, 'duplicates': {oid: target for oid, target in aliases.items() if target in ids},
+    aliases = house_visits.duplicate_map(store, catalog)
+    groups = [g for g in catalog if ids.intersection(g['dish_ids'])]
+    return {'week': week, 'rules': settings, 'dishes': dishes,
+            'residents': store.residents(), 'visit_groups': groups, 'duplicates': {oid: target for oid, target in aliases.items() if target in ids},
             'alias_guesses': {oid: store.obligation(oid)['suggested_resident_id']
                               for oid, target in aliases.items() if target in ids},
             'verdicts': house_verdicts.history(store, *week_times(week))}
@@ -186,7 +189,7 @@ def close_weeks(store: Store, *, now: datetime | None = None) -> None:
             if parse_stamp(week['closes_at']) > now:
                 break
             if not store.conn.execute('SELECT 1 FROM league_weeks WHERE start=?', (week['start'],)).fetchone():
-                snapshot = _live(store, week)
+                snapshot = project(_live(store, week))
                 # Persist names and audit/media metadata too, so later edits cannot rewrite history.
                 snapshot['residents'] = [{'id': r['id'], 'name': r['name']} for r in store.residents()]
                 ids = [d['id'] for d in snapshot['dishes']]
@@ -209,7 +212,8 @@ def close_weeks(store: Store, *, now: datetime | None = None) -> None:
             first += timedelta(days=7)
 
 
-def result(store: Store, start: str | None = None, *, now: datetime | None = None) -> dict:
+def snapshot(store: Store, start: str | None = None, *, now: datetime | None = None) -> dict:
+    """Copy one week's inputs; callers can project/format after releasing Store.lock."""
     now = now or utcnow()
     week = week_bounds(start, now=now)
     if week_times(week)[0] > now:
@@ -218,12 +222,22 @@ def result(store: Store, start: str | None = None, *, now: datetime | None = Non
         close_weeks(store, now=now)
         row = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
         value = json.loads(row[0]) if row else _live(store, week)
-        if 'state' not in value['pick']:
-            # Project the new display contract from frozen inputs, without changing a stored
-            # result or applying today's rules/names to an older week.
-            value = value | {'pick': pick(value['standings'], value['rules'])}
         # The duty banner always answers who is on duty now, also when browsing history.
         return value | {'on_duty': duty(store) if rules(store)['enabled'] else None}
+
+
+def project(value: dict) -> dict:
+    """Pure scoring/display projection; frozen standings and rules stay authoritative."""
+    if 'standings' not in value:
+        board = standings(value['dishes'], value['residents'], value['rules'])
+        return value | {'standings': board, 'pick': pick(board, value['rules'])}
+    if 'state' not in value['pick']:
+        return value | {'pick': pick(value['standings'], value['rules'])}
+    return value
+
+
+def result(store: Store, start: str | None = None, *, now: datetime | None = None) -> dict:
+    return project(snapshot(store, start, now=now))
 
 
 def assert_unfrozen(store: Store, item: dict, *, now: datetime | None = None) -> None:

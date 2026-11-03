@@ -1,34 +1,30 @@
-import { brand, button, empty, field, fill, h, heading, icon } from "../ui.js";
-import { getNames, redeem } from "../api.js";
-import { configured, mock, signIn } from "../auth.js";
+import { brand, empty, field, fill, h, heading, icon } from "../ui.js";
+import { redeem } from "../api.js";
+import {
+  configured,
+  mock,
+  signIn,
+  rememberedName,
+  loginSlug,
+} from "../auth.js";
 /** @param {import("../types.js").ScreenContext} context */
 export function createAuthScreens(context) {
-  const { root, state, href, navigate, enter } = context;
-  async function loadNames() {
-    try {
-      state.names = (await getNames()).sort((a, b) =>
-        a.name.localeCompare(b.name),
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  const { root, href, navigate, enter } = context;
   function renderAuth() {
     if (location.pathname.replace(/\/$/, "") === "/join") {
       renderJoin();
       return;
     }
-    const select = h(
-      "select",
-      { name: "resident", required: true },
-      h(
-        "option",
-        { value: "" },
-        state.names.length ? "Pick your name" : "Loading names…",
-      ),
-      state.names.map((n) => h("option", { value: n.slug }, n.name)),
-    );
+    const savedName = rememberedName();
+    const name = h("input", {
+      type: "text",
+      name: "resident",
+      autocomplete: "username",
+      required: true,
+      value: savedName,
+      autocapitalize: "words",
+      spellcheck: "false",
+    });
     const password = h("input", {
       type: "password",
       name: "password",
@@ -52,7 +48,10 @@ export function createAuthScreens(context) {
           submit.textContent = "Signing in…";
           error.textContent = "";
           try {
-            await signIn(select.value, password.value);
+            await signIn(
+              name.value === savedName ? savedName : loginSlug(name.value),
+              password.value,
+            );
             password.value = "";
             await enter();
           } catch (e) {
@@ -65,7 +64,7 @@ export function createAuthScreens(context) {
           }
         },
       },
-      field("Your name", select),
+      field("Your name", name),
       field("Password", password),
       error,
       submit,
@@ -110,25 +109,7 @@ export function createAuthScreens(context) {
       );
       submit.disabled = true;
     }
-    if (!state.names.length) {
-      select.disabled = true;
-      submit.disabled = true;
-      void loadNames().then((ok) => {
-        if (!select.isConnected) return;
-        fill(
-          select,
-          h("option", { value: "" }, "Pick your name"),
-          state.names.map((n) => h("option", { value: n.slug }, n.name)),
-        );
-        select.disabled = !ok;
-        submit.disabled = !ok || (!configured && !mock);
-        if (!ok)
-          connect.replaceChildren(
-            h("p", { role: "status" }, "Dish Watch is offline right now"),
-            button("Try again", renderAuth, "secondary"),
-          );
-      });
-    }
+    if (name.value) password.focus();
     document.title = "Sign in · Highest House";
   }
   function renderJoin() {

@@ -18,7 +18,7 @@ JPEGs, databases, credentials, CA/certificate, profiles, screenshots and logs.
 Nothing is copied from live storage or cameras. All owned servers and Chrome
 stop on success or failure; a driver timeout terminates its process group.
 
-All three servers use **HTTPS** with a throwaway CA and a loopback-only leaf
+The site, fake Auth and both app listeners use **HTTPS** with a throwaway CA and a loopback-only leaf
 certificate. Python clients and the app child trust the CA through a per-run
 SSL context / `SSL_CERT_FILE`; Node uses `NODE_EXTRA_CA_CERTS`. The dedicated
 Chrome process accepts only the generated certificate's SPKI pin, with a fresh
@@ -38,6 +38,12 @@ dependencies). Overrides: `HOUSE_E2E_PLAYWRIGHT` (package directory),
 `HOUSE_E2E_CHROME` (executable), `HOUSE_E2E_SUPABASE_JS` (browser ES module).
 Set `HOUSE_E2E_SCRATCH` to keep a run's data and browser profiles in another scratch directory.
 
+The app serves both private and tunnel sockets in one process. Browser house reads
+and signed media use the tunnel port; operator setup uses the private port.
+The journey checks that the tunnel refuses private routes even with an operator
+cookie and no CF header. The production cloudflared upstream must point to
+`http://127.0.0.1:8788` (see `docs/house-api.md`).
+
 ## What the command proves
 
 `seed.py` uses the real store/media APIs and `league.override` to seed ten
@@ -53,6 +59,11 @@ minutes of Monday are refused because a current-week overdue fixture cannot
 yet exist. These fixtures represent distinct dishes with observed timing;
 duplicate-alias and already-present/untimed rule changes belong to the parallel
 integrator and are not simulated by changing eligibility in this harness.
+
+Before naming, the journey marks a visit not a dish through the real UI, checks
+exclusion from all three residents' queues/standings and attributed review history,
+then uses operator undo to restore it. A subsequent resident verdict on that named
+visit must return 409.
 
 The in-memory fake Auth implements ES256/JWKS, password/refresh grants, admin
 create/password update, user lookup, settings and logout. Admin calls require a
@@ -76,7 +87,7 @@ and Daniel, the real site and API contracts in `docs/house-api.md`:
 6. Signed media works, refuses another evidence id, expires, then works again
    when the isolated server clock is restored. Cache headers are checked.
    A tunnel header refuses the operator dashboard (403) while allowing the
-   authenticated house API. Andrew signs out and signs back in via name picker.
+   authenticated house API. Andrew signs out and signs back in using the remembered login name and password.
 
 Media expiry advances only the isolated app child's wall clock past the URL's
 actual signed `exp`; no verifier, secret, signature or expiry policy is replaced.

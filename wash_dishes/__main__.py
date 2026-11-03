@@ -11,6 +11,7 @@ def main() -> None:
     serve = sub.add_parser("serve")
     serve.add_argument("--demo", action="store_true", help="Use a separate data root and illustrative events")
     serve.add_argument("--port", type=int, default=8787)
+    serve.add_argument("--tunnel-port", type=int, default=8788, help="House-only loopback listener for cloudflared")
     serve.add_argument("--host", default="127.0.0.1", help="Loopback by default; use Tailscale Serve for remote access")
     sub.add_parser("access-key", help="Print the generated household key locally")
     models = sub.add_parser("models", help="Explicit one-time local model preparation")
@@ -63,7 +64,19 @@ def main() -> None:
             print("Isolated demo at http://127.0.0.1:%s — access key: demo" % args.port)
         else:
             print("Dish watch at http://127.0.0.1:%s — run 'washdishes access-key' for the household key." % args.port)
-        uvicorn.run(create_app(config), host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="127.0.0.1", log_level="warning")
+        import asyncio
+        from contextlib import ExitStack
+
+        if args.port == args.tunnel_port:
+            parser.error('--port and --tunnel-port must be different')
+        # Both sockets feed one app/store/scheduler. Do not enable Uvicorn proxy
+        # rewriting: limiter identity on the private listener is the actual peer.
+        with ExitStack() as stack:
+            tailnet = stack.enter_context(uvicorn.Config(None, host=args.host, port=args.port, log_level='warning').bind_socket())
+            tunnel = stack.enter_context(uvicorn.Config(None, host='127.0.0.1', port=args.tunnel_port, log_level='warning').bind_socket())
+            server = uvicorn.Server(uvicorn.Config(create_app(config, house_tunnel_port=args.tunnel_port),
+                proxy_headers=False, log_level='warning'))
+            asyncio.run(server.serve(sockets=[tailnet, tunnel]))
     elif args.command == "repair-left-out":
         import json
         import os

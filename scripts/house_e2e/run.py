@@ -92,12 +92,13 @@ def main():
         sdk = locate(args.supabase_js, [REPO / "house-site/vendor/supabase-js-2.118.0.js"],
                      "No vendored supabase-js ES module. Set HOUSE_E2E_SUPABASE_JS to an existing browser module.")
         ports = set()
-        while len(ports) < 3:
+        while len(ports) < 4:
             ports.add(port())
-        site_port, auth_port, app_port = sorted(ports)
+        site_port, auth_port, app_port, tunnel_port = sorted(ports)
         tls = certificates(run)
         verify = ssl.create_default_context(cafile=tls["ca"])
         site_url, auth_url, app_url = [f"https://127.0.0.1:{p}" for p in (site_port, auth_port, app_port)]
+        tunnel_url = f'https://127.0.0.1:{tunnel_port}'
         auth = FakeAuth(auth_url, site_url)
         # Every server is loopback-only, using the same throwaway certificate.
         auth_server = uvicorn.Server(uvicorn.Config(auth.app, host="127.0.0.1", port=auth_port, log_level="error",
@@ -105,8 +106,8 @@ def main():
         threads.append(threading.Thread(target=auth_server.run, daemon=True))
         config_js = None
         if args.site_config:
-            config_js = Path(args.site_config).read_text().replace("AUTH_URL", auth_url).replace("API_URL", app_url).replace("ANON_KEY", auth.anon_key)
-        static = site_server(REPO / "house-site", sdk, auth_url, app_url, auth.anon_key, args.config_path, config_js, site_port)
+            config_js = Path(args.site_config).read_text().replace("AUTH_URL", auth_url).replace("API_URL", tunnel_url).replace("ANON_KEY", auth.anon_key)
+        static = site_server(REPO / "house-site", sdk, auth_url, tunnel_url, auth.anon_key, args.config_path, config_js, site_port)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(tls["cert"], tls["key"])
         static.socket = context.wrap_socket(static.socket, server_side=True)
@@ -127,11 +128,11 @@ def main():
                "HOUSE_E2E_CLOCK_FILE": str(clock_file),
                "HOUSE_E2E_TLS_CERT": tls["cert"], "HOUSE_E2E_TLS_KEY": tls["key"],
                "SSL_CERT_FILE": tls["ca"], "NODE_EXTRA_CA_CERTS": tls["ca"],
-               "HOUSE_E2E_DATA": str(run / "data"), "HOUSE_E2E_PORT": str(app_port),
+               "HOUSE_E2E_DATA": str(run / "data"), "HOUSE_E2E_PORT": str(app_port), "HOUSE_E2E_TUNNEL_PORT": str(tunnel_port),
                "WASHDISHES_DATA_DIR": str(run / "data"), "WASHDISHES_ACCESS_KEY": secrets.token_urlsafe(24),
                "WASHDISHES_TIMEZONE": "America/Los_Angeles", "SUPABASE_URL": auth_url,
                "SUPABASE_SECRET_KEY": auth.admin_key, "SUPABASE_JWT_SECRET": "",
-               "SUPABASE_ANON_KEY": auth.anon_key, "HOUSE_SITE_ORIGIN": site_url, "HOUSE_PUBLIC_ORIGIN": app_url}
+               "SUPABASE_ANON_KEY": auth.anon_key, "HOUSE_SITE_ORIGIN": site_url, "HOUSE_PUBLIC_ORIGIN": tunnel_url}
         # Exclude inherited proxy settings; both harness and app only contact loopback.
         env = {k: v for k, v in env.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
         with (run / "app.log").open("w") as log:
@@ -183,7 +184,7 @@ def main():
         private_key = run / "auth-private.pem"
         private_key.write_bytes(auth.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         ui = json.loads(Path(args.ui_contract).read_text()) if args.ui_contract else {}
-        browser_config = {"run": str(run), "playwright": str(playwright), "site": site_url, "auth": auth_url, "api": app_url,
+        browser_config = {"run": str(run), "playwright": str(playwright), "site": site_url, "auth": auth_url, "api": tunnel_url, "privateApi": app_url,
                           "anon": auth.anon_key, "fixture": fixture, "operatorCookie": operator_cookie, "csrf": csrf,
                           "privateKey": str(private_key), "clockFile": str(clock_file), "kid": auth.kid, "ui": ui, "tlsSpki": tls["spki"]}
         config = run / "browser.json"

@@ -14,7 +14,6 @@ const root = /** @type {HTMLDivElement} */ (document.getElementById("app"));
 const state = {
   me: null,
   data: null,
-  names: [],
   offline: false,
   lastLoaded: 0,
   selected: "",
