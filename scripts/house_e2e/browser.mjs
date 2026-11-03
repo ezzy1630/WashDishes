@@ -16,6 +16,7 @@ const chrome = spawn(process.env.HOUSE_E2E_CHROME || '/Applications/Google Chrom
   '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
   '--disable-background-networking', '--disable-component-update', '--disable-sync', '--metrics-recording-only',
   '--disable-default-apps', '--no-default-browser-check', 'about:blank',
+  `--ignore-certificate-errors-spki-list=${cfg.tlsSpki}`,
 ], { stdio: ['ignore', 'ignore', 'pipe'] });
 let chromeLog = '';
 chrome.stderr.on('data', data => { chromeLog += data; });
@@ -24,9 +25,10 @@ const events = [];
 const pages = [];
 const blocked = [];
 const errors = [];
+const checks = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const ui = { join: 'Join|Set password|Create account|Continue', nameTab: 'Name visits|Name dishes|Unnamed',
-  signOut: 'Sign out|Log out', signIn: 'Sign in|Log in', dispute: 'Dispute',
+const ui = { join: 'Set password & come in', nameTab: 'Name dishes',
+  signOut: 'Sign out', signIn: 'Sign in', dispute: 'That wasn’t me',
   disputeSubmit: 'Submit dispute|Send dispute|Dispute', settle: 'Settle|Review dispute',
   them: 'Them|It was them|Confirm Andrew', notThem: 'Not them|Not Andrew',
   ...cfg.ui };
@@ -34,8 +36,11 @@ const rx = key => new RegExp(`^(?:${ui[key]})$`, 'i');
 
 async function screenshot(page, name) {
   const filename = `${String(events.length + 1).padStart(2, '0')}-${name}.png`;
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: path.join(cfg.run, filename) });
-  events.push({ step: name, screenshot: filename });
+  const full = filename.replace('.png', '-full.png');
+  await page.screenshot({ path: path.join(cfg.run, full), fullPage: true });
+  events.push({ step: name, screenshot: filename, full_page: full });
   console.log(`PASS ${name}`);
   await fs.writeFile(path.join(cfg.run, `${mode}-steps.json`), JSON.stringify(events, null, 2));
 }
@@ -67,6 +72,7 @@ async function request(url, { token, body, method = 'GET', operator = false, hea
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
+  checks.push({ method, path: target.pathname, status: response.status });
   return { status: response.status, data, headers: response.headers };
 }
 
@@ -76,9 +82,23 @@ async function ok(url, options) {
   return result.data;
 }
 
-async function refused(url, options, statuses = [401, 403]) {
+async function refused(url, options, statuses = [401, 403], label = 'refused') {
   const result = await request(url, options);
   assert(statuses.includes(result.status), `${url} should refuse (${statuses}), got ${result.status}: ${JSON.stringify(result.data)}`);
+  checks.push({ check: label, path: new URL(url, cfg.api).pathname, status: result.status, expected_statuses: statuses });
+}
+
+async function showStandings(actor, andrew, jadon, pick, label) {
+  await actor.page.goto(cfg.site + '/');
+  await actor.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
+  for (const [name, expected] of [['Andrew', andrew], ['Jadon', jadon]]) {
+    const row = actor.page.locator('.rankings li').filter({ has: actor.page.locator('.rank-name > span:first-child', { hasText: new RegExp(`^${name}$`) }) });
+    if (expected) assert.equal(await row.locator('.points').innerText(), String(expected), `${name} rendered points`);
+    else assert.equal(await row.count(), 0, `${name} must not have a positive points row`);
+  }
+  assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Andrew is in line/ : /No clear pick yet/);
+  assert.match(await actor.page.locator('.duty').innerText(), /Ezzy/);
+  await screenshot(actor.page, label);
 }
 
 async function session(page) {
@@ -125,17 +145,9 @@ async function foundation() {
 }
 
 async function operatorJoin(name) {
-  // Discover only the operator join route's spelling, never an alternate auth path.
-  const routes = cfg.fixture.routes.filter(r => r.methods.includes('POST') && r.path.startsWith('/api/') && /house|join/.test(r.path) && /join/.test(r.path));
-  assert.equal(routes.length, 1, `Expected one operator join route, found ${JSON.stringify(routes)}. Check docs/house-api.md.`);
-  const route = routes[0];
   const residentId = cfg.fixture.residents[name];
-  const endpoint = route.path.replace(/\{(?:resident_id|id)\}/g, residentId);
-  assert(!endpoint.includes('{'), `Unknown operator route parameter: ${endpoint}`);
-  const body = route.body_fields.length ? { resident_id: residentId } : undefined;
-  const result = await ok(endpoint, { method: 'POST', body, operator: true });
-  const link = result.url || result.join_url || result.link;
-  const token = result.token || result.join_token || (link && new URL(link, cfg.site).hash.slice(1));
+  const result = await ok(`/api/league/residents/${residentId}/join-link`, { method: 'POST', operator: true });
+  const token = new URL(result.url).hash.slice(1);
   assert.equal(typeof token, 'string', `Operator join response has no token: ${JSON.stringify(result)}`);
   return token;
 }
@@ -153,6 +165,7 @@ async function join(name) {
   assert.equal(auth.user.email, `${name}@highest-house.ezzyrappeport.com`);
   const me = await ok('/house/api/me', { token: auth.access_token });
   assert.equal(Number(me.resident?.id ?? me.resident_id ?? me.id), cfg.fixture.residents[name]);
+  await page.getByRole('link', { name: 'This week', exact: true }).waitFor();
   await screenshot(page, `join-${name}-signed-in`);
   return { page, token: auth.access_token };
 }
@@ -162,7 +175,9 @@ async function week(actor, start) {
 }
 
 function residentId(value) {
-  return value == null ? null : Number(typeof value === 'object' ? value.resident_id ?? value.resident?.id ?? value.id : value);
+  const id = value == null ? null : typeof value === 'object'
+    ? ('resident_id' in value ? value.resident_id : value.resident?.id ?? value.id) : value;
+  return id == null ? null : Number(id);
 }
 
 function points(state, name) {
@@ -176,6 +191,7 @@ function scores(state, andrew, jadon, pick) {
   assert.equal(points(state, 'jadon'), jadon, 'Jadon points');
   for (const name of Object.keys(cfg.fixture.residents).filter(n => !['andrew', 'jadon'].includes(n))) assert.equal(points(state, name), 0, `${name} points`);
   assert.equal(residentId(state.pick), pick ? cfg.fixture.residents[pick] : null, 'weekly pick');
+  checks.push({ check: 'score-and-pick', expected: { andrew, jadon, pick }, observed: { standings: state.standings, pick: state.pick, on_duty: state.on_duty } });
 }
 
 function findVisit(state, fixtureIndex) {
@@ -187,33 +203,38 @@ function findVisit(state, fixtureIndex) {
 }
 
 async function card(page, visit) {
-  const result = page.locator(`[data-visit-id="${visit.id}"]`).or(page.getByRole('article').filter({ hasText: visit.title }));
+  const result = page.locator(`[data-dish-id="${visit.id}"]`);
   await result.first().waitFor();
-  assert.equal(await result.count(), 1, `Need one visit card for ${visit.id}. Set data-visit-id or article title.`);
+  assert.equal(await result.count(), 1, `Need one data-dish-id visit card for ${visit.id}`);
   return result;
 }
 
 async function nameVisit(actor, visit, name, guess = false) {
-  if (!await actor.page.locator(`[data-visit-id="${visit.id}"]`).count()) {
-    const tab = actor.page.getByRole('button', { name: rx('nameTab') }).or(actor.page.getByRole('link', { name: rx('nameTab') }));
-    if (await tab.count()) await tab.click();
-  }
+  await actor.page.getByRole('link', { name: rx('nameTab') }).click();
   const item = await card(actor.page, visit);
-  const button = guess ? item.getByRole('button', { name: new RegExp(cfg.ui.guess || '^(?:Confirm Andrew|Yes,? Andrew|Andrew.*(?:guess|camera)|Looks like Andrew)$', 'i') }).or(item.locator('button[data-guess], button.guess'))
+  const button = guess ? item.getByRole('button', { name: new RegExp(cfg.ui.guess || '^Camera thinks Andrew — tap to confirm$', 'i') })
     : item.getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
+  if (guess) await screenshot(actor.page, 'camera-guess-awaiting-one-tap-confirmation');
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/house/api/visits/${visit.id}/name`) && r.request().method() === 'POST');
+  const refreshed = actor.page.waitForResponse(r => new URL(r.url()).pathname === '/house/api/week' && r.request().method() === 'GET');
   await button.click();
   const saved = await response;
   assert(saved.ok(), `UI naming failed: ${saved.status()} ${await saved.text()}`);
+  const updated = await saved.json();
+  assert.equal(residentId(updated.resident), cfg.fixture.residents[name.toLowerCase()]);
+  assert.equal(residentId(updated.named_by), cfg.fixture.residents.jadon);
+  assert.deepEqual(updated.dish_ids, visit.dish_ids);
+  checks.push({ check: 'UI visit named atomically', visit: updated });
   const body = saved.request().postDataJSON();
   assert.equal(Number(body.resident_id), cfg.fixture.residents[name.toLowerCase()]);
+  assert((await refreshed).ok(), 'Name must refresh the real week');
+  await item.waitFor({ state: 'detached' });
   await screenshot(actor.page, `named-${visit.id}-${name.toLowerCase()}${guess ? '-camera-guess' : ''}`);
 }
 
 async function dispute(actor, visit, label) {
   await actor.page.reload();
-  const mine = actor.page.getByRole('button', { name: /^(My dishes|Mine)$/i }).or(actor.page.getByRole('link', { name: /^(My dishes|Mine)$/i }));
-  if (await mine.count()) await mine.click();
+  await actor.page.getByRole('link', { name: 'My dishes', exact: true }).click();
   const item = await card(actor.page, visit);
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/visits/${visit.id}/dispute`) && r.request().method() === 'POST');
   await item.getByRole('button', { name: rx('dispute') }).click();
@@ -225,25 +246,32 @@ async function dispute(actor, visit, label) {
     await submit.click();
   }
   assert((await response).ok(), 'Dispute UI failed');
-  assert((await week(actor)).visits.find(v => v.id === visit.id).dispute, 'Dispute not persisted');
+  assert.equal((await week(actor)).visits.find(v => v.id === visit.id).dispute.state, 'open', 'Dispute not persisted');
+  await item.getByText('Disputed · open', { exact: true }).waitFor();
   await screenshot(actor.page, label);
 }
 
 async function settle(actor, visit, decision) {
   await actor.page.reload();
-  const disputes = actor.page.getByRole('button', { name: /^Disputes$/i }).or(actor.page.getByRole('link', { name: /^Disputes$/i }));
-  if (await disputes.count()) await disputes.click();
+  await actor.page.getByRole('link', { name: 'My dishes', exact: true }).click();
   const item = await card(actor.page, visit);
   const open = item.getByRole('button', { name: rx('settle') });
   if (await open.count()) await open.click();
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/visits/${visit.id}/settle`) && r.request().method() === 'POST');
   await actor.page.getByRole('button', { name: rx(decision === 'them' ? 'them' : 'notThem') }).click();
   assert((await response).ok(), 'Settlement UI failed');
+  const updated = await (await response).json();
+  assert.equal(updated.dispute.state, decision === 'them' ? 'upheld' : 'overturned');
+  assert.equal(residentId(updated.dispute.settled_by), cfg.fixture.residents.daniel);
+  assert.equal(residentId(updated.resident), decision === 'them' ? cfg.fixture.residents.andrew : null);
+  checks.push({ check: 'UI dispute settled', decision, visit: updated });
+  await item.waitFor({ state: 'detached' });
+  await actor.page.getByText('All settled here.', { exact: true }).waitFor();
   await screenshot(actor.page, `settled-${decision}`);
 }
 
 function jwtWith(token, key, patch = {}) {
-  const [head, payload] = token.split('.').map(v => JSON.parse(Buffer.from(v, 'base64url')));
+  const [head, payload] = token.split('.').slice(0, 2).map(v => JSON.parse(Buffer.from(v, 'base64url')));
   const data = [head, { ...payload, ...patch }].map(v => Buffer.from(JSON.stringify(v)).toString('base64url')).join('.');
   return data + '.' + sign('sha256', Buffer.from(data), { key, dsaEncoding: 'ieee-p1363' }).toString('base64url');
 }
@@ -262,7 +290,7 @@ async function journey() {
   assert.equal(state.rules.min_points, 4);
   assert.equal(state.rules.min_lead, 2);
   const duty = state.on_duty;
-  assert(duty != null, 'Seed a current duty person through the merged Lane B store API in seed.py; a null duty would make retention checks vacuous');
+  assert.equal(residentId(duty), cfg.fixture.residents.ezzy, 'Ezzy must be the current duty person');
   const multi = findVisit(state, 0);
   const single = findVisit(state, 1);
   assert.equal(multi.points, 4);
@@ -274,18 +302,19 @@ async function journey() {
   state = await week(jadon);
   scores(state, 4, 1, 'andrew');
   assert.equal(state.unnamed_count, 1, 'One current-week visit remains unnamed');
-  await jadon.page.reload();
-  await screenshot(jadon.page, 'standings-andrew-four-jadon-one');
+  await showStandings(jadon, 4, 1, 'andrew', 'standings-andrew-four-jadon-one');
   const disputePath = `/house/api/visits/${multi.id}/dispute`;
   const settlePath = `/house/api/visits/${multi.id}/settle`;
-  await refused(disputePath, { token: jadon.token, method: 'POST', body: { note: 'Not my visit' } });
+  await refused(disputePath, { token: jadon.token, method: 'POST', body: { note: 'Not my visit' } }, [403], 'only the named person may dispute');
   await dispute(andrew, multi, 'andrew-disputed');
   state = await week(jadon);
   scores(state, 0, 1, null);
   assert.deepEqual(state.on_duty, duty, 'No pick retains the current duty person');
-  for (const actor of [jadon, andrew]) await refused(settlePath, { token: actor.token, method: 'POST', body: { decision: 'them' } });
+  await showStandings(jadon, 0, 1, null, 'disputed-visit-zero-points');
+  for (const actor of [jadon, andrew]) await refused(settlePath, { token: actor.token, method: 'POST', body: { decision: 'them' } }, [403], actor === jadon ? 'namer cannot settle' : 'disputer cannot settle');
   await settle(daniel, multi, 'them');
   scores(await week(jadon), 4, 1, 'andrew');
+  await showStandings(jadon, 4, 1, 'andrew', 'upheld-points-restored');
   await dispute(andrew, multi, 'andrew-disputed-again');
   scores(await week(jadon), 0, 1, null);
   await settle(daniel, multi, 'not_them');
@@ -293,7 +322,9 @@ async function journey() {
   scores(state, 0, 1, null);
   const reset = state.visits.find(v => v.id === multi.id);
   assert.equal(residentId(reset.resident), null, 'Not-them must return visit to unnamed');
-  assert.equal(state.unnamed_count, 2);
+  assert.equal(state.unnamed_count, 4);
+  assert.equal(state.unreviewed_count, 2);
+  await showStandings(jadon, 0, 1, null, 'overturned-back-to-unnamed');
   // Exercise the lead threshold independently of the minimum-points threshold.
   await jadon.page.reload();
   await nameVisit(jadon, multi, 'Andrew');
@@ -301,43 +332,53 @@ async function journey() {
   state = await week(jadon);
   scores(state, 4, 3, null);
   assert.deepEqual(state.on_duty, duty);
-  await screenshot(jadon.page, 'lead-one-no-pick');
+  await showStandings(jadon, 4, 3, null, 'lead-one-no-pick');
   const closed = await week(jadon, cfg.fixture.closed_start);
   const closedVisit = findVisit(closed, 3);
-  await refused(`/house/api/visits/${closedVisit.id}/name`, { token: jadon.token, method: 'POST', body: { resident_id: cfg.fixture.residents.jadon } }, [400, 403, 409]);
+  assert.equal(closed.week.closed, true);
+  await refused(`/house/api/visits/${closedVisit.id}/name`, { token: jadon.token, method: 'POST', body: { resident_id: cfg.fixture.residents.jadon } }, [409]);
   assert.equal(closedVisit.can_name, false, 'Closed-week visit must not offer naming');
   const past = jadon.page.getByRole('button', { name: /^(Past weeks|History)$/i }).or(jadon.page.getByRole('link', { name: /^(Past weeks|History)$/i }));
   await past.click();
+  const closedWeek = jadon.page.locator('.week-choice').filter({ hasText: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: closed.week.timezone }).format(new Date(cfg.fixture.closed_start + 'T12:00:00Z')) });
+  const pastResponse = jadon.page.waitForResponse(r => r.url().endsWith('/house/api/week?start=' + cfg.fixture.closed_start));
+  await closedWeek.click();
+  assert((await pastResponse).ok());
+  await jadon.page.locator('.past-detail').getByText('Closed', { exact: true }).waitFor();
+  assert.equal(await jadon.page.locator('.past-detail button').count(), 0, 'Closed history must not offer naming');
   await screenshot(jadon.page, 'past-weeks-closed-naming-refused');
   await ok('/house/api/me', { token: andrew.token });
   const key = createPrivateKey(await fs.readFile(cfg.privateKey));
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { exp: Math.floor(Date.now() / 1000) - 10 }) });
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { aud: 'wrong-audience' }) });
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { iss: 'http://wrong-issuer.invalid/auth/v1' }) });
-  await refused('/house/api/me', { token: jwtWith(andrew.token, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey) });
-  await refused('/house/api/me', {});
-  await refused('/api/dashboard', { operator: true, headers: { 'Cf-Connecting-IP': '203.0.113.20' } });
+  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { exp: Math.floor(Date.now() / 1000) - 10 }) }, [401], 'expired JWT');
+  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { aud: 'wrong-audience' }) }, [401], 'wrong JWT audience');
+  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { iss: 'http://wrong-issuer.invalid/auth/v1' }) }, [401], 'wrong JWT issuer');
+  await refused('/house/api/me', { token: jwtWith(andrew.token, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey) }, [401], 'forged JWT signature');
+  await refused('/house/api/me', {}, [401], 'missing JWT');
+  await refused('/api/dashboard', { operator: true, headers: { 'Cf-Connecting-IP': '203.0.113.20' } }, [403], 'tunnel cannot reach operator dashboard');
+  await ok('/house/api/me', { token: andrew.token, headers: { 'Cf-Connecting-IP': '203.0.113.20' } });
   const freshVisit = findVisit(await week(jadon), 0);
   const media = new URL(freshVisit.filmstrip_url, cfg.api);
   assert(allowed.has(media.origin));
   const good = await request(media);
   assert.equal(good.status, 200, 'Signed media must work before expiry');
   assert(good.headers.get('content-type').startsWith('image/'));
+  assert.equal(good.headers.get('cache-control'), 'private, no-store');
   const other = new URL(media);
   other.pathname = other.pathname.replace(/[^/]+$/, cfg.fixture.visits[1].evidence_id);
-  await refused(other, undefined, [401, 403, 404, 410]);
+  await refused(other, undefined, [403], 'signed media bound to evidence id');
   const expires = Number(media.searchParams.get('exp'));
   assert(Number.isFinite(expires) && expires > 0, 'Signed media exp missing');
   assert(expires > Date.now() / 1000, 'Fresh signed media URL already expired');
   // The child's real verifier sees a wall clock beyond its own signed exp.
   // Restore and fetch again so refusal cannot pass because media disappeared.
   await clockOffset(expires - Math.floor(Date.now() / 1000) + 2);
-  try { await refused(media, undefined, [401, 403, 410]); }
+  try { await refused(media, undefined, [403], 'signed media expired'); }
   finally { await clockOffset(0); }
   assert.equal((await request(media)).status, 200, 'Media must work again when fixture clock is restored');
   await screenshot(andrew.page, 'auth-media-and-tunnel-refusals-checked');
   await andrew.page.getByRole('button', { name: rx('signOut') }).click();
   await andrew.page.waitForFunction(() => !Object.values(localStorage).some(v => { try { return !!JSON.parse(v)?.access_token; } catch { return false; } }));
+  await andrew.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
   await screenshot(andrew.page, 'signed-out');
   const picker = andrew.page.getByRole('combobox');
   if (await picker.count()) await picker.selectOption({ label: 'Andrew' });
@@ -345,6 +386,7 @@ async function journey() {
   await andrew.page.locator('input[type=password]').fill('house-e2e-password');
   await andrew.page.getByRole('button', { name: rx('signIn') }).click();
   assert.equal((await session(andrew.page)).user.email, 'andrew@highest-house.ezzyrappeport.com');
+  await andrew.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
   await screenshot(andrew.page, 'name-picker-signed-in-again');
 }
 
@@ -370,6 +412,7 @@ try {
   process.exitCode = 1;
 } finally {
   await fs.writeFile(path.join(cfg.run, `${mode}-network.json`), JSON.stringify({ blocked, errors }, null, 2));
+  await fs.writeFile(path.join(cfg.run, `${mode}-checks.json`), JSON.stringify(checks, null, 2));
   if (browser) await browser.close().catch(() => {});
   if (chrome.exitCode === null) chrome.kill('SIGTERM');
   await fs.writeFile(path.join(cfg.run, `${mode}-chrome.log`), chromeLog);

@@ -34,6 +34,8 @@ def filmstrip(title: str) -> bytes:
 
 
 def seed(app) -> dict:
+    from wash_dishes import league
+
     store, media = app.state.store, app.state.media
     if store.residents():
         raise RuntimeError("Refusing to seed a nonempty database")
@@ -47,8 +49,8 @@ def seed(app) -> dict:
     if at < monday:
         raise RuntimeError("Run after Monday 00:05 house time so current-week overdue fixtures can exist")
     visits = []
-    for index, (kinds, when) in enumerate([(["pan", "plate", "bowl"], at), (["cup"], at + timedelta(seconds=45)),
-                                          (["pot"], at + timedelta(seconds=90)),
+    for index, (kinds, when) in enumerate([(["pan", "plate", "bowl"], at + timedelta(seconds=90)), (["cup"], at + timedelta(seconds=45)),
+                                          (["pot"], at),
                                           (["plate"], monday - timedelta(days=14) + timedelta(hours=14))]):
         ids = []
         visit_id = f"e2e-visit-{index + 1}"
@@ -58,8 +60,9 @@ def seed(app) -> dict:
                                            handler_key=visit_id, track_key=f"{visit_id}-{kind}")
             oid = item["id"]
             ids.append(oid)
-            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind}"), "left unattended", at=when)
-            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind} still out"), "still_out", at=when + timedelta(minutes=2))
+            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind}"), "Dish left unattended", at=when)
+            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind} still out"),
+                                "Matching dish still visible after the deadline", at=when + timedelta(minutes=2))
             store.record_seen(oid, when + timedelta(minutes=2))
             if index == 0:
                 store.set_suggestion(oid, residents["andrew"], 0.95, {"face": 0.95})
@@ -74,5 +77,6 @@ def seed(app) -> dict:
                            capture={"visit_id": visit_id, "obligation_ids": ids, "frames": frames})
         visits.append({"id": visit_id, "dish_ids": ids, "points": sum(2 if k in ("pot", "pan") else 1 for k in kinds),
                        "evidence_id": evidence_id, "closed": index == 3})
+    league.override(store, residents["ezzy"])
     return {"residents": residents, "visits": visits, "week_start": monday.date().isoformat(),
             "closed_start": (monday - timedelta(days=14)).date().isoformat(), "seeded_at": now.isoformat()}
