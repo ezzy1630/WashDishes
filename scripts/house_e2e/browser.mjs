@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 const cfg = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
 const mode = process.argv[3];
 const { chromium } = await import(pathToFileURL(path.join(cfg.playwright, 'index.mjs')));
-const allowed = new Set([cfg.site, cfg.auth, cfg.api]);
+const allowed = new Set([cfg.site, cfg.auth, cfg.api, cfg.privateApi]);
 const profile = path.join(cfg.run, `chrome-${mode}`);
 await fs.mkdir(profile);
 const chrome = spawn(process.env.HOUSE_E2E_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
@@ -63,7 +63,7 @@ async function newPage() {
 }
 
 async function request(url, { token, body, method = 'GET', operator = false, headers = {} } = {}) {
-  const target = new URL(url, cfg.api);
+  const target = new URL(url, String(url).startsWith('/api/') && operator ? cfg.privateApi : cfg.api);
   assert(allowed.has(target.origin), `Refusing external URL: ${target}`);
   const response = await fetch(target, { method, headers: {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -304,10 +304,38 @@ async function journey() {
   assert.equal(single.points, 1);
   assert.equal(residentId(multi.guess), cfg.fixture.residents.andrew, 'Camera guess Andrew required');
   assert(multi.filmstrip_url, 'Shared arrival filmstrip URL missing');
+  // Real verdict response -> production parser -> refreshed review history.
+  await jadon.page.getByRole('link', { name: rx('nameTab') }).click();
+  const review = await card(jadon.page, multi);
+  const verdictResponse = jadon.page.waitForResponse(r => r.url().endsWith(`/visits/${multi.id}/verdict`) && r.request().method() === 'POST');
+  await review.getByRole('button', { name: 'Not a dish', exact: true }).click();
+  const savedVerdict = await verdictResponse;
+  assert.equal(savedVerdict.status(), 200);
+  assert.equal((await savedVerdict.json()).verdict.kind, 'not_dish');
+  await jadon.page.getByText(/Reviewed this week/).click();
+  await jadon.page.getByText('Marked not a dish by Jadon', { exact: true }).waitFor();
+  for (const actor of [jadon, andrew, daniel]) {
+    const excluded = await week(actor);
+    assert(!excluded.visits.some(v => v.id === multi.id));
+    assert(!excluded.dishes.some(d => multi.dish_ids.includes(d.id)));
+    assert.equal(excluded.standings.reduce((n,r) => n+r.points,0), 0);
+    assert.equal(excluded.verdicts.find(v => v.visit_id === multi.id).kind, 'not_dish');
+    await actor.page.goto(cfg.site + '/name');
+    await actor.page.getByText(/Reviewed this week/).click();
+    await actor.page.getByText('Marked not a dish by Jadon', { exact: true }).waitFor();
+  }
+  await screenshot(jadon.page, 'global-verdict-history');
+  await ok(`/api/league/visits/${multi.id}/undo-verdict`, {method:'POST',operator:true,body:{}});
+  state = await week(jadon);
+  assert(findVisit(state,0));
+  assert.equal(state.verdicts.length,0);
+  await jadon.page.goto(cfg.site + '/');
   await nameVisit(jadon, multi, 'Andrew', true);
   await nameVisit(jadon, single, 'Jadon');
   state = await week(jadon);
   scores(state, 4, 1, 'andrew');
+  await refused(`/house/api/visits/${multi.id}/verdict`, {token:andrew.token,method:'POST',body:{verdict:'not_dish'}}, [409], 'resident cannot exclude named visit');
+
   assert.equal(state.unnamed_count, 1, 'One current-week visit remains unnamed');
   await showStandings(jadon, 4, 1, 'andrew', 'standings-andrew-four-jadon-one');
   const disputePath = `/house/api/visits/${multi.id}/dispute`;
@@ -361,7 +389,9 @@ async function journey() {
   await refused('/house/api/me', { token: jwtWith(andrew.token, key, { iss: 'http://wrong-issuer.invalid/auth/v1' }) }, [401], 'wrong JWT issuer');
   await refused('/house/api/me', { token: jwtWith(andrew.token, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey) }, [401], 'forged JWT signature');
   await refused('/house/api/me', {}, [401], 'missing JWT');
-  await refused('/api/dashboard', { operator: true, headers: { 'Cf-Connecting-IP': '203.0.113.20' } }, [403], 'tunnel cannot reach operator dashboard');
+  await refused('/api/dashboard', { operator: true, headers: { 'Cf-Connecting-IP': '203.0.113.20' } }, [403, 404], 'tunnel cannot reach operator dashboard');
+  await refused(cfg.api + '/api/dashboard', {operator:true}, [404], 'tunnel rejects operator session without CF header');
+  await refused(cfg.api + '/api/health', {}, [404], 'tunnel rejects private health');
   await ok('/house/api/me', { token: andrew.token, headers: { 'Cf-Connecting-IP': '203.0.113.20' } });
   const freshVisit = findVisit(await week(jadon), 0);
   const media = new URL(freshVisit.filmstrip_url, cfg.api);
@@ -387,14 +417,12 @@ async function journey() {
   await andrew.page.waitForFunction(() => !Object.values(localStorage).some(v => { try { return !!JSON.parse(v)?.access_token; } catch { return false; } }));
   await andrew.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
   await screenshot(andrew.page, 'signed-out');
-  const picker = andrew.page.getByRole('combobox');
-  if (await picker.count()) await picker.selectOption({ label: 'Andrew' });
-  else await andrew.page.getByRole('button', { name: /^Andrew$/i }).click();
+  assert.equal(await andrew.page.getByLabel('Your name').inputValue(), 'andrew');
   await andrew.page.locator('input[type=password]').fill('house-e2e-password');
   await andrew.page.getByRole('button', { name: rx('signIn') }).click();
   assert.equal((await session(andrew.page)).user.email, 'andrew@highest-house.ezzyrappeport.com');
   await andrew.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
-  await screenshot(andrew.page, 'name-picker-signed-in-again');
+  await screenshot(andrew.page, 'remembered-name-signed-in-again');
 }
 
 try {

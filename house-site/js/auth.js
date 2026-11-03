@@ -33,6 +33,34 @@ const client =
       })
     : null;
 
+// Matches the server's NFKD -> ASCII slug base; already-returned join slugs
+// (including collision suffixes) pass through unchanged.
+/** @param {string} name */
+export function loginSlug(name) {
+  return (
+    name
+      .normalize("NFKD")
+      .replace(/[^\x00-\x7F]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "housemate"
+  );
+}
+export function rememberedName() {
+  try {
+    return localStorage.getItem("highest-house-login-name") || "";
+  } catch {
+    return "";
+  }
+}
+/** @param {string} name */
+function rememberName(name) {
+  try {
+    localStorage.setItem("highest-house-login-name", name);
+  } catch {}
+}
+
 /** @returns {Promise<string | null>} */
 export async function accessToken() {
   if (mock) {
@@ -57,6 +85,7 @@ export async function signIn(slug, password) {
     if (!r.ok)
       throw new Error("That name and password didn’t match. Try again.");
     sessionStorage.setItem("dw-mock-user", slug);
+    rememberName(slug);
     return;
   }
   if (!client)
@@ -69,10 +98,11 @@ export async function signIn(slug, password) {
   });
   if (error)
     throw new Error(
-      error.status === 400
+      (error.status || 400) < 500
         ? "That name and password didn’t match. Try again."
         : "Sign-in isn’t available right now. Please try again.",
     );
+  rememberName(slug);
 }
 export async function signOut() {
   if (mock) sessionStorage.removeItem("dw-mock-user");

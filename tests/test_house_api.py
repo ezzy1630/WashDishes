@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from urllib.parse import urlsplit
 
@@ -101,6 +102,7 @@ def test_rsa_hs_key_confusion_signature_and_jwks_cache(house_client, monkeypatch
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key())) | {'kid': 'rsa', 'alg': 'RS256'}
     verifier.keys = []
+    verifier.attempted_at = None
     monkeypatch.setattr(verifier, 'fetch_jwks', lambda: {'keys': [jwk]})
     client.headers['Authorization'] = 'Bearer ' + jwt.encode(payload, key, algorithm='RS256', headers={'kid': 'rsa'})
     assert client.get('/house/api/me').status_code == 200
@@ -246,7 +248,7 @@ def test_join_one_time_reset_expiry_hashed_tokens_and_admin_payload(house_client
     assert request['headers'] == {'apikey': 'sb_secret_fake'}
     assert request['body'] == {'email': 'new-person@highest-house.ezzyrappeport.com', 'email_confirm': True, 'password': 'test-password'}
     assert client.post('/house/api/join', json={'token': token, 'password': 'test-password'}).status_code == 400
-    assert {'slug': 'new-person', 'name': 'New Person'} in client.get('/house/api/login-names').json()
+    assert client.get('/house/api/login-names').status_code == 404
     reset = client.post(f"/api/league/residents/{new['id']}/join-link", json={}).json()['url'].split('#')[1]
     assert client.post('/house/api/join', json={'token': reset, 'password': 'new-password'}).status_code == 200
     assert calls[-1][0].endswith('/admin/users/new-auth-id') and calls[-1][1]['method'] == 'PUT'
@@ -353,15 +355,18 @@ def test_visit_verdict_excludes_everyone_is_attributed_and_operator_can_undo(hou
     first, second = late(client, owner=client.people[0]['id']), late(client, owner=client.people[0]['id'], kind='bowl')
     visit(client, [first, second])
     assert client.get('/house/api/week').json()['standings'][0]['points'] == 3
-    result = client.post('/house/api/visits/trip-one/verdict', json={'verdict': verdict})
+    refused = client.post('/house/api/visits/trip-one/verdict', json={'verdict': verdict})
+    assert refused.status_code == 409
+    assert sum(r['points'] for r in client.get('/house/api/week').json()['standings']) == 3
+    operator(client)
+    result = client.post('/api/league/visits/trip-one/verdict', json={'verdict': verdict})
     assert result.status_code == 200, result.text
-    assert result.json()['verdict']['by']['name'] == 'Alex'
+    assert result.json()['verdict'] == {'kind': verdict, 'by': None, 'at': result.json()['verdict']['at'], 'of_visit_id': None}
     as_person(client, 1)
     board = client.get('/house/api/week').json()
     assert board['visits'] == [] and board['dishes'] == [] and board['unreviewed_count'] == 0
     assert sum(r['points'] for r in board['standings']) == 0
-    assert board['verdicts'][0]['verdict'] == verdict and board['verdicts'][0]['by']['name'] == 'Alex'
-    assert client.post('/api/league/visits/trip-one/undo-verdict', json={}).status_code == 401
+    assert board['verdicts'][0]['kind'] == verdict and board['verdicts'][0]['by'] is None
     operator(client)
     assert client.post('/api/league/visits/trip-one/undo-verdict', json={}).status_code == 200
     assert len(client.get('/house/api/week').json()['dishes']) == 2
@@ -479,7 +484,7 @@ def test_arrival_aliases_count_once_and_inherit_visit_review(house_client):
     assert client.get('/api/league/week').json()['standings'] == board['standings']
     response = client.post('/api/league/visits/arrival-trip/verdict', json={'verdict': 'clean'})
     assert response.status_code == 200, response.text
-    assert all(a['verdict']['verdict'] == 'clean' for a in response.json()['aliases'])
+    assert all(a['verdict']['kind'] == 'clean' for a in response.json()['aliases'])
     assert client.get('/api/league/week').json()['visits'] == []
 
 
@@ -671,3 +676,191 @@ def test_operator_and_house_share_the_structured_pick_contract(house_client):
                       'reason': '6 points · 4 ahead'}
     operator(client)
     assert client.get('/api/league/week').json()['pick'] == chosen
+
+
+@pytest.mark.parametrize('verdict', ['not_dish', 'clean', 'duplicate'])
+@pytest.mark.parametrize('state', ['named', 'disputed', 'settled', 'mixed'])
+def test_resident_global_verdict_requires_every_member_nameable(house_client, verdict, state):
+    client, store = house_client, house_client.app.state.store
+    first, second, original = late(client), late(client), late(client)
+    visit(client, [first, second])
+    if state == 'mixed':
+        store.action(second['id'], 'confirm', resident_id=client.people[1]['id'])
+    else:
+        assert client.post('/house/api/visits/trip-one/name', json={'resident_id': client.people[1]['id']}).status_code == 200
+        if state != 'named':
+            as_person(client, 1)
+            assert client.post('/house/api/visits/trip-one/dispute', json={'note': 'Not mine'}).status_code == 200
+        if state == 'settled':
+            as_person(client, 2)
+            assert client.post('/house/api/visits/trip-one/settle', json={'decision': 'them'}).status_code == 200
+    as_person(client, 1)
+    league.close_weeks(store)
+    before = [dict(r) for r in store.conn.execute('SELECT * FROM obligations')]
+    events = store.conn.execute('SELECT count(*) FROM events').fetchone()[0]
+    result = client.post('/house/api/visits/trip-one/verdict', json={'verdict': verdict, **({'of_visit_id': f"dish-{original['id']}"} if verdict == 'duplicate' else {})})
+    assert result.status_code == 409
+    assert result.json()['detail'] == "Already named — use That wasn't me to dispute it."
+    assert before == [dict(r) for r in store.conn.execute('SELECT * FROM obligations')]
+    assert store.conn.execute('SELECT count(*) FROM events').fetchone()[0] == events
+    # Personal hiding still works even on a named/disputed visit.
+    assert client.post('/house/api/visits/trip-one/verdict', json={'verdict': 'cant_tell'}).status_code == 200
+
+
+def test_resident_can_exclude_unnamed_visit_and_history_contract(house_client):
+    client = house_client
+    first, second = late(client), late(client)
+    visit(client, [first, second])
+    result = client.post('/house/api/visits/trip-one/verdict', json={'verdict': 'not_dish'})
+    assert result.status_code == 200
+    assert result.json()['verdict']['kind'] == 'not_dish'
+    assert result.json()['verdict']['by']['name'] == 'Alex'
+    as_person(client, 1)
+    data = client.get('/house/api/week').json()
+    assert data['visits'] == [] and data['dishes'] == []
+    assert data['verdicts'][0]['kind'] == 'not_dish'
+    assert data['verdicts'][0]['by']['name'] == 'Alex'
+
+
+def test_read_budgets_are_separate_and_global(house_client):
+    client, house = house_client, house_client.app.state.house
+    house.week_budget.per_identity = 1
+    assert client.get('/house/api/week').status_code == 200
+    assert client.get('/house/api/week').status_code == 429
+    as_person(client, 1)
+    assert client.get('/house/api/week').status_code == 200
+    # Authenticated writes do not spend the read or join budgets.
+    assert client.post('/house/api/visits/missing/name', json={'resident_id': client.people[0]['id']}).status_code == 404
+    house.week_budget.total = 2
+    as_person(client, 2)
+    assert client.get('/house/api/week').status_code == 429
+    assert client.get('/house/api/me').status_code == 200
+
+
+def test_read_concurrency_and_formatting_release_camera_lock(house_client, monkeypatch):
+    client, house = house_client, house_client.app.state.house
+    late(client)
+    entered, release = threading.Event(), threading.Event()
+    original = house.image_size
+    def slow_header(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+    monkeypatch.setattr(house, 'image_size', slow_header)
+    with ThreadPoolExecutor() as pool:
+        pending = pool.submit(client.get, '/house/api/week')
+        assert entered.wait(5)
+        try:
+            assert house.store.lock.acquire(timeout=.5), 'JPEG I/O held the camera lock'
+            house.store.lock.release()
+            assert client.get('/house/api/week').status_code == 429
+        finally:
+            release.set()
+        assert pending.result().status_code == 200
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_failed_and_empty_jwks_have_attempt_cooldown(house_client, monkeypatch, empty):
+    from urllib.error import URLError
+    client, verifier = house_client, house_client.app.state.house.verifier
+    calls, entered, release = [], threading.Event(), threading.Event()
+    def fetch():
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        if empty:
+            return {'keys': []}
+        raise URLError('offline')
+    monkeypatch.setattr(verifier, 'fetch_jwks', fetch)
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(client.get, '/house/api/me')
+        assert entered.wait(5)
+        try:
+            # A waiter must return before the refresh's network request completes.
+            assert pool.submit(client.get, '/house/api/me').result(timeout=1).status_code == 503
+        finally:
+            release.set()
+        assert first.result().status_code == (401 if empty else 503)
+    for _ in range(6):
+        assert client.get('/house/api/me').status_code == (401 if empty else 503)
+    assert len(calls) == 1
+    verifier.attempted_at -= 31
+    assert client.get('/house/api/me').status_code == (401 if empty else 503)
+    assert len(calls) == 2
+
+
+def test_two_real_uvicorn_listeners_separate_trust_and_limiter_pools(tmp_path, monkeypatch):
+    import socket
+
+    import httpx
+    import uvicorn
+    monkeypatch.setenv('SUPABASE_URL', 'https://auth.example')
+    monkeypatch.setenv('SUPABASE_JWT_SECRET', 'h' * 40)
+    with socket.socket() as private, socket.socket() as tunnel:
+        for sock in (private, tunnel):
+            sock.bind(('127.0.0.1', 0))
+            sock.listen()
+        private_port, tunnel_port = private.getsockname()[1], tunnel.getsockname()[1]
+        app = create_app(Config(tmp_path / 'listeners', password='operator', workers=False), house_tunnel_port=tunnel_port)
+        person = app.state.store.add_resident('Alex')
+        with app.state.store.conn:
+            app.state.store.conn.execute('UPDATE residents SET auth_user_id=? WHERE id=?', ('user', person['id']))
+        token = jwt.encode({'sub': 'user', 'iss': 'https://auth.example/auth/v1', 'aud': 'authenticated', 'exp': int(time.time()) + 3600}, 'h' * 40, algorithm='HS256')
+        server = uvicorn.Server(uvicorn.Config(app, proxy_headers=False, log_level='critical'))
+        with ThreadPoolExecutor() as pool:
+            running = pool.submit(server.run, sockets=[private, tunnel])
+            try:
+                deadline = time.monotonic() + 5
+                while not server.started and time.monotonic() < deadline:
+                    time.sleep(.01)
+                assert server.started
+                with httpx.Client(base_url=f'http://127.0.0.1:{private_port}', trust_env=False) as tail, httpx.Client(base_url=f'http://127.0.0.1:{tunnel_port}', trust_env=False) as edge:
+                    assert tail.get('/api/health').status_code == 200
+                    assert edge.get('/api/health').status_code == 404
+                    assert edge.post('/api/login', json={'password': 'operator'}).status_code == 404
+                    assert tail.get('/api/health', headers={'Cf-Connecting-IP': '192.0.2.1'}).status_code == 403
+                    assert edge.get('/house/api/me', headers={'Authorization': 'Bearer ' + token}).status_code == 200
+                    body = {'token': 'x' * 43, 'password': 'synthetic-password'}
+                    for i in range(5):
+                        assert tail.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': f'fake-{i}', 'X-Forwarded-For': f'192.0.2.{i}'}).status_code == 400
+                    assert tail.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': '192.0.2.99'}).status_code == 429
+                    assert edge.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': 'not-an-IP'}).status_code == 400
+                    for i in range(5):
+                        assert edge.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': '192.0.2.1'}).status_code == 400
+                    assert edge.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': '192.0.2.1'}).status_code == 429
+                    assert edge.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': '2001:db8::1'}).status_code == 400
+                    # Fill the isolated public capacity; a fresh writer is still admitted.
+                    app.state.house.join_limiter.entries = {f'join:{i}': [time.monotonic()] for i in range(2048)}
+                    assert edge.post('/house/api/join', json=body, headers={'Cf-Connecting-IP': '192.0.2.2'}).status_code == 429
+                    assert tail.post('/house/api/visits/missing/name', json={'resident_id': person['id']}, headers={'Authorization': 'Bearer ' + token}).status_code == 404
+                    assert edge.get('/house/api/login-names').status_code == 404
+            finally:
+                server.should_exit = True
+                running.result(timeout=10)
+
+
+def test_warm_jwks_key_does_not_wait_for_another_refresh(house_client):
+    client, verifier = house_client, house_client.app.state.house.verifier
+    assert client.get('/house/api/me').status_code == 200
+    with verifier.lock:
+        assert client.get('/house/api/me').status_code == 200
+
+
+def test_media_predicate_cache_budget_and_live_expiry(house_client, monkeypatch):
+    client, house = house_client, house_client.app.state.house
+    item = late(client)
+    eid = visit(client, [item])
+    url = client.get('/house/api/week').json()['visits'][0]['filmstrip_url']
+    assert client.get(url).status_code == 200
+    # A replay uses the small predicate cache, not a league/catalog recomputation.
+    from wash_dishes import house_visits
+    catalog = house_visits.catalog
+    monkeypatch.setattr(house_visits, 'catalog', lambda *a, **k: pytest.fail('Unnecessary media catalog read'))
+    assert client.get(url).status_code == 200
+    house.media_budget.per_identity = 2
+    assert client.get(url).status_code == 429
+    house.media_budget.rate.entries.clear()
+    with house.store.conn:
+        house.store.conn.execute('UPDATE evidence SET expires_at=? WHERE id=?', (stamp(utcnow() - timedelta(seconds=1)), eid))
+    monkeypatch.setattr(house_visits, 'catalog', catalog)
+    assert client.get(url).status_code == 404

@@ -15,11 +15,16 @@ import { verdictText } from "./visit.js";
 /** @param {Week} data */
 function reviewedVisits(data) {
   const reviewed = data.visits.filter((v) => v.resident || v.verdict);
-  return reviewed.length
+  const history = data.verdicts;
+  return reviewed.length + history.length
     ? h(
         "details",
         { class: "reviewed-visits" },
-        h("summary", {}, `Reviewed this week (${reviewed.length})`),
+        h(
+          "summary",
+          {},
+          `Reviewed this week (${reviewed.length + history.length})`,
+        ),
         h(
           "div",
           { class: "reviewed-list" },
@@ -52,6 +57,18 @@ function reviewedVisits(data) {
                   true,
                   mediaSize(visit, Boolean(visit.filmstrip_url)),
                 ),
+              ),
+            ),
+          ),
+          history.map((entry) =>
+            h(
+              "article",
+              { class: "reviewed-visit" },
+              h("h3", {}, entry.title),
+              h(
+                "p",
+                { class: "review-attribution" },
+                verdictText({ verdict: entry }),
               ),
             ),
           ),

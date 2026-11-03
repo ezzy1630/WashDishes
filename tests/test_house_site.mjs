@@ -8,7 +8,7 @@ const payload = pick => ({
   rules: {enabled:true,weights:{pan:2,pot:2,default:1},min_points:4,min_lead:2},
   // Deliberately unrelated totals: a view must render the authoritative decision, not derive it.
   standings:[{resident_id:1,name:'Andrew',points:99,dishes:99}],
-  pick, on_duty:null, dishes:[], visits:[], unnamed_count:0, unreviewed_count:0, weeks:[],
+  pick, on_duty:null, dishes:[], visits:[], unnamed_count:0, unreviewed_count:0, verdicts:[], weeks:[],
 });
 const chosen = {resident_id:1,name:'Andrew',state:'pick',points:6,lead:4,needed_points:0,needed_lead:0,reason:'6 points · 4 ahead'};
 
@@ -30,4 +30,11 @@ test('site refuses missing/unknown pick states and contradictory identity fields
     const data=week(payload({...chosen,state,resident_id:null,name:null}));
     assert.equal(data.pick.state,state);
   }
+});
+
+ test('site consumes excluded verdict history and allows operator attribution', () => {
+  const input=payload(chosen);
+  input.verdicts=[{visit_id:'trip',title:'Pan',kind:'not_dish',by:null,at:'2026-11-03T00:00:00Z',of_visit_id:null}];
+  assert.deepEqual(week(input).verdicts,input.verdicts);
+  assert.throws(()=>week({...input,verdicts:[{...input.verdicts[0],kind:'unknown'}]}));
 });

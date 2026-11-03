@@ -35,26 +35,31 @@ def _metadata(capture, filmstrip=None) -> dict | None:
             'duplicate_of': aliases, 'arrival_seen': capture.get('window', {}).get('arrival_recorded') is True}
 
 
-def catalog(store) -> list[dict]:
-    """Persistent membership survives unavailable/expired media; legacy captures remain readable.
+def catalog(store, ids: list[int] | None = None) -> list[dict]:
+    """Read complete membership in batches, restricted to the requested week's dishes.
 
-    The membership table is authoritative once present. A superseded strip must never
-    revive an old naming unit, even when the replacement has no usable photograph.
+    Persistent membership wins over legacy/superseded strips even if media expired.
+    Include every member of a matching visit so incomplete visits remain unwritable.
     """
+    if ids == []:
+        return []
+    params = [json.dumps(ids)] if ids is not None else []
+    where = "WHERE id IN (SELECT visit_id FROM arrival_visit_members WHERE obligation_id IN (SELECT value FROM json_each(?)))" if ids is not None else ''
+    rows = list(store.conn.execute(f'SELECT * FROM arrival_visits {where} ORDER BY created_at DESC,id DESC', params))
+    members = {}
+    for row in store.conn.execute('SELECT visit_id,obligation_id FROM arrival_visit_members WHERE visit_id IN (SELECT value FROM json_each(?)) ORDER BY obligation_id', (json.dumps([r['id'] for r in rows]),)):
+        members.setdefault(row['visit_id'], []).append(row['obligation_id'])
+    strips = {r['id']: dict(r) for r in store.conn.execute('SELECT * FROM evidence WHERE id IN (SELECT value FROM json_each(?))', (json.dumps([r['evidence_id'] for r in rows]),))}
     table = []
-    for row in store.conn.execute('SELECT * FROM arrival_visits ORDER BY created_at DESC,id DESC'):
-        members = [r[0] for r in store.conn.execute(
-            'SELECT obligation_id FROM arrival_visit_members WHERE visit_id=? ORDER BY obligation_id', (row['id'],))]
-        if not members:
-            continue
+    for row in rows:
         source = json.loads(row['metadata'])
-        if set(source['obligation_ids']) != set(members):
+        if not members.get(row['id']) or set(source['obligation_ids']) != set(members[row['id']]):
             continue
-        source = source | {'visit_id': row['id']}
-        if group := _metadata(source, store.evidence(row['evidence_id']) if row['evidence_id'] else None):
+        if group := _metadata(source | {'visit_id': row['id']}, strips.get(row['evidence_id'])):
             table.append(group)
+    legacy_where = " AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids') WHERE value IN (SELECT value FROM json_each(?)))" if ids is not None else ''
     legacy = [group for row in store.conn.execute(
-        "SELECT * FROM evidence WHERE kind='filmstrip' AND label='arrival' ORDER BY created_at DESC,id DESC")
+        "SELECT * FROM evidence WHERE kind='filmstrip' AND label='arrival'" + legacy_where + " ORDER BY created_at DESC,id DESC", params)
         if (group := metadata(dict(row)))]
     selected, assigned, visit_ids = [], set(), set()
     for group in [*table, *legacy]:

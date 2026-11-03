@@ -59,8 +59,6 @@ async function parsed(response, parser) {
     throw new HouseError("Dish Watch is offline right now", 502);
   }
 }
-export const getNames = () =>
-  parsed(request("/login-names", { public: true }), parse.names);
 export const getMe = () => parsed(request("/me"), parse.me);
 /** @param {string} [start] */
 export const getWeek = (start = "") =>

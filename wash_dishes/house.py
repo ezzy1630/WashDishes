@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -11,7 +12,8 @@ import secrets
 import sqlite3
 import threading
 import time
-from contextlib import asynccontextmanager, nullcontext, suppress
+from collections import OrderedDict
+from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -96,20 +98,60 @@ class RateLimit:
             self.entries[key] = [*recent, now]
 
 
+class ReadBudget:
+    """Bound admitted work and concurrent workers without waiting on Store.lock."""
+    def __init__(self, *, per_identity: int, total: int, concurrent: int, per_concurrent: int = 1):
+        self.rate = RateLimit()
+        self.per_identity, self.total = per_identity, total
+        self.slots = threading.BoundedSemaphore(concurrent)
+        self.lock = threading.Lock()
+        self.active: dict[str, int] = {}
+        self.per_concurrent = per_concurrent
+
+    @contextmanager
+    def admit(self, identity: str):
+        self.rate.check(identity, count=self.per_identity)
+        self.rate.check('global', count=self.total)
+        with self.lock:
+            if self.active.get(identity, 0) >= self.per_concurrent or not self.slots.acquire(blocking=False):
+                raise HTTPException(429, 'The house is busy. Try again shortly.')
+            self.active[identity] = self.active.get(identity, 0) + 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.active[identity] -= 1
+                if not self.active[identity]:
+                    del self.active[identity]
+                self.slots.release()
+
+
+def client_identity(request: Request) -> str:
+    # Only the dedicated loopback tunnel socket carries trusted edge metadata.
+    value = request.headers.get('cf-connecting-ip')
+    if request.scope.get('server', (None, None))[1] == request.app.state.house_tunnel_port and value:
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            raise HTTPException(400, 'The client address is invalid.') from None
+    return request.client.host if request.client else 'local'
+
+
 class HouseBoundary:
     """Tunnel headers cannot reach the operator app; CORS is scoped to /house/."""
-    def __init__(self, app, site_origin: str):
-        self.app, self.site_origin = app, site_origin
+    def __init__(self, app, site_origin: str, tunnel_port: int):
+        self.app, self.site_origin, self.tunnel_port = app, site_origin, tunnel_port
 
     async def __call__(self, scope, receive, send):
         if scope['type'] not in ('http', 'websocket'):
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get('headers', [])}
         house = scope['path'].startswith('/house/')
-        if 'cf-connecting-ip' in headers and not house:
+        tunnel = scope.get('server', (None, None))[1] == self.tunnel_port
+        if (tunnel or 'cf-connecting-ip' in headers) and not house:
             if scope['type'] == 'websocket':
                 return await send({'type': 'websocket.close', 'code': 1008})
-            return await JSONResponse({'detail': 'Only the house app is available here.'}, status_code=403)(scope, receive, send)
+            return await JSONResponse({'detail': 'Only the house app is available here.'}, status_code=404 if tunnel else 403)(scope, receive, send)
         if not house or scope['type'] == 'websocket':
             return await self.app(scope, receive, send)
         origin = headers.get('origin')
@@ -139,6 +181,11 @@ class House:
         self.verifier = JWTVerifier(config)
         self.admin = SupabaseAdmin(config)
         self.limiter = RateLimit()
+        self.join_limiter = RateLimit()
+        self.week_budget = ReadBudget(per_identity=60, total=240, concurrent=2)
+        self.media_budget = ReadBudget(per_identity=120, total=600, concurrent=8, per_concurrent=8)
+        self.media_visibility: OrderedDict[str, bool] = OrderedDict()
+        self.media_revision = None
         self.join_lock = threading.Lock()
         path = store.root / 'house-media.key'
         try:
@@ -257,45 +304,53 @@ class House:
                 'can_settle': not closed and open_dispute and eligible_settler}
 
     def week(self, start: str | None, actor: dict | None, *, _include_hidden=False) -> dict:
+        # Copy a week-scoped snapshot under the camera lock. Signing, formatting,
+        # JPEG header I/O and response serialization must never hold that lock.
         with self.store.lock:
-            data = league.result(self.store, start)
+            data = league.snapshot(self.store, start)
             closed = data['week']['closed']
-            residents = data.get('residents', self.store.residents())
-            evidence = data.get('evidence') if closed else self.evidence_for([d['id'] for d in data['dishes']])
-            # Expiry/dismissal of media is live even for a frozen score: a snapshot cannot resurrect a deleted photo.
-            evidence = [e | {'expired': current['expired'], 'expires_at': current['expires_at']}
-                        for e in evidence if (current := self.store.evidence(e['id']))]
-            dishes = [self.dish(d, residents, data['rules'], actor=actor, closed=closed, evidence=evidence) for d in data['dishes']]
+            residents = data.get('residents') or self.store.residents()
+            evidence = data.get('evidence', []) if closed else self.evidence_for([d['id'] for d in data['dishes']])
+            live = {r['id']: dict(r) for r in self.store.conn.execute(
+                'SELECT id,expired,expires_at,filename FROM evidence WHERE id IN (SELECT value FROM json_each(?))',
+                (json.dumps([e['id'] for e in evidence]),))}
+            evidence = [e | live[e['id']] for e in evidence if e['id'] in live]
             raw = {d['id']: d for d in data['dishes']}
-            basis = data.get('guess_basis') if closed else self.store.suggestion_basis(list(raw))
-            visits = self.visits(data['dishes'], dishes, evidence, residents, basis, actor=actor,
-                                 groups=data.get('visit_groups'), duplicates=data.get('duplicates'),
-                                 alias_guesses=data.get('alias_guesses', {}))
+            basis = data.get('guess_basis', {}) if closed else self.store.suggestion_basis(list(raw))
             hidden = set() if _include_hidden else {r[0] for r in self.store.conn.execute('SELECT visit_id FROM house_hidden_visits WHERE resident_id=?', (actor['id'] if actor else 0,))}
-            hidden_dishes = {oid for v in visits if v['id'] in hidden for oid in v['dish_ids']}
-            visits = [v for v in visits if v['id'] not in hidden]
-            dishes = [d for d in dishes if d['id'] not in hidden_dishes]
-            people = {r['id']: {'id': r['id'], 'name': r['name']} for r in residents}
-            verdicts = [{'visit_id': v['visit_id'], 'title': v['title'], 'verdict': v['verdict'],
-                         'by': people.get(v['by_id']), 'at': v['at'], 'of_visit_id': v['of_visit_id']}
-                        for v in data.get('verdicts', [])]
-            current = league.week_bounds()
-            first = parse_stamp(stamp(league.week_times(current)[0]))
-            weeks = []
-            for offset in range(8):
-                start_date = (first.astimezone(league.timezone()).date() - timedelta(weeks=offset)).isoformat()
-                row = self.store.conn.execute("SELECT json_extract(snapshot,'$.pick.name') FROM league_weeks WHERE start=?", (start_date,)).fetchone()
-                weeks.append({'start': start_date, 'pick_name': row[0] if row else None, 'closed': bool(row)})
-            return {k: data[k] for k in ('week', 'rules', 'standings', 'pick', 'on_duty')} | {
-                'dishes': dishes, 'visits': visits, 'unnamed_count': sum(d['resident'] is None for d in dishes),
-                'unreviewed_count': sum(v['resident'] is None for v in visits),
-                'verdicts': verdicts, 'weeks': weeks}
+            first = league.week_times(league.week_bounds())[0]
+            history = {r['start']: r['pick_name'] for r in self.store.conn.execute(
+                "SELECT start,json_extract(snapshot,'$.pick.name') pick_name FROM league_weeks WHERE start>=?", ((first.date() - timedelta(weeks=7)).isoformat(),))}
+        data = league.project(data)
+        evidence_by_dish = {}
+        for entry in evidence:
+            evidence_by_dish.setdefault(entry['obligation_id'], []).append(entry)
+        dishes = [self.dish(d, residents, data['rules'], actor=actor, closed=closed, evidence=evidence_by_dish.get(d['id'], [])) for d in data['dishes']]
+        visits = self.visits(data['dishes'], dishes, evidence, residents, basis, actor=actor,
+                             groups=data.get('visit_groups'), duplicates=data.get('duplicates'),
+                             alias_guesses=data.get('alias_guesses', {}))
+        hidden_dishes = {oid for v in visits if v['id'] in hidden for oid in v['dish_ids']}
+        visits = [v for v in visits if v['id'] not in hidden]
+        dishes = [d for d in dishes if d['id'] not in hidden_dishes]
+        people = {r['id']: {'id': r['id'], 'name': r['name']} for r in residents}
+        verdicts = [{'visit_id': v['visit_id'], 'title': v['title'], 'kind': v['verdict'],
+                     'by': people.get(v['by_id']), 'at': v['at'], 'of_visit_id': v['of_visit_id']}
+                    for v in data.get('verdicts', [])]
+        weeks = []
+        for offset in range(8):
+            start_date = (first.date() - timedelta(weeks=offset)).isoformat()
+            weeks.append({'start': start_date, 'pick_name': history.get(start_date), 'closed': start_date in history})
+        return {k: data[k] for k in ('week', 'rules', 'standings', 'pick', 'on_duty')} | {
+            'dishes': dishes, 'visits': visits, 'unnamed_count': sum(d['resident'] is None for d in dishes),
+            'unreviewed_count': sum(v['resident'] is None for v in visits),
+            'verdicts': verdicts, 'weeks': weeks}
 
     def visits(self, raw_dishes, dishes, evidence, residents, basis, *, actor, groups=None, duplicates=None, alias_guesses=None):
         raw = {d['id']: d for d in raw_dishes}
         formatted = {d['id']: d for d in dishes}
         people = {r['id']: r for r in residents}
         visits = []
+        evidence_by_id = {e['id']: e for e in evidence}
         for group in house_visits.groups(raw_dishes, evidence, visits=groups, duplicates=duplicates):
             guess_ids = [*group['dish_ids'], *group['alias_ids']]
             guesses = {raw[oid]['suggested_resident_id'] if oid in raw else (alias_guesses or {}).get(str(oid), (alias_guesses or {}).get(oid))
@@ -307,7 +362,7 @@ class House:
                                     if basis.get(str(oid), basis.get(oid))), 'Appearance suggestion; check the arrival photos.')} if person else None
             filmstrip = group['filmstrip']
             # Refresh retention from live evidence; never fall back to a superseded strip.
-            filmstrip = next((e for e in evidence if filmstrip and e['id'] == filmstrip['id']), None)
+            filmstrip = evidence_by_id.get(filmstrip['id']) if filmstrip else None
             url = None
             if filmstrip and not filmstrip['expired'] and parse_stamp(filmstrip['expires_at']) > utcnow():
                 url = self.signed_url(filmstrip) if actor else f"/api/evidence/{filmstrip['id']}"
@@ -412,19 +467,25 @@ class House:
                 raise HTTPException(409, 'Some dishes in this visit cannot be reviewed. Refresh the week.')
             actor_id = actor['id'] if actor else None
             reviewer = f'resident:{actor_id}' if actor else 'operator'
-            target = None
-            if body.verdict == 'duplicate':
-                if not body.of_visit_id or body.of_visit_id == visit_id:
-                    raise HTTPException(400, 'Choose the other visit that shows this dish.')
-                target = self.visit_group(body.of_visit_id, allow_member=True)
-                if set(target['dish_ids']) & set(group['dish_ids']):
-                    raise HTTPException(400, 'A visit cannot duplicate itself.')
-                targets = [store.obligation(oid) for oid in target['dish_ids']]
-                for target_item in targets:
-                    bounds = league.week_bounds(now=parse_stamp(target_item['followup_at'])) if target_item['followup_at'] else None
-                    if not bounds or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
-                        raise HTTPException(400, 'Choose an original visit that is still in the league.')
             with store.dish_corrections():
+                if actor is not None and body.verdict != 'cant_tell':
+                    for item in items:
+                        named = item['resident_id'] is not None and item['confidence'] == 'confirmed' and league.human_named(item)
+                        disputed = item['dispute_state'] == 'open' or item['lifecycle'] == 'disputed'
+                        if named or disputed or not current['can_name']:
+                            raise HTTPException(409, "Already named — use That wasn't me to dispute it.")
+                target = None
+                if body.verdict == 'duplicate':
+                    if not body.of_visit_id or body.of_visit_id == visit_id:
+                        raise HTTPException(400, 'Choose the other visit that shows this dish.')
+                    target = self.visit_group(body.of_visit_id, allow_member=True)
+                    if set(target['dish_ids']) & set(group['dish_ids']):
+                        raise HTTPException(400, 'A visit cannot duplicate itself.')
+                    targets = [store.obligation(oid) for oid in target['dish_ids']]
+                    for target_item in targets:
+                        bounds = league.week_bounds(now=parse_stamp(target_item['followup_at'])) if target_item['followup_at'] else None
+                        if not bounds or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
+                            raise HTTPException(400, 'Choose an original visit that is still in the league.')
                 if body.verdict == 'cant_tell':
                     store.conn.execute('INSERT OR IGNORE INTO house_hidden_visits VALUES(?,?)', (actor_id or 0, visit_id))
                 else:
@@ -452,7 +513,7 @@ class House:
                         {'visit_id': visit_id, 'obligation_ids': group['dish_ids'], 'verdict': body.verdict, 'by': actor_id, 'of_visit_id': body.of_visit_id})
             answer = current | {'points': 0 if body.verdict != 'cant_tell' else current['points'],
                 'hidden': body.verdict == 'cant_tell', 'verdict': None if body.verdict == 'cant_tell' else {
-                    'verdict': body.verdict, 'by': {'id': actor['id'], 'name': actor['name']} if actor else None,
+                    'kind': body.verdict, 'by': {'id': actor['id'], 'name': actor['name']} if actor else None,
                     'at': stamp(), 'of_visit_id': body.of_visit_id},
                 'can_name': False, 'can_dispute': False, 'can_settle': False}
             answer['aliases'] = [alias | {'verdict': answer['verdict']} for alias in current['aliases']]
@@ -606,36 +667,51 @@ class House:
             evidence = store.evidence(evidence_id)
             if not evidence or evidence['kind'] not in ('snapshot', 'filmstrip') or not evidence['obligation_id']:
                 raise HTTPException(404, 'Photo not found.')
-            visible = False
-            group = next((g for g in house_visits.catalog(store)
-                          if g['filmstrip'] and g['filmstrip']['id'] == evidence_id), None)
-            group = group or house_visits.metadata(evidence)
-            ids = group['dish_ids'] if group else [evidence['obligation_id']]
-            for oid in ids:
-                item = store.obligation(oid)
-                if not item['followup_at']:
-                    continue
-                start = league.week_bounds(now=parse_stamp(item['followup_at']))['start']
-                result = league.result(store, start)
-                visible = any(d['id'] == item['id'] for d in result['dishes'])
-                if result['week']['closed']:
-                    visible = visible and any(e['id'] == evidence_id for e in result['evidence'])
-                if visible:
-                    break
+            # All local SQL writes (including worker/operator changes and week close)
+            # invalidate this bounded predicate cache. data_version covers another connection.
+            league.close_weeks(store)
+            revision = (store.conn.total_changes, store.conn.execute('PRAGMA data_version').fetchone()[0])
+            if revision != self.media_revision:
+                self.media_visibility.clear()
+                self.media_revision = revision
+            if evidence_id not in self.media_visibility:
+                groups = house_visits.catalog(store, [evidence['obligation_id']])
+                group = next((g for g in groups if g['filmstrip'] and g['filmstrip']['id'] == evidence_id), None)
+                # A superseded strip must not regain visibility from its legacy capture.
+                group = group or house_visits.metadata(evidence)
+                ids = group['dish_ids'] if group else [evidence['obligation_id']]
+                visible = False
+                for oid in ids:
+                    item = store.obligation(oid)
+                    if not item['followup_at']:
+                        continue
+                    week = league.week_bounds(now=parse_stamp(item['followup_at']))
+                    frozen = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
+                    if frozen:
+                        snapshot = json.loads(frozen[0])
+                        visible = any(d['id'] == oid for d in snapshot['dishes']) and any(e['id'] == evidence_id for e in snapshot['evidence'])
+                    else:
+                        visible = bool(league.left_out(store, *league.week_times(week), ids=[oid]))
+                    if visible:
+                        break
+                self.media_visibility[evidence_id] = visible
+                if len(self.media_visibility) > 2048:
+                    self.media_visibility.popitem(last=False)
+            visible = self.media_visibility[evidence_id]
             if not visible:
                 raise HTTPException(404, 'Photo not found in the house league.')
             if evidence['expired'] or parse_stamp(evidence['expires_at']) <= now:
                 raise HTTPException(404, 'This photo is no longer kept.')
-            path = self.media.safe_path(evidence['filename'])
-            if not path.is_file():
-                raise HTTPException(404, 'This photo is no longer kept.')
+        path = self.media.safe_path(evidence['filename'])
+        if not path.is_file():
+            raise HTTPException(404, 'This photo is no longer kept.')
         return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'private, no-store'})
 
 
 def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     house = House(app.state.store, app.state.media, config)
     app.state.house = house
-    app.add_middleware(HouseBoundary, site_origin=house.config.site_origin)
+    app.add_middleware(HouseBoundary, site_origin=house.config.site_origin, tunnel_port=app.state.house_tunnel_port)
     router = APIRouter(prefix='/house')
 
     @router.get('/api/me')
@@ -644,7 +720,8 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
 
     @router.get('/api/week')
     def week(start: str | None = None, resident=Depends(house.resident)):
-        return house.week(start, resident)
+        with house.week_budget.admit(f"user:{resident['id']}"):
+            return house.week(start, resident)
 
     @router.post('/api/dishes/{oid}/name')
     def name(oid: int, body: Name, resident=Depends(house.resident)):
@@ -678,17 +755,13 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     def join(body: Join, request: Request):
         if app.state.config.demo or app.state.config.snapshot:
             raise HTTPException(403, 'House accounts are unavailable in demo and snapshot mode.')
-        house.limiter.check('join:' + (request.headers.get('cf-connecting-ip') or (request.client.host if request.client else 'local')), count=5, seconds=900)
+        house.join_limiter.check('join:' + client_identity(request), count=5, seconds=900)
         return house.join(body)
 
-    @router.get('/api/login-names')
-    def login_names():
-        with house.store.lock, house.store.conn:
-            return [{'slug': slug_for(house.store, r), 'name': r['name']} for r in house.store.residents() if r['active'] and r['auth_user_id']]
-
     @router.get('/media/{evidence_id}')
-    def media(evidence_id: str, exp: int, sig: str):
-        return house.media_file(evidence_id, exp, sig)
+    def media(evidence_id: str, exp: int, sig: str, request: Request):
+        with house.media_budget.admit('ip:' + client_identity(request)):
+            return house.media_file(evidence_id, exp, sig)
 
     app.include_router(router)
     operator = APIRouter(prefix='/api/league', dependencies=[Depends(authenticated)])
