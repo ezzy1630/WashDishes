@@ -104,6 +104,10 @@ def seed(app) -> dict:
     calibration = refit(store)
     if calibration['display_gate']['checked'] != 40 or not store.identity_display_gate()['active']:
         raise RuntimeError('Synthetic fixture failed the real day-excluded identity display gate')
+    from wash_dishes import learning
+    evidence = store.conn.execute("SELECT id,obligation_id FROM evidence WHERE kind='snapshot' ORDER BY created_at DESC LIMIT 1").fetchone()
+    with store.conn:
+        learning.add_question(store, source='e2e-help', task='present', evidence_id=evidence['id'], obligation_id=evidence['obligation_id'], box=[.2,.4,.3,.35])
     league.override(store, residents["ezzy"])
     return {"residents": residents, "visits": visits, "week_start": monday.date().isoformat(),
             "closed_start": (monday - timedelta(days=14)).date().isoformat(), "seeded_at": now.isoformat()}

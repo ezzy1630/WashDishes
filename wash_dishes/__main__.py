@@ -39,6 +39,7 @@ def main() -> None:
     teach.add_argument("--footage", help="Folder of recorded .ts segments to sample extra frames from first")
     teach.add_argument("--every", type=float, default=60, help="Seconds between sampled frames")
     teach.add_argument("--skip", action="append", default=[], metavar="START/END", help="ISO time range to leave out, such as an evaluation window")
+    sub.add_parser("learn-nightly", help="Quiet-hour, consensus-only learning; skips while the camera is active")
     improve = sub.add_parser("improve", help="Weekly: retrain the kitchen detector and adopt it only if it scores better on recorded truth")
     improve.add_argument("--truth", required=True, action="append", help="Truth JSON for an evaluation window; repeat with --footage for more periods")
     improve.add_argument("--footage", required=True, action="append", help="Recorded segments covering that truth window, in the same order")
@@ -175,6 +176,16 @@ def main() -> None:
             Path(args.out).write_text(json.dumps(report, indent=1))
         summary = {key: report[key] and {k: v for k, v in report[key].items() if k not in ("missed", "extra")} for key in ("changes", "left_out", "deployed_left_out")}
         print(json.dumps(summary, indent=1))
+    elif args.command == "learn-nightly":
+        import json
+
+        from .learning_nightly import nightly
+        from .store import Store
+        store = Store(config.root)
+        try:
+            print(json.dumps(nightly(store), indent=1))
+        finally:
+            store.close()
     elif args.command == "train-verifier":
         import json
         from datetime import datetime

@@ -1,3 +1,4 @@
+import { learningFeed } from "./learning-contracts.js";
 import { HOUSE_API_ORIGIN } from "../config.js";
 import { accessToken, mock } from "./auth.js";
 import * as parse from "./contracts.js";
@@ -78,3 +79,6 @@ export const act = (id, action, body) =>
     request(`/visits/${encodeURIComponent(id)}/${action}`, { body }),
     parse.visit,
   );
+
+/** Teaching responses are isolated from the league payload. */
+export const learningRequest = async (path, body) => { const data = await request(path, body === undefined ? {} : { body }); if(path !== "/learning") return data; try { return learningFeed(data); } catch { throw new HouseError("Dish Watch is offline right now", 502); } };

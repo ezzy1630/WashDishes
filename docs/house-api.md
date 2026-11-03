@@ -397,3 +397,65 @@ leave the old strip intact and appear in `skipped`; sequences keep retained save
 stills when video is gone. Apply forces a new render of selected derived images,
 without changing scoring, identities, admission or visit membership. Review
 checks are preserved when the original stage signature is unchanged.
+
+## Help the camera and nightly learning
+
+Teaching is separate from league scoring. `learning_questions` freeze the source capture,
+box, task and interested residents. `learning_labels` keep actor, source, timestamp,
+answer and undo tombstone; nothing is deleted to undo an answer. `learning_asks`
+reserves at most 12 cards per resident per UTC day. New owners are checked on reads
+and writes as well as the original interested parties. Questions are ranked by stored
+probe uncertainty and recurrence, without running image models in an API request.
+
+- `GET /house/api/learning`: authenticated card batch, personal label count, house
+  truth count, real run history and last adoption date. Issuing a card consumes a daily
+  reservation, including skips. Reloading the same card does not consume another.
+- `POST /house/api/learning/{question_id}/answer`: `{answer,value?}`. Tasks: `present`
+  (`yes/no`), `kind` (`plate/bowl/cup/pan/pot/utensil/not_dish`), `same`
+  (`same/different`), `identity` (`me/not_me`) and `missed` (`box`, with
+  `value:{kind,box:[x,y,width,height]}`). Coordinates are normalized; missed-box
+  agreement uses a 2.5% grid. `unsure` records a skip, never truth. Returns label ID
+  and `pending/trusted/conflict` state. A question must have been issued to the actor.
+- `POST /house/api/learning/labels/{label_id}/undo`: `{}`; only the author can undo.
+- `POST /house/api/visits/{visit_id}/feedback`: `{task:"present"|"kind"|"missed"}`;
+  flags a currently visible visit for independent correction. An interested person
+  can flag an error, but cannot confirm it. Returns `independent_review`.
+- `GET /house/learning-media/{question_id}?actor=&exp=&sig=`: signed, expiring media
+  capability, restricted to an issued question, active independent resident and
+  retained source evidence. `other=1` reads the second picture of a pair.
+- Operator session + CSRF: `GET /api/learning` returns runs and label conflicts;
+  `POST /api/learning/{question_id}/resolve` records an explicit operator answer;
+  `POST /api/learning/labels/{label_id}/undo` withdraws it;
+  `POST /api/learning/rollback/{probe|identity|detector}` restores the previous model.
+  The compact Learning panel is in Settings.
+
+Two independent residents must agree on training truth. A resident with an ownership,
+original-owner, suggested-owner, naming or dispute stake cannot confirm the label.
+Conflicting answers are excluded regardless of majority, until an operator resolves
+them. Self-identification identifies only a person crop, never ownership or points.
+Names, disputes and dish verdicts append through `learning.capture_action` within the
+existing transaction. `learning.add_question` is the server-only seam for other lanes
+to enqueue paired dishes, model disagreements and anchored person crops.
+
+`learn-nightly` runs at 04:45–04:59 local time under a persisted daily claim and
+nonblocking filesystem lock, at low priority. `scripts/install-learning-timer.sh`
+is an explicit replacement for the three legacy timers; installing it disables those
+timers. It is not installed by starting the app. **The worker never stops the camera**:
+when the current camera heartbeat shows people, less than a minute of quiet, or stale/unknown observations, it records `skipped_busy`. Feature-only probe and identity jobs can run while an active camera is quiet.
+On the current memory-limited Jetson, detector training therefore needs an independently
+scheduled camera-off window. This installer does not create that window or restart
+anything. Reloading the detector in a running camera remains an operator action.
+
+Only trusted labels export. Whole capture days (one in five, fixed by UTC ordinal)
+are permanently reserved, grouped by visit obligation. Each run trains on earlier
+nonreserved days with a full day gap and checks the latest reserved day. Raw answers,
+conflicts, skips and undone labels never reach trainers. The candidate root contains
+only training rows; existing probe, identity and detector functions are called there.
+Partial dish corrections train on bounded crops so unreviewed surroundings are not
+negative examples. Same/different answers are exported for the tracking lane, not
+silently applied to inventory. Evaluation must contain at least 20 paired examples;
+the gain must exceed both two paired standard errors and 2 percentage points. The
+previous artifact is retained, the promoted artifact is evaluated again, and a readback
+regression immediately restores it. Run receipts include training/test IDs, counts,
+metrics, candidate digest and adoption decision. Undo during training rejects that run.
+No UI accuracy claim is shown without an adopted `learning_runs` measurement.

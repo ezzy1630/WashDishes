@@ -39,3 +39,10 @@ test('site refuses missing/unknown pick states and contradictory identity fields
   assert.deepEqual(week(input).verdicts,input.verdicts);
   assert.throws(()=>week({...input,verdicts:[{...input.verdicts[0],kind:'unknown'}]}));
 });
+
+test('learning cards reject unsafe images, unknown tasks and invalid geometry', async () => {
+  const {learningFeed}=await import('../house-site/js/learning-contracts.js');
+  const feed={personal_labels:0,house_truth:0,runs:[],last_learned:null,questions:[{id:1,task:'present',reason:'Uncertain',captured_at:'2026-11-03T00:00:00Z',image_url:'https://example.com/house/learning-media/1',other_image_url:null,box:[0,0,.3,.3]}]};
+  assert.equal(learningFeed(feed),feed);
+  for(const patch of [{task:'unknown'},{image_url:'javascript:alert(1)'},{image_url:'https://user:password@example.com/photo'},{box:[0,0,NaN,.3]}])assert.throws(()=>learningFeed({...feed,questions:[{...feed.questions[0],...patch}]}));
+});

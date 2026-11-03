@@ -605,6 +605,7 @@ class House:
                 try:
                     for oid in ids:
                         store.undo_dish_correction(oid, 'operator')
+                        store.conn.execute("UPDATE learning_labels SET undone_at=? WHERE question_id IN (SELECT id FROM learning_questions WHERE obligation_id=?) AND source='house:verdict' AND undone_at IS NULL", (stamp(), oid))
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from None
                 store.conn.executemany('DELETE FROM house_verdicts WHERE obligation_id=?', [(oid,) for oid in ids])
@@ -690,6 +691,8 @@ class House:
                     store._refresh_identity_suggestions()
                     store._event(oid, 'house_dispute_settled', 'It was them; points restored.' if upheld else 'Not them; back to unnamed.',
                                  {'actor_id': actor_id, 'decision': body['decision'], 'resident_id': item['resident_id']}, at=now)
+                from .learning import capture_action
+                capture_action(store, oid, action, body, actor)
                 updated = store.obligation(oid)
                 updated['due_at'] = updated['followup_at']
                 updated['human_named'] = item['human_named'] or bool(updated['named_at'])
@@ -916,4 +919,6 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
         from fastapi.exception_handlers import request_validation_exception_handler
         return await request_validation_exception_handler(request, exc)
 
+    from .learning_api import install as install_learning
+    install_learning(app, house, authenticated)
     return house

@@ -1,0 +1,6 @@
+/* Learning panel only. Settings and the operator theme retain their existing styles. */
+.learning-panel .btn { min-height: 44px; }
+.learning-panel .row-actions { flex-wrap: wrap; gap: 8px; }
+.learning-panel .learning-trends { width: 100%; border-collapse: collapse; }
+.learning-panel .learning-trends th, .learning-panel .learning-trends td { text-align: left; padding: 8px 12px; }
+.learning-panel .learning-trends caption { text-align: left; padding-block: 8px; }

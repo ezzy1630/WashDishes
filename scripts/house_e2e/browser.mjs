@@ -297,6 +297,14 @@ async function journey() {
   const wren = await join('wren');
   const theo = await join('theo');
   const milo = await join('milo');
+  await wren.page.getByRole('link',{name:'Help camera',exact:true}).click();
+  await wren.page.getByRole('heading',{name:'Is this a dish?',exact:true}).waitFor();
+  await wren.page.getByRole('button',{name:'Yes',exact:true}).click();
+  await wren.page.getByText('Saved. Another housemate will check it.',{exact:true}).waitFor();
+  await screenshot(wren.page,'help-answer-pending-consensus');
+  await wren.page.getByRole('button',{name:'Undo',exact:true}).click();
+  await wren.page.getByRole('heading',{name:'Is this a dish?',exact:true}).waitFor();
+  await wren.page.getByRole('link',{name:'This week',exact:true}).click();
   let state = await week(wren);
   assert.equal(state.start_week, cfg.fixture.closed_start, 'Persisted first-run week');
   assert.equal(state.weeks.length, 3, 'History includes only weeks since the league started');
@@ -318,6 +326,9 @@ async function journey() {
     state.weeks.map(w => w.start), 'Operator selector uses the same bounded history');
   await operatorPage.getByText(/^League started /).waitFor();
   await screenshot(operatorPage, 'operator-start-bounded-history');
+  await operatorPage.goto(cfg.privateApi+'/#/setup/learning');
+  await operatorPage.getByText('No learning runs yet.',{exact:true}).waitFor();
+  await screenshot(operatorPage,'operator-learning-panel');
   await operatorPage.close();
   scores(state, 0, 0, null);
   assert.equal(state.rules.min_points, 4);

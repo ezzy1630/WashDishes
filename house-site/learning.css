@@ -1,0 +1,292 @@
+/* Help the camera: isolated extension of the house-site tokens. No continuous motion. */
+.help-camera {
+  max-width: 720px;
+  margin-inline: auto;
+}
+.learning-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-block: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.learning-progress p {
+  margin: 0;
+}
+.learning-progress .help {
+  max-width: 36ch;
+}
+.learning-receipt {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--secondary);
+}
+.learning-receipt button {
+  min-width: 60px;
+  min-height: 44px;
+}
+.learning-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface);
+  min-height: 490px;
+}
+.learning-question {
+  padding: 20px 20px 16px;
+  min-height: 107px;
+}
+.learning-question h2 {
+  font-size: 23px;
+  letter-spacing: -0.025em;
+  margin: 0 0 8px;
+}
+.learning-question p {
+  margin: 0;
+  min-height: 40px;
+}
+.learning-photo {
+  position: relative;
+  aspect-ratio: 4/3;
+  background: var(--control);
+  isolation: isolate;
+}
+.learning-photo > img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+}
+.learning-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.learning-draw {
+  touch-action: none;
+  cursor: crosshair;
+}
+.learning-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 20px;
+  min-height: 132px;
+  align-content: start;
+}
+.learning-actions button,
+.learning-actions select {
+  min-height: 48px;
+}
+.learning-choice {
+  flex: 1 1 90px;
+  border: 1px solid var(--border);
+  background: var(--control);
+  color: var(--text);
+  font-size: 16px;
+  border-radius: 9px;
+  padding: 10px 16px;
+}
+.learning-choice:hover {
+  background: var(--raised);
+}
+.learning-actions > .quiet {
+  flex-basis: 100%;
+  color: var(--secondary);
+}
+.learning-actions select {
+  flex: 1;
+}
+.learning-message {
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 490px;
+}
+.learning-message h2 {
+  font-size: 24px;
+  margin: 0 0 12px;
+}
+.learning-message p {
+  max-width: 45ch;
+}
+.learning-message button {
+  align-self: start;
+  min-height: 48px;
+  margin-top: 16px;
+}
+.learning-error {
+  padding: 0 20px 20px;
+  color: var(--waiting);
+}
+.learning-fairness {
+  font-size: 13px;
+  color: var(--secondary);
+  max-width: 65ch;
+  margin: 20px 0;
+}
+.learning-photo-missing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  text-align: center;
+}
+.learning-other {
+  width: 100%;
+  aspect-ratio: 4/3;
+  object-fit: contain;
+}
+.learning-coordinates {
+  flex-basis: 100%;
+}
+.learning-coordinates summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.learning-box-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.learning-box-fields input {
+  width: 100%;
+  min-height: 44px;
+}
+.learning-prompt {
+  padding-block: 16px;
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+}
+.learning-prompt[hidden] {
+  display: none;
+}
+.learning-prompt p {
+  color: var(--secondary);
+  margin: 0;
+}
+.learning-prompt a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.help-camera button:focus-visible,
+.help-camera select:focus-visible,
+.help-camera input:focus-visible,
+.help-camera .learning-photo:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+.help-camera ::selection {
+  background: var(--selection);
+  color: var(--text);
+}
+.help-camera input {
+  caret-color: var(--text);
+}
+@media (min-width: 760px) {
+  .learning-card {
+    min-height: 640px;
+  }
+  .learning-message {
+    min-height: 640px;
+  }
+  .learning-question {
+    padding: 24px;
+  }
+  .learning-actions {
+    padding: 24px;
+  }
+  .learning-question h2 {
+    font-size: 26px;
+  }
+}
+/* Keep the question, photograph and primary answers together on a 390px phone. */
+.help-camera > .page-heading {
+  margin-bottom: 16px;
+}
+.help-camera > .page-heading h1 {
+  font-size: 30px;
+}
+.help-camera > .page-heading p {
+  font-size: 14px;
+  margin-top: 6px;
+}
+.learning-progress {
+  display: block;
+  padding-block: 0 12px;
+  font-size: 14px;
+}
+.learning-progress .help {
+  max-width: 65ch;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.learning-receipt {
+  min-height: 52px;
+  font-size: 12px;
+}
+.learning-question {
+  min-height: 90px;
+  padding: 16px;
+}
+.learning-question p {
+  min-height: 32px;
+  font-size: 12px;
+}
+.learning-question h2 {
+  font-size: 22px;
+}
+.learning-photo {
+  aspect-ratio: 16/9;
+}
+.learning-photo > img {
+  object-fit: contain;
+}
+.learning-actions {
+  padding: 16px;
+  gap: 8px;
+  min-height: 128px;
+}
+.learning-message {
+  min-height: 440px;
+}
+.learning-card {
+  min-height: 440px;
+}
+@media (min-width: 760px) {
+  .learning-question {
+    padding: 24px;
+  }
+  .learning-actions {
+    padding: 24px;
+  }
+  .learning-message,
+  .learning-card {
+    min-height: 580px;
+  }
+}
+.learning-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background: var(--line);
+}
+.learning-pair .learning-photo {
+  aspect-ratio: 1;
+}
+.learning-pair .learning-photo img {
+  object-fit: contain;
+}

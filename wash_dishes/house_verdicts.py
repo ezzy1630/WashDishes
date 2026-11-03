@@ -7,6 +7,8 @@ from .store import stamp
 def mark(store, obligation_ids: list[int], verdict: str, by: int | None, of_id: int | None = None) -> None:
     # Caller owns the transaction, including all visit members and the attributed audit event.
     for oid in obligation_ids:
+        from .learning import capture_action
+        capture_action(store, oid, 'verdict', {'verdict': verdict}, {'id': by} if by else None)
         store.conn.execute('''INSERT INTO house_verdicts VALUES(?,?,?,?,?) ON CONFLICT(obligation_id)
             DO UPDATE SET verdict=excluded.verdict,by_id=excluded.by_id,at=excluded.at,of_id=excluded.of_id''',
             (oid, verdict, by, stamp(), of_id))

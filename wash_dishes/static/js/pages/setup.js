@@ -1,8 +1,9 @@
+import { learningPanel } from "../learning.js";
 // Settings: the camera link, the areas it watches, the rules, detection and storage.
 import { fill, h, icon, api, state, emit, toast, field, form, bytes, busy, safeURL, head, ago, pct, activeResidents } from "../core.js";
 import { ROLE_COLORS, viewState } from "../live.js";
 
-const SECTIONS = [["league", "Kitchen duty"], ["remembered", "Remembered non-dishes"], ["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
+const SECTIONS = [["learning", "Learning"], ["league", "Kitchen duty"], ["remembered", "Remembered non-dishes"], ["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
 const ROLES = { dirty: "Counter · dishes get left here", sink: "Sink", clean: "Rack · clean dishes", storage: "Cabinet · put away" };
 const ROLE_SHORT = { dirty: "counter", sink: "sink", clean: "rack", storage: "cabinet" };
 
@@ -16,6 +17,7 @@ export function setupPage(main) {
   const storageBox = h("div");
   const leagueBox = h('div', { class: 'card-body league-settings' }, h('p', { class: 'tx2' }, 'Loading kitchen duty rules…'));
   const content = h("div", { class: "col" },
+    learningPanel(),
     section('league', 'Kitchen duty', 'Weekly points for late dishes. The house can vote to switch duty off.', leagueBox),
     section("remembered", "Remembered non-dishes", "Objects marked Not a dish or It’s clean. Near-exact matches in the same area wait for review. Up to 64 are kept; removing one allows new records again.", rememberedBox),
     section("camera", "Camera", "The kitchen camera on your local network. Its password never leaves the Jetson.", camStatus, h("div", { class: "card-body" }, cameraForm())),
