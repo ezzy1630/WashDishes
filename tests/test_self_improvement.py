@@ -115,13 +115,14 @@ def test_identity_weights_are_relearned_only_when_they_beat_the_current_ones_on_
     people = [store.add_resident(name)["id"] for name in ("Alex", "Sam")]
     # Hair tells them apart, weakly. Faces from the overhead camera are noise that looks confident.
     heads = {people[0]: [1, 0.6, 0.6, 0], people[1]: [0.6, 0.6, 1, 0]}
-    at = utcnow() - timedelta(hours=2)
+    start = utcnow() - timedelta(days=8)
 
     def sighting(index):
+        at = start + timedelta(hours=index * 2)
         who = people[index % 2]
         item = camera_record(store)
-        store.add_person_sample(item["id"], unit([v + rng.gauss(0, 0.1) for v in heads[who]]), at=at, cue="head", context="sink")
-        store.add_person_sample(item["id"], unit([rng.gauss(0, 1) for _ in range(4)]), at=at, cue="face", context="sink")
+        store.add_person_sample(item["id"], unit([v + rng.gauss(0, 0.01) for v in heads[who]]), at=at, cue="head", context="sink")
+        store.add_person_sample(item["id"], unit([rng.gauss(0, 1) for _ in range(16)]), at=at, cue="face", context="sink")
         store.action(item["id"], "confirm", resident_id=who)
 
     for index in range(MIN_CASES - 10):

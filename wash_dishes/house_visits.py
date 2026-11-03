@@ -71,6 +71,35 @@ def catalog(store, ids: list[int] | None = None) -> list[dict]:
     return selected
 
 
+def identity_capture(store, group: dict) -> dict | None:
+    """Return only the unambiguous arrival anchor saved by the filmstrip worker.
+
+    Old strips with no anchor cannot teach from a later camera sample. Recheck the
+    persisted window/depicted boxes at review time, including expired strip media.
+    """
+    from .store import parse_stamp
+    from .vision import box_iou
+
+    capture = group.get('capture', {})
+    window, frames = capture.get('window', {}), capture.get('frames', [])
+    if not window.get('arrival_recorded') or not frames or any(len(f.get('person_boxes', [])) > 1 for f in frames):
+        return None
+    source = store.conn.execute("""SELECT * FROM evidence WHERE id=? AND kind='snapshot'
+        AND json_extract(capture,'$.identity_source')='arrival_visit'
+        AND json_extract(capture,'$.visit_id')=?""", (capture.get('identity_evidence_id'), group['id'])).fetchone()
+    if not source or source['obligation_id'] not in group['dish_ids']:
+        return None
+    identity = json.loads(source['capture'])
+    at = parse_stamp(source['created_at']).timestamp()
+    if not window.get('before', float('inf')) <= at <= window.get('after', float('-inf')):
+        return None
+    box = identity.get('person_box')
+    if not box or not any(abs(f['at'] - at) <= 1 and len(f.get('person_boxes', [])) == 1
+                          and box_iou(box, f['person_boxes'][0]) >= .4 for f in frames):
+        return None
+    return dict(source) | {'identity': identity}
+
+
 def duplicate_map(store, visits=None) -> dict[int, int]:
     aliases = {oid: target for group in (catalog(store) if visits is None else visits)
                for oid, target in group['duplicate_of'].items()}

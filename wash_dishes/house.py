@@ -397,15 +397,19 @@ class House:
         people = {r['id']: r for r in residents}
         visits = []
         evidence_by_id = {e['id']: e for e in evidence}
+        gate = self.store.identity_display_gate()
         for group in house_visits.groups(raw_dishes, evidence, visits=groups, duplicates=duplicates):
-            guess_ids = [*group['dish_ids'], *group['alias_ids']]
-            guesses = {raw[oid]['suggested_resident_id'] if oid in raw else (alias_guesses or {}).get(str(oid), (alias_guesses or {}).get(oid))
-                       for oid in guess_ids}
-            guess_id = next(iter(guesses)) if len(guesses) == 1 else None
-            person = people.get(guess_id)
-            guess = {'resident_id': person['id'], 'name': person['name'],
-                     'basis': next((basis.get(str(oid), basis.get(oid)) for oid in group['dish_ids']
-                                    if basis.get(str(oid), basis.get(oid))), 'Appearance suggestion; check the arrival photos.')} if person else None
+            guess = None
+            source = house_visits.identity_capture(self.store, group) if gate['active'] else None
+            if source:
+                identity = source['identity']
+                guess_id, score, _, seen = self.store.suggest_identity(identity.get('cues', {}),
+                    at=parse_stamp(source['created_at']), context=identity.get('context'),
+                    exclude_obligation=source['obligation_id'])
+                person = people.get(guess_id)
+                if person and score is not None and score >= gate['threshold']:
+                    guess = {'resident_id': person['id'], 'name': person['name'],
+                             'basis': seen.get('basis') or 'Appearance suggestion; check the arrival photos.'}
             filmstrip = group['filmstrip']
             # Refresh retention from live evidence; never fall back to a superseded strip.
             filmstrip = evidence_by_id.get(filmstrip['id']) if filmstrip else None
@@ -454,21 +458,14 @@ class House:
             with store.conn:
                 at = utcnow()
                 if action == 'name' or (action == 'settle' and body['decision'] == 'them'):
-                    filmstrip = group.get('filmstrip')
-                    capture = json.loads(filmstrip['capture']) if filmstrip else {}
-                    evidence_id = capture.get('identity_evidence_id')
-                    # A name on this visit must never label a camera crop from
-                    # a later passer-by or an ambiguous arrival. One visit has
-                    # one teaching capture, even when it contains several dishes.
+                    source = house_visits.identity_capture(store, group)
+                    # Exactly one arrival capture teaches once, regardless of dish count.
+                    # All other camera samples (including later movers) are cleared.
                     for oid in group['dish_ids']:
-                        source = store.conn.execute("""SELECT * FROM evidence WHERE id=? AND obligation_id=? AND kind='snapshot'
-                            AND json_extract(capture,'$.identity_source')='arrival_visit'
-                            AND json_extract(capture,'$.visit_id')=?""", (evidence_id, oid, visit_id)).fetchone()
-                        identity = json.loads(source['capture']) if source else {}
-                        # A later proof may have replaced the active capture.
-                        # Restore this strip's cues without committing the review transaction.
-                        store._replace_person_samples_locked(oid, identity.get('cues', {}), evidence_id or '',
-                            at=parse_stamp(source['created_at']) if source else at, context=identity.get('context'))
+                        selected = source if source and source['obligation_id'] == oid else None
+                        identity = selected['identity'] if selected else {}
+                        store._replace_person_samples_locked(oid, identity.get('cues', {}), selected['id'] if selected else '',
+                            at=parse_stamp(selected['created_at']) if selected else at, context=identity.get('context'))
                 for oid in group['dish_ids']:
                     self.change(oid, action, body, actor, _in_visit=True, _at=at)
             first = store.obligation(group['dish_ids'][0])
@@ -542,6 +539,11 @@ class House:
                             raise HTTPException(400, 'Choose an original visit that is still in the league.')
                 if body.verdict == 'cant_tell':
                     store.conn.execute('INSERT OR IGNORE INTO house_hidden_visits VALUES(?,?)', (actor_id or 0, visit_id))
+                    # A human cannot tell who is depicted: keep their private skip and points
+                    # contract, but stop using this visit as identity ground truth.
+                    store.conn.executemany('UPDATE person_samples SET resident_id=NULL,hint_resident_id=NULL WHERE obligation_id=?',
+                                           [(oid,) for oid in group['dish_ids']])
+                    store._refresh_identity_suggestions()
                 else:
                     if body.verdict == 'not_dish':
                         store.mark_not_dish(group['dish_ids'], reviewer)

@@ -192,7 +192,13 @@ unavailable or expired filmstrips. Legacy arrival evidence (`kind=filmstrip`,
 `label=arrival`) supplies fallback membership through
 `capture={"visit_id":...,"obligation_ids":[...],"frames":[...]}`. Missing metadata
 means singleton `dish-<id>`. Titles combine quantities, e.g. `Pan and 2 bowls`.
-Agreeing member suggestions supply `guess`; guesses never count as names/points.
+`guess` is null until the current identity calibration has at least 30 independent
+human-checked day-excluded predictions in a fixed confidence band with >=90% precision
+(the existing automatic-naming gate constants). Once earned, the API scores only the
+visit's unambiguous arrival anchor against the current human gallery. Scores are cue
+ranking values, not probabilities. Legacy strips without a safe anchor show no guess.
+A human tap to confirm uses the ordinary name endpoint; guesses never score points.
+Any label/gallery/model change invalidates calibration until the next successful nightly check.
 Only eligible canonical obligations appear in `dish_ids` and `dishes`; incomplete
 canonical visits have all flags false. `duplicate_of` maps aliases to canonical
 obligations (including human Same dish answers); they score zero and never become
@@ -232,7 +238,8 @@ full power and undo. These global verdicts exclude every member for everyone, wi
 visit, or `of_visit_id="dish-<id>"` to choose one exact dish within a visit.
 A person's exact-dish choice can override incorrect detector kind labels;
 ambiguous multi-dish targets ask for a specific original. `cant_tell` writes **no label or
-verdict event**, just hides that visit/dishes for the current user; standings for
+verdict event**, hides that visit/dishes for the current user, and retracts its identity
+training labels because the visitor is uncertain; standings for
 named dishes remain unchanged. `unreviewed_count` counts visible visits with no
 human name or global verdict; `unnamed_count` remains a dish count for compatibility.
 Verdict returns the previous Visit with `verdict: {kind, by, at, of_visit_id}` (`by` is null for operator),
@@ -241,13 +248,22 @@ The operator can undo global verdicts with
 `POST /api/league/visits/{id}/undo-verdict {}`; scores and eligibility restore.
 Skipped visits are scoped to the resident, or the shared operator identity.
 
-Integration note for Lane G: `Store.mark_not_dish(obligation_ids, by)`,
-`mark_clean(obligation_ids, by)`, and `mark_duplicate(obligation_id, of_id, by)`
-are called inside the visit transaction (`by` is resident ID or null for operator).
-Clearly marked temporary adapters currently persist league exclusions only.
-Replace them with Lane G's lifecycle/training implementations without committing
-inside them; keep the API-owned exclusion/audit rows. Operator undo restores the
-pre-verdict obligation fields; Lane G must reconcile training-label undo at merge.
+Identity teaching uses one continuously tracked, in-reach arrival visitor, even for
+multi-dish visits. All journal observations must be unambiguous; the saved anchor
+must match a depicted person inside the arrival window. Naming and operator naming
+restore that anchor's outfit/head/face/stature cues and label only those cues.
+Later proof/mover captures cannot erase a human-labelled arrival. Disputes retract
+labels immediately; `not_them` leaves them unlabelled; `them` restores the same anchor.
+`not_dish`, `clean` and `duplicate` retract labels through Store's correction transaction.
+Operator verdict undo restores the pre-verdict human labels; it never labels a guess.
+
+The installed identity timer already runs `fit-identity` nightly at 04:30, like the
+04:45 probe timer. Refit requires 40 independent human-labelled visits across at
+least three local days. It excludes the entire test day from both the gallery and
+weight training, also excluding each training query's day and duplicate captures.
+Only a strict improvement in correct held-out predictions (abstentions included)
+can replace the current weights. Every successful evaluation publishes a revision-bound
+display gate, including rejected refits. No inference models are loaded by the fitter.
 
 ## Join, media and errors
 

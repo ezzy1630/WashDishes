@@ -32,7 +32,7 @@ def filmstrip(title: str, when: datetime, kinds: list[str], *, arrival_seen: boo
     item = {'dishes': [{'kind': k, 'quantity': 1} for k in kinds], 'location': 'Counter', 'box': boxes[0]}
     picture = render(item, frames, boxes=boxes, already_at=when.timestamp() if not arrival_seen else None)
     return picture, {'frames': [{k: v for k, v in f.items() if k != 'jpeg'} for f in frames],
-                     'window': {'arrival_recorded': arrival_seen}}
+                     'window': {'arrival_recorded': arrival_seen, 'before': when.timestamp(), 'after': (when + timedelta(seconds=50)).timestamp()}}
 
 
 def seed(app) -> dict:
@@ -74,12 +74,36 @@ def seed(app) -> dict:
         evidence_id = f"e2efilmstrip{index + 1}"
         filename = evidence_id + ".jpg"
         picture, capture = filmstrip(visit_id, when, kinds, arrival_seen=index != 1)
+        if index == 0:
+            person_box = [.2, .1, .4, .8]
+            for frame in capture['frames'][1:-1]:
+                frame['person_boxes'] = [person_box]
+            identity_id = media.save_snapshot(ids[0], jpeg('Synthetic arrival visitor'), 'Person shown in arrival visit',
+                at=when + timedelta(seconds=20), capture={'identity_source': 'arrival_visit', 'visit_id': visit_id,
+                    'person_box': person_box, 'cues': {'head': [1, 0, 0]}, 'context': None})
+            capture['identity_evidence_id'] = identity_id
         (store.root / "media" / filename).write_bytes(picture)
         store.add_evidence(ids[0], evidence_id, filename, "filmstrip", "arrival", at=when,
                            expires=now + timedelta(days=30),
                            capture=capture | {"visit_id": visit_id, "obligation_ids": ids})
         visits.append({"id": visit_id, "dish_ids": ids, "points": sum(2 if k in ("pot", "pan") else 1 for k in kinds),
                        "evidence_id": evidence_id, "closed": index == 3})
+    # Exercise the real display gate: 40 independent HUMAN fixture labels across days.
+    # Archive the synthetic calibration dishes so they cannot affect league scores/dashboard totals.
+    from wash_dishes.identity_fit import refit
+    from wash_dishes.store import stamp
+
+    for i in range(40):
+        captured = now - timedelta(days=8) + timedelta(hours=i * 2)
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=captured)
+        vector = [1, 0, i / 10000] if i % 2 == 0 else [0, 1, i / 10000]
+        store.add_person_sample(item['id'], vector, at=captured, cue='head')
+        store.action(item['id'], 'confirm', resident_id=residents['theo' if i % 2 == 0 else 'milo'], now=captured + timedelta(minutes=1))
+        with store.conn:
+            store.conn.execute('UPDATE obligations SET archived_at=? WHERE id=?', (stamp(now), item['id']))
+    calibration = refit(store)
+    if calibration['display_gate']['checked'] != 40 or not store.identity_display_gate()['active']:
+        raise RuntimeError('Synthetic fixture failed the real day-excluded identity display gate')
     league.override(store, residents["ezzy"])
     return {"residents": residents, "visits": visits, "week_start": monday.date().isoformat(),
             "closed_start": (monday - timedelta(days=14)).date().isoformat(), "seeded_at": now.isoformat()}

@@ -1,47 +1,72 @@
-"""Learn how much each identity cue should count, from the names people gave sightings.
-
-Each confirmed camera sighting is scored again as if it were new (its own samples left out), giving
-per-cue evidence for every housemate. Cue weights are fitted to pick the confirmed person, pulled
-towards 1.0 so a little data cannot swing them far. New weights are kept only when they pick the
-right person more often than the weights in use, measured on sightings left out of the fit.
-"""
+"""Human-only identity learning, day-held-out adoption and calibrated house guesses."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from .store import IDENTITY_WEIGHTS_FILE, Store, stamp
+from .store import (
+    AUTO_MIN_ACCURACY,
+    AUTO_MIN_CHECKED,
+    IDENTITY_WEIGHTS_FILE,
+    Store,
+    identity_prediction,
+    stamp,
+)
 
 LAST_RUN_FILE = "identity-fit-last.json"
 MIN_CASES = 40
-FOLDS = 5
 PRIOR = 0.05
 STEPS, RATE, MAX_WEIGHT = 400, 0.05, 4.0
-
+# Fixed score bands, never probabilities. Calibration includes abstentions in coverage.
+DISPLAY_THRESHOLDS = tuple(range(13))
 Case = tuple[int, dict[int, dict[str, float]]]
 
 
-def cases(store: Store) -> list[Case]:
-    """(named person, per-cue evidence by housemate) for every sighting a person named.
+def observations(store: Store, *, independent: bool = False) -> list[dict]:
+    """Only human-labelled active sightings, never predictions or disputed/dismissed labels.
 
-    Only people label samples: confirming an owner names them, and so does answering "who is this?"
-    for a sighting whose dish was never confirmed. The camera naming an owner itself never does.
+    A resident_id in person_samples is written only by human review. Legacy imported human
+    labels remain usable even when they predate the immutable prediction events.
     """
+    tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
     with store.lock:
-        rows = store.conn.execute("""SELECT DISTINCT s.obligation_id id, s.resident_id FROM person_samples s JOIN obligations o ON o.id=s.obligation_id
-            WHERE s.resident_id IS NOT NULL AND o.lifecycle NOT IN ('dismissed','disputed') ORDER BY id""").fetchall()
-    result = []
-    for row in rows:
-        capture = store.sighting_cues(row["id"])
-        if capture is None:
-            result.append((row["resident_id"], {}))
-            continue
-        cues, context, at = capture
-        scored = {resident: features for resident, features, _ in store.cue_features(cues, at=at, context=context, exclude_obligation=row["id"])}
-        result.append((row["resident_id"], scored))
-    return result
+        rows = store.conn.execute("""SELECT s.obligation_id id, min(s.resident_id) truth FROM person_samples s
+            JOIN obligations o ON o.id=s.obligation_id JOIN residents r ON r.id=s.resident_id
+            WHERE r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.attribution IS NOT 'camera'
+            GROUP BY s.obligation_id HAVING count(DISTINCT s.resident_id)=1 ORDER BY s.obligation_id""").fetchall()
+        result = []
+        for row in rows:
+            capture = store.sighting_cues(row['id'])
+            if not capture:
+                continue
+            cues, context, at = capture
+            result.append(dict(row) | {'cues': cues, 'context': context, 'at': at,
+                'day': at.astimezone(tz).date().isoformat(),
+                'fingerprint': hashlib.sha256(json.dumps(cues, sort_keys=True).encode()).hexdigest()})
+    if not independent:
+        return result
+    groups = []
+    for item in sorted(result, key=lambda r: (r['at'], r['id'])):
+        group = next((g for g in reversed(groups) if item['fingerprint'] in g['fingerprints']
+                      or (item['truth'] == g['truth'] and item['at'] - g['last'] < timedelta(minutes=30))), None)
+        if group:
+            group['fingerprints'].add(item['fingerprint'])
+            group['last'] = item['at']
+            group['conflict'] |= item['truth'] != group['truth']
+        else:
+            groups.append(item | {'last': item['at'], 'fingerprints': {item['fingerprint']}, 'conflict': False})
+    return [g for g in groups if not g['conflict']]
+
+
+def cases(store: Store) -> list[Case]:
+    all_rows = observations(store)
+    return [(r['truth'], {who: f for who, f, _ in store.cue_features(r['cues'], at=r['at'],
+            context=r['context'], exclude_day=r['day'],
+            exclude_obligations=[x['id'] for x in all_rows if x['fingerprint'] == r['fingerprint']])}) for r in observations(store, independent=True)]
 
 
 def score(weights: dict[str, float], features: dict[str, float]) -> float:
@@ -74,18 +99,6 @@ def fit(data: list[Case]) -> dict[str, float]:
     return {cue: round(value, 3) for cue, value in weights.items()}
 
 
-def cross_validated(data: list[Case], current: dict[str, float]) -> tuple[float, float]:
-    """Accuracy on held-out sightings: weights fitted without them, and the current weights."""
-    fitted_right = current_right = 0
-    for fold in range(FOLDS):
-        test = [case for index, case in enumerate(data) if index % FOLDS == fold]
-        train = [case for index, case in enumerate(data) if index % FOLDS != fold]
-        weights = fit(train)
-        fitted_right += sum(max(s, key=lambda r: score(weights, s[r]), default=None) == t for t, s in test)
-        current_right += sum(max(s, key=lambda r: score(current, s[r]), default=None) == t for t, s in test)
-    return fitted_right / len(data), current_right / len(data)
-
-
 def _write(path, report: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(report, indent=1))
@@ -93,67 +106,107 @@ def _write(path, report: dict) -> None:
     os.replace(temporary, path)
 
 
+def summary(predictions: list[dict], protocol: str) -> dict:
+    guessed = [r for r in predictions if r['guess'] is not None]
+    correct = sum(r['truth'] == r['guess'] for r in guessed)
+    return {'cases': len(predictions), 'guesses': len(guessed), 'correct': correct,
+            'accuracy': correct / len(predictions) if predictions else None,
+            'coverage': len(guessed) / len(predictions) if predictions else None,
+            'protocol': protocol, 'abstentions': len(predictions) - len(guessed),
+            'precision': correct / len(guessed) if guessed else None, 'rows': predictions}
+
+
 def evaluate(store: Store, *, past_only: bool = False, leave_one_day_out: bool = False,
              enrolled_faces: dict[int, list[list[float]]] | None = None) -> dict:
-    """All human-labelled cases, including abstentions and residents absent from the gallery.
-
-    Past-only holds out every capture at or after the query. This is a capture-time replay, not a
-    claim that historical labels had already been entered. Only the display/check gate measures that.
-    """
+    """Capture-time replay or day-excluded gallery; all human cases include abstentions."""
     if past_only and leave_one_day_out:
-        raise ValueError("Choose capture-time or leave-one-day-out evaluation.")
-    tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
-    with store.lock:
-        rows = store.conn.execute("""SELECT DISTINCT s.obligation_id, s.resident_id FROM person_samples s
-            JOIN obligations o ON o.id=s.obligation_id JOIN residents r ON r.id=s.resident_id
-            WHERE s.resident_id IS NOT NULL AND r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed')
-            AND o.attribution IS NOT 'camera' ORDER BY s.obligation_id""").fetchall()
+        raise ValueError('Choose capture-time or leave-one-day-out evaluation.')
     predictions = []
-    for row in rows:
-        capture = store.sighting_cues(row["obligation_id"])
-        guess, score_value = None, None
-        if capture:
-            cues, context, at = capture
-            guess, score_value, _, _ = store.suggest_identity(cues, at=at, context=context,
-                                                             exclude_obligation=row["obligation_id"], before=at if past_only else None,
-                                                             exclude_day=at.astimezone(tz).date().isoformat() if leave_one_day_out else None,
-                                                             enrolled_faces=enrolled_faces)
-        predictions.append({"id": row["obligation_id"], "truth": row["resident_id"], "guess": guess, "score": score_value})
-    guessed = [r for r in predictions if r["guess"] is not None]
-    correct = sum(r["truth"] == r["guess"] for r in guessed)
-    return {"cases": len(predictions), "guesses": len(guessed), "correct": correct,
-            "coverage": len(guessed) / len(predictions) if predictions else None,
-            "protocol": "leave_one_local_day_out" if leave_one_day_out else "past_only" if past_only else "leave_one_sighting_out",
-            "abstentions": len(predictions) - len(guessed), "precision": correct / len(guessed) if guessed else None, "rows": predictions}
+    data = observations(store)
+    for r in data:
+        guess, value, _, _ = store.suggest_identity(r['cues'], at=r['at'], context=r['context'],
+            exclude_obligation=r['id'], before=r['at'] if past_only else None,
+            exclude_day=r['day'] if leave_one_day_out else None, enrolled_faces=enrolled_faces,
+            exclude_obligations=[x['id'] for x in data if x['fingerprint'] == r['fingerprint']])
+        predictions.append({'id': r['id'], 'truth': r['truth'], 'guess': guess, 'score': value})
+    return summary(predictions, 'leave_one_local_day_out' if leave_one_day_out else 'past_only' if past_only else 'leave_one_sighting_out')
+
+
+def day_excluded(store: Store, data: list[dict], current: dict[str, float]) -> tuple[dict, dict]:
+    """Fit weights without the test day AND remove its labels from training galleries.
+
+    Each training observation also excludes its own day. Repeated dishes/crops cannot increase
+    the evaluation count. Both models use the real discriminating-cue/abstention policy.
+    """
+    candidate_rows, current_rows = [], []
+    all_observations = observations(store)
+    for day in sorted({r['day'] for r in data}):
+        test_fingerprints = {r['fingerprint'] for r in all_observations if r['day'] == day}
+        test_ids = [r['id'] for r in all_observations if r['day'] == day or r['fingerprint'] in test_fingerprints]
+        train = [(r['truth'], {who: features for who, features, _ in store.cue_features(
+            r['cues'], at=r['at'], context=r['context'], exclude_day=r['day'],
+            exclude_obligations=test_ids + [x['id'] for x in all_observations if x['fingerprint'] == r['fingerprint']])})
+            for r in data if r['day'] != day and r['id'] not in test_ids]
+        weights = fit(train)
+        for r in (r for r in data if r['day'] == day):
+            features = store.cue_features(r['cues'], at=r['at'], context=r['context'], exclude_day=day,
+                exclude_obligations=[x['id'] for x in all_observations if x['fingerprint'] == r['fingerprint']])
+            for model, rows in ((weights, candidate_rows), (current, current_rows)):
+                guess, value, _, _ = identity_prediction(features, model)
+                rows.append({'id': r['id'], 'truth': r['truth'], 'guess': guess, 'score': value})
+    return summary(candidate_rows, 'nested_leave_one_local_day_out'), summary(current_rows, 'leave_one_local_day_out')
+
+
+def display_gate(evaluation: dict) -> dict:
+    """Broadest fixed score band with 30 independent checks and at least 90% precision."""
+    for threshold in DISPLAY_THRESHOLDS:
+        rows = [r for r in evaluation['rows'] if r['guess'] is not None and r['score'] is not None and r['score'] >= threshold]
+        correct = sum(r['truth'] == r['guess'] for r in rows)
+        if len(rows) >= AUTO_MIN_CHECKED and correct / len(rows) >= AUTO_MIN_ACCURACY:
+            return {'threshold': threshold, 'checked': len(rows), 'correct': correct,
+                    'precision': correct / len(rows), 'coverage': len(rows) / evaluation['cases']}
+    return {'threshold': None, 'checked': 0, 'correct': 0, 'precision': None, 'coverage': 0}
 
 
 def refit(store: Store) -> dict:
-    """Fit, compare on held-out sightings, and adopt the new weights only if they do better.
+    """Nightly fit-identity timer: adopt only strict day-held-out improvement, never on training fit.
 
-    Every attempt is written to LAST_RUN_FILE for the dashboard, adopted or not.
+    Hold the gallery lock until publication; a concurrent undo cannot calibrate retracted labels.
+    The separate timer process reads a SQLite snapshot, so validate the revision again before writing.
     """
-    data = cases(store)
-    current = store.identity_weights()
-    report = {"at": stamp(), "cases": len(data), "adopted": False}
-    report["suggestions_day_out"] = {k: v for k, v in evaluate(store, leave_one_day_out=True).items() if k != "rows"}
-    report["suggestions_past_only"] = {k: v for k, v in evaluate(store, past_only=True).items() if k != "rows"}
-    if data:
-        # How often the top guess names the right person today, each sighting scored as if new.
-        report["accuracy_now"] = round(accuracy(current, data), 3)
-    if len(data) < MIN_CASES:
-        report["reason"] = f"Needs {MIN_CASES} named sightings with appearance cues; has {len(data)}."
-    else:
-        fitted_accuracy, current_accuracy = cross_validated(data, current)
-        report |= {"held_out_accuracy": round(fitted_accuracy, 3), "current_accuracy": round(current_accuracy, 3)}
-        if fitted_accuracy <= current_accuracy:
-            report["reason"] = "The refitted weights were not more accurate on held-out sightings."
+    with store.lock:
+        revision = store.identity_revision()
+        data = observations(store, independent=True)
+        current = store.identity_weights()
+        candidate, baseline = day_excluded(store, data, current)
+        report = {'at': stamp(), 'cases': len(data), 'days': len({r['day'] for r in data}), 'adopted': False,
+                  'held_out_accuracy': candidate['accuracy'], 'current_accuracy': baseline['accuracy']}
+        measured = baseline
+        if len(data) < MIN_CASES:
+            report['reason'] = f'Needs {MIN_CASES} independent named sightings with appearance cues; has {len(data)}.'
+        elif report['days'] < 3:
+            report['reason'] = 'Needs at least three local days for day-excluded fitting and evaluation.'
+        elif candidate['correct'] <= baseline['correct']:
+            report['reason'] = 'The refitted weights were not more accurate on day-excluded human sightings.'
         else:
-            report |= {"adopted": True, "weights": fit(data)}
-            _write(store.root / IDENTITY_WEIGHTS_FILE, report)
-            store.event("identity_weights_updated", f"Identity cue weights relearned from {len(data)} confirmed sightings: "
-                        f"right {fitted_accuracy:.0%} of held-out sightings, was {current_accuracy:.0%}")
-    _write(store.root / LAST_RUN_FILE, report)
-    return report
+            report['weights'] = fit(cases(store))
+            report['adopted'] = True
+            measured = candidate
+        if revision != store.identity_revision():
+            return report | {'adopted': False, 'reason': 'Human labels changed during fitting; retry next night.'}
+        # SQLite write lock makes revision check + publication atomic against other processes' reviews.
+        with store.conn:
+            store.conn.execute('BEGIN IMMEDIATE')
+            if revision != store.identity_revision():
+                return report | {'adopted': False, 'reason': 'Human labels changed during fitting; retry next night.'}
+            if report['adopted']:
+                _write(store.root / IDENTITY_WEIGHTS_FILE, report)
+                store._event(None, 'identity_weights_updated', 'Identity weights improved on day-excluded human sightings.', report)
+            report['revision'] = store.identity_revision()
+            report['display_gate'] = display_gate(measured)
+            report['suggestions_day_out'] = {k: v for k, v in measured.items() if k != 'rows'}
+            _write(store.root / LAST_RUN_FILE, report)
+        return report
 
 
 def add_faces(store: Store, face_of, clip_face_of=None) -> dict:

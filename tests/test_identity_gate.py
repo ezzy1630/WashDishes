@@ -58,3 +58,14 @@ def test_gate_expires_old_captures_and_ignores_cards_ready_only_after_check(stor
     with store.conn:
         store.conn.execute('UPDATE proofs SET created_at=? WHERE obligation_id=?', (stamp(utcnow() + timedelta(minutes=1)), item['id']))
     assert store.attribution_gate()['checked'] == 0
+
+
+def test_display_band_needs_thirty_independent_checks_and_ninety_percent():
+    from wash_dishes.identity_fit import display_gate
+
+    rows = [{'guess': 1, 'truth': 1 if i < 27 else 2, 'score': 3} for i in range(30)]
+    assert display_gate({'rows': rows[:29], 'cases': 29})['threshold'] is None
+    assert display_gate({'rows': rows, 'cases': 40}) == {
+        'threshold': 0, 'checked': 30, 'correct': 27, 'precision': .9, 'coverage': .75}
+    rows[0]['truth'] = 2
+    assert display_gate({'rows': rows, 'cases': 40})['threshold'] is None

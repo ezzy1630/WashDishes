@@ -76,7 +76,7 @@ def test_day_out_excludes_all_same_day_confirmations_and_keeps_abstentions(store
     at = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
     for offset in (0, 1):
         item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
-        store.add_person_sample(item['id'], [1, 0, 0, 0], at=at + timedelta(minutes=offset), cue='outfit')
+        store.add_person_sample(item['id'], [1, offset / 1000, 0, 0], at=at + timedelta(minutes=offset), cue='outfit')
         store.action(item['id'], 'confirm', resident_id=alex)
     assert evaluate(store)['correct'] == 2
     held = evaluate(store, leave_one_day_out=True)
@@ -109,3 +109,37 @@ def test_day_holdout_uses_the_same_timezone_as_outfit_matching(store, monkeypatc
         store.add_person_sample(item['id'], [1, 0, 0, 0], at=at, cue='face')
         store.action(item['id'], 'confirm', resident_id=alex)
     assert evaluate(store, leave_one_day_out=True)['guesses'] == 0
+
+
+def test_same_copied_capture_on_other_days_cannot_validate_itself(store):
+    from wash_dishes.identity_fit import evaluate, observations, refit
+
+    alex = store.add_resident('Alex')['id']
+    for i in range(40):
+        at = utcnow() - timedelta(days=i)
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+        store.add_person_sample(item['id'], [1, 0, 0], at=at, cue='head')
+        store.action(item['id'], 'confirm', resident_id=alex)
+    assert len(observations(store, independent=True)) == 1
+    assert evaluate(store, leave_one_day_out=True)['guesses'] == 0
+    report = refit(store)
+    assert not report['adopted'] and report['cases'] == 1
+    assert not store.identity_display_gate()['active']
+
+
+def test_one_days_outfits_cannot_earn_a_refit_or_display_gate(store):
+    from datetime import datetime, timezone
+
+    from wash_dishes.identity_fit import refit
+
+    people = [store.add_resident(n)['id'] for n in ('Alex', 'Sam')]
+    start = datetime(2026, 10, 20, 8, tzinfo=timezone.utc)
+    for i in range(40):
+        at = start + timedelta(minutes=i * 20)
+        item = store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], candidate=True, at=at)
+        store.add_person_sample(item['id'], [1, i / 10000, i % 2], at=at, cue='outfit')
+        store.action(item['id'], 'confirm', resident_id=people[i % 2])
+    report = refit(store)
+    assert report['cases'] == 40 and report['days'] == 1
+    assert not report['adopted'] and report['suggestions_day_out']['guesses'] == 0
+    assert not store.identity_display_gate()['active']

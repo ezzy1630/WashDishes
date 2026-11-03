@@ -90,6 +90,38 @@ def validate_dishes(dishes: list) -> list[dict]:
     return [{"kind": kind, "quantity": count} for kind, count in combined.items()]
 
 
+def identity_prediction(features: list[tuple[int, dict[str, float], dict[str, float]]],
+                        weights: dict[str, float]) -> tuple[int | None, float | None, float | None, dict]:
+    """Rank cues, refusing unsupported or contradictory appearances."""
+    ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in values.items()), resident, seen)
+                     for resident, values, seen in features),
+                    key=lambda r: r[0], reverse=True)
+    if not ranked:
+        return None, None, None, {}
+    evidence, resident, seen = ranked[0]
+    margin = evidence - ranked[1][0] if len(ranked) > 1 else None
+    # A sum of weak, correlated cues is not independent evidence. Require a discriminating
+    # visual match in its own right; a contradictory strong cue forces abstention.
+    supported = {}
+    for cue, minimum, separation in (("face", 0.55, 0.12), ("outfit_today", 0.94, 0.055), ("head", 0.96, 0.06)):
+        scores = sorted(((s[cue], r) for r, _, s in features if cue in s), reverse=True)
+        if scores and scores[0][0] >= minimum and (len(scores) == 1 or scores[0][0] - scores[1][0] >= separation):
+            best_seen = next(s for r, _, s in features if r == scores[0][1])
+            if cue == "outfit_today" and best_seen.get("outfit_colour", 1.0) < 0.94:
+                continue
+            supported[cue] = scores[0][1]
+    if not supported or len(set(supported.values())) != 1:
+        return None, round(evidence, 3), None if margin is None else round(margin, 3), seen
+    resident = next(iter(supported.values()))
+    if resident != ranked[0][1]:
+        return None, round(evidence, 3), None if margin is None else round(margin, 3), seen
+    evidence, _, seen = next(row for row in ranked if row[1] == resident)
+    other = [row[0] for row in ranked if row[1] != resident]
+    margin = evidence - max(other) if other else None
+    seen = {cue: seen[cue] for cue in supported}
+    return resident, round(evidence, 3), None if margin is None else round(margin, 3), seen
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root
@@ -413,6 +445,18 @@ class Store:
         if len(note) > 1000:
             raise ValueError("Notes can contain at most 1000 characters.")
         with self.lock, self.conn:
+            if action in ('confirm', 'reassign'):
+                from .house_visits import catalog, identity_capture
+
+                # The legacy operator action endpoint must teach the same depicted arrival
+                # person as the house endpoints, never a later worker's replacement crop.
+                groups = catalog(self, [obligation_id])
+                if groups:
+                    source = identity_capture(self, groups[0])
+                    selected = source if source and source['obligation_id'] == obligation_id else None
+                    identity = selected['identity'] if selected else {}
+                    self._replace_person_samples_locked(obligation_id, identity.get('cues', {}), selected['id'] if selected else '',
+                        at=parse_stamp(selected['created_at']) if selected else now, context=identity.get('context'))
             return self._action_locked(obligation_id, action, resident_id=resident_id, cleaner_id=cleaner_id,
                                        note=note, resolved_at=resolved_at, now=now)
 
@@ -1080,6 +1124,11 @@ class Store:
                                *, at: datetime, context: str | None = None) -> None:
         """Replace the capture atomically. A name on an older picture cannot label a new person."""
         with self.lock, self.conn:
+            named_visit = self.conn.execute("""SELECT 1 FROM person_samples s JOIN evidence e ON e.id=s.evidence_id
+                WHERE s.obligation_id=? AND s.resident_id IS NOT NULL AND s.evidence_id IS NOT ?
+                AND json_extract(e.capture,'$.identity_source')='arrival_visit'""", (obligation_id, evidence_id)).fetchone()
+            if named_visit:
+                return  # A later mover/proof cannot erase a human-named arrival training capture.
             self._replace_person_samples_locked(obligation_id, cues, evidence_id, at=at, context=context)
 
     def _replace_person_samples_locked(self, obligation_id: int, cues: dict[str, list[float]], evidence_id: str,
@@ -1136,45 +1185,24 @@ class Store:
     def suggest_identity(self, cues: dict[str, list[float]], *, at: datetime | None = None, context: str | None = None,
                          enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
                          exclude_obligation: int | None = None, before: datetime | None = None,
-                         exclude_day: str | None = None) -> tuple[int | None, float | None, float | None, dict]:
+                         exclude_day: str | None = None, weights: dict[str, float] | None = None,
+                         exclude_obligations: list[int] | None = None) -> tuple[int | None, float | None, float | None, dict]:
         """Return a discriminating visual match, ranking diagnostics and its supported basis."""
-        weights = self.identity_weights()
+        weights = self.identity_weights() if weights is None else weights
         features = self.cue_features(cues, at=at or utcnow(), context=context, enrolled_faces=enrolled_faces,
-                                    limit=limit, exclude_obligation=exclude_obligation, before=before, exclude_day=exclude_day)
-        ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in values.items()), resident, seen)
-                         for resident, values, seen in features),
-                        key=lambda r: r[0], reverse=True)
-        if not ranked:
-            return None, None, None, {}
-        evidence, resident, seen = ranked[0]
-        margin = evidence - ranked[1][0] if len(ranked) > 1 else None
-        # A sum of weak, correlated cues is not independent evidence. Require a discriminating
-        # visual match in its own right; a contradictory strong cue forces abstention.
-        supported = {}
-        for cue, minimum, separation in (("face", 0.55, 0.12), ("outfit_today", 0.94, 0.055), ("head", 0.96, 0.06)):
-            scores = sorted(((s[cue], r) for r, _, s in features if cue in s), reverse=True)
-            if scores and scores[0][0] >= minimum and (len(scores) == 1 or scores[0][0] - scores[1][0] >= separation):
-                best_seen = next(s for r, _, s in features if r == scores[0][1])
-                if cue == "outfit_today" and best_seen.get("outfit_colour", 1.0) < 0.94:
-                    continue
-                supported[cue] = scores[0][1]
-        if not supported or len(set(supported.values())) != 1:
-            return None, round(evidence, 3), None if margin is None else round(margin, 3), seen
-        resident = next(iter(supported.values()))
-        evidence, _, seen = next(row for row in ranked if row[1] == resident)
-        other = [row[0] for row in ranked if row[1] != resident]
-        margin = evidence - max(other) if other else None
-        seen = {cue: seen[cue] for cue in supported}
-        if "outfit_today" in supported:
+                                    limit=limit, exclude_obligation=exclude_obligation, before=before, exclude_day=exclude_day,
+                                    exclude_obligations=exclude_obligations)
+        resident, evidence, margin, seen = identity_prediction(features, weights)
+        if resident is not None and "outfit_today" in seen:
             reference = self._outfit_reference(resident, cues["outfit"], at or utcnow(), exclude_obligation, before)
             if reference:
                 seen["basis"] = reference
-        return resident, round(evidence, 3), None if margin is None else round(margin, 3), seen
+        return resident, evidence, margin, seen
 
     def cue_features(self, cues: dict[str, list[float]], *, at: datetime, context: str | None = None,
                      enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
                      exclude_obligation: int | None = None, before: datetime | None = None,
-                     exclude_day: str | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
+                     exclude_day: str | None = None, exclude_obligations: list[int] | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
         """How strongly each cue points at each housemate, before weighting: (resident, features, similarities).
 
         Face and head carry across days. An outfit is strong evidence only against sightings from the
@@ -1196,8 +1224,9 @@ class Store:
                 AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip')
                 AND (? IS NULL OR s.obligation_id IS NOT ?) AND (? IS NULL OR s.created_at<?)
                 AND (? IS NULL OR s.created_at<? OR s.created_at>=?)
+                AND s.obligation_id NOT IN (SELECT value FROM json_each(?))
                 ORDER BY s.id DESC LIMIT ?""", (exclude_obligation, exclude_obligation, stamp(before) if before else None,
-                                               stamp(before) if before else None, day_start, day_start, day_end, limit)).fetchall()
+                                               stamp(before) if before else None, day_start, day_start, day_end, json.dumps(exclude_obligations or []), limit)).fetchall()
         samples: dict[int, list] = {}
         for row in rows:
             samples.setdefault(row["who"], []).append(row)
@@ -1291,6 +1320,32 @@ class Store:
             except (OSError, ValueError, KeyError):
                 return {}
         return self._weights_cache[1]
+
+    def identity_revision(self) -> str:
+        """Version the human gallery, cue policy, timezone and weights for display calibration."""
+        with self.lock:
+            rows = self.conn.execute("""SELECT s.*, coalesce(e.kind,'') evidence_kind FROM person_samples s
+                JOIN obligations o ON o.id=s.obligation_id JOIN residents r ON r.id=s.resident_id
+                LEFT JOIN evidence e ON e.id=s.evidence_id WHERE r.active=1
+                AND o.lifecycle NOT IN ('dismissed','disputed') AND o.attribution IS NOT 'camera'
+                ORDER BY s.id""").fetchall()
+            payload = [2, os.getenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles'), self.identity_weights(),
+                       [tuple(r) for r in rows]]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def identity_display_gate(self) -> dict:
+        from .identity_fit import LAST_RUN_FILE
+
+        with self.lock:
+            try:
+                report = json.loads((self.root / LAST_RUN_FILE).read_text())
+                gate = report['display_gate']
+                valid = (report['revision'] == self.identity_revision()
+                         and gate['checked'] >= AUTO_MIN_CHECKED and gate['precision'] >= AUTO_MIN_ACCURACY
+                         and isinstance(gate['threshold'], (int, float)) and math.isfinite(gate['threshold']))
+            except (OSError, ValueError, KeyError, TypeError):
+                valid, gate = False, {}
+        return gate | {'active': valid}
 
     def sighting_cues(self, obligation_id: int) -> tuple[dict[str, list[float]], str | None, datetime] | None:
         """The cues from one sighting's latest capture, as they were when it was suggested."""

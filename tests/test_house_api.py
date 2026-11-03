@@ -337,7 +337,7 @@ def test_visit_grouping_guess_atomic_naming_disputing_and_settling(house_client)
     grouped = next(v for v in board['visits'] if v['id'] == 'trip-one')
     assert grouped['title'] == 'Pan and 2 bowls'
     assert grouped['dish_ids'] == [pan['id'], bowls['id']] and grouped['points'] == 4
-    assert grouped['guess'] == {'resident_id': client.people[1]['id'], 'name': 'Bo', 'basis': 'same outfit as the earlier visit'}
+    assert grouped['guess'] is None  # A stored score has not earned held-out display.
     assert grouped['resident'] is None and sum(r['points'] for r in board['standings']) == 0
     assert eid in grouped['filmstrip_url']
     assert any(v['id'] == f"dish-{single['id']}" for v in board['visits'])
@@ -613,7 +613,7 @@ def test_closed_week_keeps_canonical_membership_but_expires_shared_media(house_c
     assert board['visits'][0]['alias_ids'] == [items[1]['id']]
     assert board['visits'][0]['filmstrip_url']
     assert board['standings'][0]['points'] == 2
-    assert board['visits'][0]['guess']['name'] == 'Bo'
+    assert board['visits'][0]['guess'] is None
     with store.conn:
         store.conn.execute('UPDATE evidence SET expired=1 WHERE id=?', (eid,))
         store.conn.execute('DELETE FROM arrival_visit_members')
