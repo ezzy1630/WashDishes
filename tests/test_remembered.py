@@ -116,3 +116,15 @@ def test_operator_only_list_remove_and_durable_storage(tmp_path):
         assert 'embedding' not in memory
         assert client.delete(f"/api/remembered-objects/{memory['id']}").status_code == 200
         assert client.get('/api/remembered-objects').json() == {'items': []}
+
+
+def test_memory_survives_reopening_database(store):
+    from wash_dishes.store import Store
+    corrected(store)
+    reopened = Store(store.root)
+    try:
+        assert reopened.remembered_match(VECTOR, AREA)
+        reopened.forget_object(reopened.remembered_objects()[0]['id'])
+    finally:
+        reopened.close()
+    assert store.remembered_match(VECTOR, AREA) is None

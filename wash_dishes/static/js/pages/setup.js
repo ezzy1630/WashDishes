@@ -39,7 +39,7 @@ export function setupPage(main) {
       const data = await api('/api/remembered-objects');
       if (!rememberedBox.isConnected) return;
       fill(rememberedBox, data.items.length ? data.items.map(item => h('div', { class: 'row-actions' },
-        h('span', {}, `Record ${item.obligation_id} · ${item.area_name} · ${item.verdict === 'clean' ? 'It’s clean' : 'Not a dish'} · ${item.by} · ${ago(item.created_at)}`),
+        h('span', {}, `Record ${item.obligation_id} · ${item.area_name} · ${item.verdict === 'clean' ? 'It’s clean' : 'Not a dish'} · ${item.by_name} · ${ago(item.created_at)}`),
         h('button', { type: 'button', class: 'btn quiet sm', 'aria-label': `Forget record ${item.obligation_id}`, onclick: e => busy(e.currentTarget, async () => {
           await api(`/api/remembered-objects/${item.id}`, { method: 'DELETE' });
           toast('Object forgotten.'); await loadRemembered();

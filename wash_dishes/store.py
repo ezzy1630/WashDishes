@@ -869,9 +869,11 @@ class Store:
 
     def remembered_objects(self) -> list[dict]:
         with self.lock:
-            return [dict(r) for r in self.conn.execute("""SELECT m.id,m.obligation_id,m.area_id,m.area_name,m.by,m.created_at,r.verdict
+            items = [dict(r) for r in self.conn.execute("""SELECT m.id,m.obligation_id,m.area_id,m.area_name,m.by,m.created_at,r.verdict
                 FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id
                 ORDER BY m.id DESC""")]
+            people = {f"resident:{r['id']}": r['name'] for r in self.conn.execute('SELECT id,name FROM residents')}
+            return [item | {'by_name': people.get(item['by'], 'The operator' if item['by'] == 'operator' else 'A housemate')} for item in items]
 
     def forget_object(self, exemplar_id: int) -> None:
         with self.lock, self.conn:
