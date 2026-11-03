@@ -11,22 +11,14 @@ export function standings(data, viewerId) {
     (a, b) => b.points - a.points || a.name.localeCompare(b.name),
   );
   const top = rows[0],
-    second = rows[1],
-    lead = top ? top.points - (second?.points || 0) : 0;
-  const threshold =
-    top && data.rules.enabled
-      ? Math.max(
-          0,
-          data.rules.min_points - top.points,
-          (second?.points || 0) + data.rules.min_lead - top.points,
-          second && top.points === second.points ? 1 : 0,
-        )
-      : 0;
+    pick = data.pick;
+  const threshold = Math.max(pick.needed_points, pick.needed_lead);
   const scale = Math.max(data.rules.min_points, top?.points || 0, 1);
   const gate = (
     /** @type {string} */ label,
     /** @type {number} */ current,
     /** @type {number} */ target,
+    /** @type {number} */ remaining,
     /** @type {boolean} */ isLead = false,
   ) =>
     h(
@@ -52,8 +44,8 @@ export function standings(data, viewerId) {
       }),
       h(
         "span",
-        { class: current >= target ? "gate-met" : "help" },
-        current >= target ? "Met" : `${target - current} to go`,
+        { class: remaining === 0 ? "gate-met" : "help" },
+        remaining === 0 ? "Met" : `${remaining} to go`,
       ),
     );
   return h(
@@ -139,11 +131,22 @@ export function standings(data, viewerId) {
             ? h(
                 "div",
                 { class: "gates" },
-                gate(`${top.name}’s points`, top.points, data.rules.min_points),
-                gate("Lead over second", lead, data.rules.min_lead, true),
+                gate(
+                  `${top.name}’s points`,
+                  pick.points,
+                  data.rules.min_points,
+                  pick.needed_points,
+                ),
+                gate(
+                  "Lead over second",
+                  pick.lead,
+                  pick.lead === 0 ? pick.needed_lead : data.rules.min_lead,
+                  pick.needed_lead,
+                  true,
+                ),
               )
             : null,
-          data.pick.resident_id === null && threshold > 0 && top
+          pick.state !== "pick" && threshold > 0 && top
             ? h(
                 "p",
                 { class: "threshold-explanation" },

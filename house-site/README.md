@@ -59,6 +59,11 @@ Live Supabase credentials, the tunnel/CORS connection, Lane B's real responses, 
 
 `js/app.js` owns navigation, session lifecycle, refresh, mutation handling, and the shell. Per-screen renderers live in `js/pages/{week,name,mine,past,auth}.js`; shared standings, visit records, and duty/date copy live beside them. Screens receive a typed context from the controller and never import it, keeping module dependencies one-way. `ui.js` and `api.js` remain the shared DOM/media and HTTP boundaries.
 
-Weekly pick details show points and lead without repeating the pick heading. Week ranges and chips display Sunday as the inclusive last day, using the API’s exclusive end boundary.
+Weekly pick headings use the API’s `pick.state` and selected name. Details display
+its name-free `pick.reason` verbatim. Meters use `pick.points` and `pick.lead`;
+the remaining points come from `max(pick.needed_points, pick.needed_lead)`.
+The site validates the structured contract at its API boundary and never rebuilds
+the decision from standings or strips a person's name from prose. Week ranges
+and chips display Sunday as the inclusive last day, using the API’s exclusive end boundary.
 
 The displayed week close time is formatted directly from the API’s `closes_at`. The mock closes Monday at noon; verification also supplies Tuesday at 3:30 PM to reject a hard-coded or browser-computed close time.

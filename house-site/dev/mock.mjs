@@ -221,19 +221,36 @@ function week(start, user) {
     })
     .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
   const lead = standings[0].points - standings[1].points;
-  const pick =
-    standings[0].points >= 4 && lead >= 2
-      ? {
-          resident_id: standings[0].resident_id,
-          name: standings[0].name,
-          reason: `${standings[0].name} is the pick for next week’s kitchen duty with ${standings[0].points} points, ${lead} ahead.`,
-        }
-      : {
-          resident_id: null,
-          name: null,
-          reason:
-            "The points are below the house minimum, or the lead is too close to call.",
-        };
+  const points = standings[0].points;
+  const state =
+    dutyMode === "disabled"
+      ? "disabled"
+      : points < 4
+        ? "below_minimum"
+        : !lead
+          ? "tie"
+          : lead < 2
+            ? "too_close"
+            : "pick";
+  const pick = {
+    resident_id: state === "pick" ? standings[0].resident_id : null,
+    name: state === "pick" ? standings[0].name : null,
+    state,
+    points,
+    lead,
+    needed_points: state === "disabled" ? 0 : Math.max(0, 4 - points),
+    needed_lead: state === "disabled" ? 0 : Math.max(0, 2 - lead),
+    reason:
+      state === "disabled"
+        ? "Standings still count."
+        : state === "pick"
+          ? `${points} points · ${lead} ahead`
+          : state === "tie"
+            ? "Tied for first · needs a 2-point lead"
+            : state === "too_close"
+              ? `Too close — ${lead} point ahead, needs 2`
+              : `${points ? `${points} ${points === 1 ? "point" : "points"}` : "No named points"} · needs 4`,
+  };
   return {
     week: {
       start: old ? "2026-10-26" : older ? "2026-10-19" : "2026-11-02",
@@ -255,14 +272,7 @@ function week(start, user) {
       min_lead: 2,
     },
     standings,
-    pick:
-      dutyMode === "disabled"
-        ? {
-            resident_id: null,
-            name: null,
-            reason: "The weekly pick is switched off.",
-          }
-        : pick,
+    pick,
     on_duty:
       dutyMode === "disabled"
         ? null
@@ -274,7 +284,7 @@ function week(start, user) {
             why:
               dutyMode === "override"
                 ? "Set by the operator after a house vote."
-                : "Ezzy is the pick for next week's kitchen duty with 5 points, 3 ahead.",
+                : "Weekly pick: 5 points · 3 ahead.",
           },
     dishes: records.map((d) => permissions(d, user)),
     visits: visits(records, user),

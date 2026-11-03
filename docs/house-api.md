@@ -57,7 +57,10 @@ WeekResponse = {
   rules: {enabled: boolean, weights: {pan: integer, pot: integer, default: integer},
           min_points: integer, min_lead: integer},
   standings: [{resident_id: integer, name: string, points: integer, dishes: integer}],
-  pick: {resident_id: integer|null, name: string|null, reason: string},
+  pick: {resident_id: integer|null, name: string|null,
+         state: "pick"|"too_close"|"below_minimum"|"disabled"|"tie",
+         points: integer, lead: integer, needed_points: integer, needed_lead: integer,
+         reason: string},
   on_duty: {resident_id: integer, name: string, since: UTC_ISO, why: string}|null,
   dishes: [Dish], visits: [Visit], unnamed_count: integer, unreviewed_count: integer,
   verdicts: [{visit_id: string, title: string, verdict: "not_dish"|"clean"|"duplicate",
@@ -85,6 +88,24 @@ name; `dishes` sums quantities. Last eight weeks include current; open weeks hav
 null `pick_name`. Unnamed dishes show potential points but contribute zero to
 standings; open disputes show zero points. `on_duty` always describes **now**, even
 on a historical page. Closed scores, roster, rules, guesses and pick stay frozen.
+
+`pick` is the authoritative decision for the operator home, weekly image and house
+site. `points` is the leading score and `lead` its margin over second place (zero
+for a tie or empty standings). Both remain available when duty is disabled.
+`needed_points` and `needed_lead` are **additional** score/lead still required,
+never negative; both are zero when disabled. The additional points for a clear
+pick, if nobody else scores, are `max(needed_points, needed_lead)`. A tied leader
+needs at least one point of lead even when `min_lead=0`.
+
+State priority is disabled, below minimum (including no named points), tie,
+too close, then pick. Only `state="pick"` has a non-null resident ID and name.
+`reason` never includes a person's name: e.g. `6 points · 4 ahead`, or
+`Too close — 1 point ahead, needs 2`. Render the name once in the heading and the
+reason underneath; do not strip sentences or recalculate eligibility in clients.
+Older closed snapshots receive this display shape on read from their **frozen**
+standings and rules; stored snapshots and their selected person are not rewritten.
+New weekly duty assignments keep `why` prefixed with `Weekly pick:` so it remains
+distinct from a house-vote override.
 
 Weeks follow **deadlines**, Monday midnight to next Monday midnight in
 `notify.timezone()`, closing Monday noon after 12 hours for Sunday naming. DST uses
@@ -190,3 +211,17 @@ Private operator routes retain cookie + CSRF under `/api/league`: `GET week`
 `PATCH rules` (full rules), `POST duty` (`resident_id` or null), `GET accounts`
 (`[{resident_id,has_account}]`), `POST residents/{id}/join-link` (`url,expires_at`),
 and dish/visit `name` and `settle`, visit `verdict` and `undo-verdict`. No money features.
+
+Operator home additions (never exposed under `/house/`):
+
+- `GET /api/league/share?start=YYYY-MM-DD` returns an authenticated, no-store,
+  1080px-wide JPEG attachment from the league result. Open weeks are provisional;
+  closed weeks use their frozen duty assignment, including no-pick carryovers.
+  Demo and snapshot images are marked. No household photos are included.
+- `GET /api/operator-status` returns only mode, server time, camera status,
+  detection enabled, last analysed time (nullable) and approximate saved footage
+  hours (nullable on read failure). Recording gaps do not count as footage.
+- `GET /api/proofs?ready_only=true` returns `{items,people}` without building
+  incomplete sequences or loading search progress. The default contract remains
+  available to existing consumers. House review exclusions also suppress proofs
+  and named-proof totals until the exclusion is undone.

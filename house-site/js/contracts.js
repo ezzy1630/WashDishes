@@ -110,8 +110,7 @@ export function week(value) {
   const x = object(value),
     w = object(x.week),
     r = object(x.rules),
-    weights = object(r.weights),
-    p = object(x.pick);
+    weights = object(r.weights);
   const timezone = string(w.timezone);
   new Intl.DateTimeFormat("en", { timeZone: timezone });
   return {
@@ -141,11 +140,7 @@ export function week(value) {
         dishes: number(s.dishes),
       };
     }),
-    pick: {
-      resident_id: nullable(p.resident_id, id),
-      name: nullable(p.name, string),
-      reason: string(p.reason),
-    },
+    pick: pick(x.pick),
     on_duty: nullable(x.on_duty, (item) => {
       const d = object(item);
       return {
@@ -168,6 +163,41 @@ export function week(value) {
       };
     }),
   };
+}
+/** @param {unknown} value */
+function pick(value) {
+  const p = object(value),
+    state = string(p.state);
+  const fields = {
+    points: points(p.points),
+    lead: points(p.lead),
+    needed_points: points(p.needed_points),
+    needed_lead: points(p.needed_lead),
+    reason: string(p.reason),
+  };
+  if (state === "pick")
+    return {
+      ...fields,
+      state,
+      resident_id: id(p.resident_id),
+      name: string(p.name),
+    };
+  if (
+    state !== "too_close" &&
+    state !== "below_minimum" &&
+    state !== "disabled" &&
+    state !== "tie"
+  )
+    throw new Error("Invalid pick state");
+  if (p.resident_id !== null || p.name !== null)
+    throw new Error("A non-pick cannot name a person");
+  return { ...fields, state, resident_id: null, name: null };
+}
+/** @param {unknown} value */
+function points(value) {
+  const n = number(value);
+  if (!Number.isInteger(n)) throw new Error("Invalid pick points");
+  return n;
 }
 /** @param {unknown} value */
 function guess(value) {

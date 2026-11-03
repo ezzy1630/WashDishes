@@ -223,6 +223,7 @@ class Proofs:
     # Seen lately and not picked up since. A dish picked up and not seen since is gone from the counter:
     # someone dealt with it, so its card goes now, not when the record closes. Seen again, it comes back.
     STILL_THERE = """o.archived_at IS NULL AND o.lifecycle='open' AND coalesce(o.last_seen_at,o.created_at)>=?
+        AND NOT EXISTS (SELECT 1 FROM house_verdicts v WHERE v.obligation_id=o.id)
         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id
             AND event IN ('dish_picked_up','dish_moved')) AND e.event='dish_picked_up'
             AND e.created_at>=coalesce(o.last_seen_at,o.created_at))"""

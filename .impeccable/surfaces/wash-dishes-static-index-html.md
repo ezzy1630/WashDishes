@@ -15,9 +15,9 @@ THESIS: A kitchen accountability console. A dish left out is an incident with ev
 
 OWN-WORLD: Graphite surfaces (#0c0e11 to #21262c), 12–14px radii, one-pixel inset rules. Mona Sans (wide numerals) with Geist Mono for times and IDs. Area colours amber/blue/green/violet mean place; resident accents mean person; red means past grace. Square-ish monograms, transit-line dish flow, dwell bars.
 
-STORY: Open the dashboard, see the proof picture of each dish left out past two hours, tap who put it down if known, press Send and pick the house chat. Click into a person to see every picture named as theirs. Corrections (Not a dish, Wrong photos) are quiet and undoable. Identity and responsibility remain separate: a guess is outlined, never counted until someone taps the name.
+STORY: Open Send, see who is on kitchen and who is in line next week, answer one visit from its arrival filmstrip, then share the weekly result or any finished collage. Name who used or left dishes, with four other answers and Undo. Guesses remain provisional. People keeps all-time proof history; records/Live keep investigation.
 
-FIRST VIEWPORT (Send, 390×844): top bar with Send, People and Live; "N dishes left out" and one line on what is still coming; the first proof picture full width; the pale Send button. Names and corrections follow just below the fold. With nothing to send, one panel says how many dishes are being checked or are still under two hours. People: a ranked, ruled list of named totals; one tap into a person's pictures. The older Photos feed and record pages remain on secondary routes.
+FIRST VIEWPORT (Send, 390×844): Send, People and Live navigation; a compact week block with duty, standings and next-pick criteria; To review and the first arrival filmstrip full width. Name chips and four alternatives follow below. No-review states bring Share this week into the first viewport. Desktop places controls beside the filmstrip. Only faults rise above the week. A quiet health line closes the page.
 
 FORM: Hybrid of mockups E/G/H refined to J (user-directed, after seed ebbd449a); Needs you moved to its own page by the user.
 

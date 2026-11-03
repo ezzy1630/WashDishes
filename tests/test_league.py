@@ -76,7 +76,7 @@ def test_duty_carries_over_replacement_and_disabled():
     chosen = {'resident_id': 2, 'name': 'Alex', 'reason': 'Alex leads.'}
     assert league.carry_duty(current, empty, league.DEFAULT_RULES, since='now') == current
     assert league.carry_duty(current, chosen, league.DEFAULT_RULES, since='now') == {
-        'resident_id': 2, 'name': 'Alex', 'since': 'now', 'why': 'Alex leads.'}
+        'resident_id': 2, 'name': 'Alex', 'since': 'now', 'why': 'Weekly pick: Alex leads.'}
     assert league.carry_duty(current, dict(chosen, resident_id=1), league.DEFAULT_RULES, since='now') == current
     assert league.carry_duty(current, chosen, dict(league.DEFAULT_RULES, enabled=False), since='now') is None
 
@@ -211,3 +211,50 @@ def test_late_photo_requires_matching_still_before_removal(store):
         store.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=? WHERE id=?",
                            (stamp(now - timedelta(seconds=30)), after_removal['id']))
     assert [d['id'] for d in league.left_out(store, now - timedelta(days=1), now)] == [valid['id']]
+
+
+@pytest.mark.parametrize('first,second,enabled,state,needed_points,needed_lead,reason', [
+    (6, 2, True, 'pick', 0, 0, '6 points · 4 ahead'),
+    (4, 3, True, 'too_close', 0, 1, 'Too close — 1 point ahead, needs 2'),
+    (3, 0, True, 'below_minimum', 1, 0, '3 points · needs 4'),
+    (4, 4, True, 'tie', 0, 2, 'Tied for first · needs a 2-point lead'),
+    (3, 3, True, 'below_minimum', 1, 2, '3 points · needs 4'),
+    (0, 0, True, 'below_minimum', 4, 2, 'No named points · needs 4'),
+    (6, 2, False, 'disabled', 0, 0, 'Standings still count.'),
+])
+def test_pick_exposes_shortfalls_and_a_name_free_reason(first, second, enabled, state, needed_points, needed_lead, reason):
+    settings = league.DEFAULT_RULES | {'enabled': enabled}
+    rows = league.standings([dish(1, quantity=first), dish(2, quantity=second)], PEOPLE, settings)
+    chosen = league.pick(rows, settings)
+    assert {key: chosen[key] for key in ('state', 'points', 'lead', 'needed_points', 'needed_lead', 'reason')} == {
+        'state': state, 'points': first, 'lead': first - second,
+        'needed_points': needed_points, 'needed_lead': needed_lead, 'reason': reason}
+    assert all(p['name'] not in chosen['reason'] for p in PEOPLE)
+    assert (chosen['resident_id'] is not None) == (state == 'pick')
+
+
+def test_tie_needs_one_point_of_lead_even_when_minimum_lead_is_zero():
+    settings = league.DEFAULT_RULES | {'min_lead': 0}
+    rows = league.standings([dish(quantity=4), dish(2, quantity=4)], PEOPLE, settings)
+    chosen = league.pick(rows, settings)
+    assert chosen['state'] == 'tie' and chosen['needed_lead'] == 1
+    assert chosen['reason'] == 'Tied for first · needs a 1-point lead'
+
+
+def test_legacy_closed_pick_is_projected_from_frozen_totals_without_rewriting_snapshot(store):
+    import json
+    store.add_resident('Zoe')
+    now = utcnow()
+    prior = (datetime.fromisoformat(league.week_bounds(now=now)['start']) - timedelta(weeks=2)).date().isoformat()
+    league.result(store, prior, now=now)
+    snapshot = json.loads(store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (prior,)).fetchone()[0])
+    snapshot['standings'][0]['points'] = 6
+    snapshot['pick'] = {'resident_id': 1, 'name': 'Zoe', 'reason': "Zoe is the pick for next week's kitchen duty with 6 points, 6 ahead."}
+    saved = json.dumps(snapshot)
+    with store.lock, store.conn:
+        store.conn.execute('UPDATE league_weeks SET snapshot=? WHERE start=?', (saved, prior))
+    league.configure(store, league.DEFAULT_RULES | {'min_points': 100}, now=now)
+    chosen = league.result(store, prior, now=now)['pick']
+    assert chosen['state'] == 'pick' and chosen['points'] == 6 and chosen['needed_points'] == 0
+    assert chosen['reason'] == '6 points · 6 ahead'
+    assert store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (prior,)).fetchone()[0] == saved
