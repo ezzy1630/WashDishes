@@ -122,6 +122,7 @@ class Store:
                 filename TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL, label TEXT NOT NULL, expired INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS evidence_expiry ON evidence(expired,expires_at);
+            CREATE INDEX IF NOT EXISTS evidence_obligation ON evidence(obligation_id,created_at);
             CREATE TABLE IF NOT EXISTS arrival_visits(
                 id TEXT PRIMARY KEY, evidence_id TEXT REFERENCES evidence(id),
                 created_at TEXT NOT NULL, metadata TEXT NOT NULL);

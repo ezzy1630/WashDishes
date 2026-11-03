@@ -66,7 +66,7 @@ def test_filmstrip_saved_once_with_real_frame_times_boxes_and_seven_day_expiry(s
         assert len({f['at'] for f in frames}) == 6
         picture = media.safe_path(evidence['filename']).read_bytes()
         with Image.open(io.BytesIO(picture)) as image:
-            assert image.width <= 1600
+            assert image.width == 1200 and image.height == 1668
         assert len(picture) < 600000
         assert store.conn.execute("SELECT count(*) FROM evidence WHERE kind='filmstrip'").fetchone()[0] == 1
 

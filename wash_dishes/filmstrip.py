@@ -415,22 +415,27 @@ def _region(boxes, frames, picture):
 
 
 def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = None, approximate: bool = False, already_at: float | None = None) -> bytes:
-    width, height, margin, gap = 1600, 1090, 28, 20
-    panel_w, panel_h = 501, 376
+    width, height, margin, gap = 1200, 1668, 24, 24
+    panel_w, panel_h = 564, 423
     canvas = Image.new('RGB', (width, height), collage.PAPER)
     draw = ImageDraw.Draw(canvas)
     boxes = boxes or [item['box']]
     title = f"{len(boxes)} dishes · arrival context" if len(boxes) > 1 else f"{collage.dish_name(item['dishes']).capitalize()} · arrival context"
-    subtitle = f"{collage.place(item['location'])} · " + ('timing uncertain; put-down not established' if approximate else 'people shown need human review')
+    local = ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles'))
+    date = datetime.fromtimestamp(frames[0]['at'],timezone.utc).astimezone(local).strftime('%b %d, %Y')
+    subtitle = f"{date} · {collage.place(item['location'])}"
+    note = 'People shown need human review'
+    if approximate:
+        note = 'Timing uncertain; put-down not established'
     if already_at is not None:
-        clock = datetime.fromtimestamp(already_at,timezone.utc).astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles'))).strftime('%I:%M %p').lstrip('0')
-        subtitle = f"Already there at {clock} — arrival not recorded"
-        title = 'Already present · owner unknown'
-    draw.text((margin, 24), title, font=collage._type(44, 650), fill=collage.INK)
-    draw.text((margin, 86), subtitle, font=collage._type(27), fill=collage.MUTED)
+        clock = datetime.fromtimestamp(already_at,timezone.utc).astimezone(local).strftime('%I:%M %p').lstrip('0')
+        note = f"Already there at {clock} — arrival not recorded"
+    draw.text((margin, 22), title, font=collage._type(52, 650), fill=collage.INK)
+    draw.text((margin, 80), subtitle, font=collage._type(28), fill=collage.MUTED)
+    draw.text((margin, 126), note, font=collage._type(28), fill=collage.MUTED)
     region = _region(boxes, frames, frames[0]['jpeg'])
     for i, frame in enumerate(frames):
-        x, y = margin + i % 3 * (panel_w + gap), 145 + i // 3 * (panel_h + 80)
+        x, y = margin + i % 2 * (panel_w + gap), 186 + i // 2 * (panel_h + 68)
         # Paste the scene once, then draw each member spot on that same crop.
         collage._panel(canvas, draw, frame['jpeg'], region, boxes[0], (x, y), (panel_w, panel_h), 'corners')
         for box in boxes[1:]:
@@ -441,8 +446,9 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
             rect = (max(x+6,cx-hw),max(y+6,cy-hh),min(x+panel_w-6,cx+hw),min(y+panel_h-6,cy+hh))
             collage._mark(draw, rect, 'corners')
         at = datetime.fromtimestamp(frame['at'], timezone.utc)
-        label = at.astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles'))).strftime('%b %d  %I:%M:%S %p')
-        draw.text((x, y + panel_h + 12), label, font=collage._type(25), fill=collage.INK)
+        label = at.astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles'))).strftime('%I:%M:%S %p').lstrip('0')
+        label,font=collage._fit(draw,label,range(46,33,-2),450,panel_w)
+        draw.text((x, y + panel_h + 52), label, font=font, fill=collage.MUTED, anchor='ls')
     out = io.BytesIO()
     for quality in (84, 74, 64, 54, 44, 34):
         out.seek(0)
