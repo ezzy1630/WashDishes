@@ -6,28 +6,26 @@ are cropped close enough that the dish is easy to find.
 """
 from __future__ import annotations
 
-import io
 import re
 from datetime import datetime
 from datetime import timezone as utc
 from functools import cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import ImageDraw, ImageFont
 
 from .notify import timezone
-from .sequences import _font
 from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 4
+VERSION = 5
 
-WIDTH, MARGIN, GAP = 1600, 32, 24
+WIDTH, MARGIN, GAP = 1080, 40, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2
 PANEL_H = PANEL_W * 3 // 4
 CAPTION_H = 92
-PAPER, INK, MUTED, DISH, SHADE = "#101214", "#f3f4f6", "#a7aeb6", "#ffd400", "#000000"
+PAPER, INK, MUTED, DISH, SHADE = "#111316", "#e8eaed", "#a3aab2", "#ffe04f", "#000000"
 MIN_MARK = 64          # px; a cup across the room still gets a mark you can see on a phone
 MIN_CROP = 0.36        # of the frame width, so the spot stays recognisable
 # The camera's own clock and "tapo" logo (x, y, w, h of the frame). Each panel already says when it
@@ -39,12 +37,8 @@ MONA = Path(__file__).parent / "static" / "fonts" / "MonaSans.woff2"
 @cache
 def _type(size: int, weight: int = 450) -> ImageFont.FreeTypeFont:
     """Mona Sans like the dashboard; the system sans where this Pillow cannot read WOFF2."""
-    try:
-        font = ImageFont.truetype(str(MONA), size)
-        font.set_variation_by_axes([100, weight])
-        return font
-    except (OSError, ValueError):
-        return _font(size, weight >= 600)
+    from .evidence_image import font
+    return font(size, weight >= 600)
 
 
 def _clock(at: float) -> str:
@@ -84,18 +78,6 @@ def _fit(draw: ImageDraw.ImageDraw, text: str, sizes: range, weight: int, width:
     while len(text) > 1 and draw.textlength(text + "…", font=font) > width:
         text = text[:-1]
     return text.rstrip() + "…", font
-
-
-def _title(draw: ImageDraw.ImageDraw, dish: str, name: str | None) -> tuple[str, ImageFont.FreeTypeFont]:
-    """"Sam left this pan out", or "Pan left out" before anyone is named. A long name is shortened,
-    never the part saying what was left."""
-    if not name:
-        return _fit(draw, f"{dish[:1].upper()}{dish[1:]} left out", range(84, 55, -4), 700, WIDTH - 2 * MARGIN)
-    name = name.strip()
-    rest = f" left {'this ' * (not re.match(r'[0-9]', dish) and ',' not in dish)}{dish} out"
-    font = _type(56, 700)
-    short, _ = _fit(draw, name[:1].upper() + name[1:], range(84, 55, -4), 700, max(200, WIDTH - 2 * MARGIN - int(draw.textlength(rest, font=font))))
-    return _fit(draw, short + rest, range(84, 55, -4), 700, WIDTH - 2 * MARGIN)
 
 
 def _crop(dish: list[list[float]], person: list[float] | None, aspect: float) -> tuple[float, float, float, float]:
@@ -161,93 +143,34 @@ def _mark(draw: ImageDraw.ImageDraw, rect: tuple[float, float, float, float], st
                                (a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e)], fill=color, width=width)
 
 
-HEAD = MARGIN + 100 + 58 + 26
-
-
-def _canvas(height: int, dish: str, name: str | None, subtitle: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    """A blank picture with the title and a muted line under it."""
-    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    title, title_font = _title(probe, dish, name)
-    subtitle, sub_font = _fit(probe, subtitle, range(44, 35, -4), 450, WIDTH - 2 * MARGIN)
-    canvas = Image.new("RGB", (WIDTH, height), PAPER)
-    draw = ImageDraw.Draw(canvas)
-    draw.text((MARGIN, MARGIN + 92), title, font=title_font, fill=INK, anchor="ls")
-    draw.text((MARGIN, MARGIN + 92 + 62), subtitle, font=sub_font, fill=MUTED, anchor="ls")
-    return canvas, draw
-
-
-def _aspect(picture: bytes, width: int, height: int) -> float:
-    """The crop's width/height in frame units that fills a width x height panel undistorted."""
-    with Image.open(io.BytesIO(picture)) as first:
-        return width / height * first.height / first.width
-
-
-def _panel(canvas: Image.Image, draw: ImageDraw.ImageDraw, picture: bytes, region: tuple[float, float, float, float],
-           box: list[float], at: tuple[int, int], size: tuple[int, int], style: str) -> None:
-    """One photo cropped to `region`, with the dish's `box` marked; a box outside the region is not marked."""
-    (px, py), (width, height), (x0, y0, x1, y1) = at, size, region
-    with Image.open(io.BytesIO(picture)) as source:
-        frame = source.convert("RGB")
-    bounds = (round(x0 * frame.width), round(y0 * frame.height), round(x1 * frame.width), round(y1 * frame.height))
-    canvas.paste(frame.crop(bounds).resize((width, height), Image.Resampling.LANCZOS), (px, py))
-    sx, sy = width / (x1 - x0), height / (y1 - y0)
-    bx, by, bw, bh = box
-    cx, cy = px + (bx + bw / 2 - x0) * sx, py + (by + bh / 2 - y0) * sy
-    half_w, half_h = max(bw * sx / 2 + 10, MIN_MARK / 2), max(bh * sy / 2 + 10, MIN_MARK / 2)
-    rect = (max(px + 6, cx - half_w), max(py + 6, cy - half_h), min(px + width - 6, cx + half_w), min(py + height - 6, cy + half_h))
-    if rect[0] < rect[2] and rect[1] < rect[3]:  # a late box far from the first one can fall outside
-        _mark(draw, rect, style)
-
-
-def _caption(draw: ImageDraw.ImageDraw, text: str, at: float, x: int, base: int, width: int, color: str) -> None:
-    """A bold caption with its clock time after it, shrunk to fit one panel's width."""
-    time_font = _type(46, 450)
-    clock = _clock(at)
-    room = width - draw.textlength(clock, font=time_font) - 20
-    caption, font = _fit(draw, text, range(50, 37, -2), 650, int(room))
-    draw.text((x, base), caption, font=font, fill=color, anchor="ls")
-    draw.text((x + draw.textlength(caption, font=font) + 20, base), clock, font=time_font, fill=MUTED, anchor="ls")
-
-
-def _jpeg(canvas: Image.Image) -> bytes:
-    out = io.BytesIO()
-    canvas.save(out, "JPEG", quality=84, optimize=True, progressive=True)
-    return out.getvalue()
-
-
 def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
-    """2x2 photos with a short caption and time each; the dish marked in yellow in every panel.
-
-    Optional meta: `person_box` keeps the person's head in the crop, `late_box` marks the dish where the
-    late photo saw it, and `left_behind` captions the second photo as leaving the dish rather than
-    putting it down (the moment found was them walking off from it)."""
-    day = datetime.fromtimestamp(meta["putting_at"], utc.utc).astimezone(timezone())
-    row = PANEL_H + CAPTION_H
-    canvas, draw = _canvas(HEAD + 2 * row + GAP + MARGIN - 18, meta["dish"], name, f"{day:%a %b %-d} · {place(meta['location'])}")
-    region = _crop([meta["box"], *([meta["late_box"]] if meta.get("late_box") else [])], meta.get("person_box"),
-                   _aspect(pictures["putting"], PANEL_W, PANEL_H))
-    captions = {"before": "Before", "putting": "Leaving it" if meta.get("left_behind") else "Putting it down",
-                "left": "Left there", "late": f"Still there {_later(meta['late_at'] - meta['left_at'])}"}
-    styles = {"before": "dashed", "putting": "corners", "left": "solid", "late": "solid"}
-    for i, key in enumerate(STAGES):
-        px, py = MARGIN + (i % 2) * (PANEL_W + GAP), HEAD + (i // 2) * (row + GAP)
-        box = meta["late_box"] if key == "late" and meta.get("late_box") else meta["box"]
-        _panel(canvas, draw, pictures[key], region, box, (px, py), (PANEL_W, PANEL_H), styles[key])
-        _caption(draw, captions[key], meta[f"{key}_at"], px, py + PANEL_H + 64, PANEL_W, DISH if key == "late" else INK)
-    return _jpeg(canvas)
-
-
-OUT_W = WIDTH - 2 * MARGIN
-OUT_H = OUT_W * 3 // 4
+    from . import evidence_image as visual
+    day = datetime.fromtimestamp(meta['putting_at'],utc.utc).astimezone(timezone())
+    boxes = [meta['box'],*([meta['late_box']] if meta.get('late_box') else [])]
+    bounds = visual.region(boxes,pictures['left'])
+    panels = []
+    for key,label in (('before','Before · check this spot'),('putting','Who was at the counter'),
+                      ('left','After'),('late','Seen again · '+_later(meta['late_at']-meta['left_at']))):
+        if key not in pictures:
+            continue
+        box = meta.get('late_box') if key == 'late' else meta['box']
+        people = key == 'putting' and meta.get('person_box')
+        if people:
+            x,y,w,h = people
+            box = [x,y,w,min(h,max(w,h*.6))]
+        panels.append({'jpeg':pictures[key],'label':label,'time':_clock(meta[key+'_at']),
+                       'boxes':[box or meta['box']],'people':bool(people),'expected':key == 'before',
+                       **({} if people else {'region':bounds})})
+    title = f"{name} · {meta['dish']}" if name else meta['dish'].capitalize()
+    return visual.render(title,f"{day:%b %-d} · {place(meta['location'])}",panels,
+                         ['Only name someone if you know they left these dishes'])
 
 
 def render_out(meta: dict, picture: bytes, name: str | None) -> bytes:
-    """A dish still out past its deadline whose put-down was never found: one photo of it there, marked,
-    with since when. Nobody is named on it until a person picks a name; the camera saw no one leave it."""
-    since = datetime.fromtimestamp(meta["out_since"], utc.utc).astimezone(timezone())
-    when = f"{'Out since' if meta['timing_known'] else 'There since at least'} {since:%a %-I:%M %p}"
-    canvas, draw = _canvas(HEAD + OUT_H + CAPTION_H + MARGIN - 18, meta["dish"], name, f"{when} · {place(meta['location'])}")
-    region = _crop([meta["box"]], None, _aspect(picture, OUT_W, OUT_H))
-    _panel(canvas, draw, picture, region, meta["box"], (MARGIN, HEAD), (OUT_W, OUT_H), "solid")
-    _caption(draw, f"Still there {_later(meta['photo_at'] - meta['out_since'])}", meta["photo_at"], MARGIN, HEAD + OUT_H + 64, OUT_W, DISH)
-    return _jpeg(canvas)
+    from . import evidence_image as visual
+    when = datetime.fromtimestamp(meta['out_since'],utc.utc).astimezone(timezone())
+    note = f"Arrival wasn't recorded — it was already here at {when:%-I:%M %p}."
+    return visual.render('Dishes to check',place(meta['location']),
+                         [{'jpeg':picture,'label':'Seen again · '+_later(max(0,meta['photo_at']-meta['out_since'])),
+                           'time':_clock(meta['photo_at']),'boxes':[meta['box']]}],
+                         [note,'Only name someone if you know they left these dishes'])

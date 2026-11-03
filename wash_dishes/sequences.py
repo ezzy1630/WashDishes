@@ -8,7 +8,7 @@ import os
 import threading
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageFont, UnidentifiedImageError
 
 from .media import Media
 from .notify import timezone
@@ -30,82 +30,55 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default(size=size)
 
 
-def _lines(draw, text, font, width):
-    line = ''
-    for word in text.split():
-        proposed = (line+' '+word).strip()
-        if line and draw.textlength(proposed, font=font) > width:
-            yield line
-            line = word
-        else:
-            line = proposed
-    if line:
-        yield line
-
-
 def render_collage(manifest: dict, pictures: dict[str, bytes]) -> bytes:
-    """Compose real scene pixels and annotations. Never crop away the surrounding scene."""
-    canvas = Image.new('RGB', (2640, 2420), '#111316')
-    draw = ImageDraw.Draw(canvas)
-    title, body, small = _font(37, True), _font(27), _font(23)
-    labels = {'review': 'Needs human review', 'incomplete': 'Incomplete sequence', 'ready': 'Sequence reviewed by a person', 'rejected': 'Not supported by review'}
-    draw.text((30, 22), f"{manifest.get('visible_person') or 'Person unknown'} · {manifest['dishes']} · #{manifest['obligation_id']}", font=title, fill='#e8eaed')
-    draw.text((30, 80), f"{labels[manifest['status']]} · {manifest.get('location') or 'Kitchen'}", font=body, fill='#ffd166')
-    subtitle = f"Person identified by a household member: {manifest['visible_person']} · responsibility requires evidence" if manifest.get('visible_person') else 'Original full camera views · inspect the same dish in each frame'
-    draw.text((30, 124), subtitle, font=small, fill='#bdc4cc')
-    for i, stage in enumerate(manifest['stages']):
-        x, y = 30+(i % 2)*1300, 182+(i//2)*1040
-        draw.text((x, y), f"{i+1}. {stage['title']}", font=_font(29, True), fill='#e8eaed')
-        picture = pictures.get(stage['key'])
-        if picture:
-            with Image.open(io.BytesIO(picture)) as source:
-                source = ImageOps.exif_transpose(source).convert('RGB')
-                original = source.copy()
-                source.thumbnail((1270, 714), Image.Resampling.LANCZOS)
-                px, py = x+(1270-source.width)//2, y+48+(714-source.height)//2
-                canvas.paste(source, (px, py))
-                if stage['box']:
-                    a, b, w, h = stage['box']
-                    coords = (px+round(a*source.width), py+round(b*source.height), px+round((a+w)*source.width), py+round((b+h)*source.height))
-                    draw.rectangle(coords, outline='#132027', width=9)
-                    color = '#71d8ff' if stage['box_kind'] == 'expected_position' else '#ffe04f'
-                    draw.rectangle(coords, outline=color, width=4)
-                    # A separate detail view enlarges tiny dishes without hiding scene context.
-                    cx, cy = (a+w/2)*original.width, (b+h/2)*original.height
-                    radius = max(w*original.width, h*original.height, 24)*.85
-                    crop = original.crop((max(0, int(cx-radius)), max(0, int(cy-radius)),
-                                          min(original.width, int(cx+radius)), min(original.height, int(cy+radius))))
-                    crop = ImageOps.contain(crop, (180, 180), Image.Resampling.LANCZOS)
-                    canvas.paste(crop, (x+16, y+780))
-                    draw.rectangle((x+14, y+778, x+18+crop.width, y+782+crop.height), outline=color, width=3)
-                    draw.text((x+220, y+800), 'Same location, enlarged' if stage['key'] == 'before' else 'Dish detail, enlarged', font=body, fill='#e8eaed')
-                    draw.text((x+220, y+842), 'Blue: earlier comparison area' if stage['key'] == 'before' else 'Yellow: detected dish candidate', font=small, fill='#bdc4cc')
-                else:
-                    draw.text((x+20, y+820), 'Dish not localized in this frame', font=body, fill='#ffd166')
-            at = parse_stamp(stage['at']).astimezone(timezone())
-            basis = 'Capture' if stage['time_basis'] == 'capture' else 'Record time (approx.)'
-            draw.text((x, y+973), basis+' · '+at.strftime('%b %d %Y · %I:%M:%S %p %Z'), font=small, fill='#e8eaed')
-            box_label = {'expected_position': 'Box: comparison area; check the earlier state.', 'candidate_item': 'Box: item candidate; verify the same item.',
-                         'person_context': 'Nearby person only; no dish box was captured.'}.get(stage['box_kind'], 'No stage-specific item box was captured.')
-            draw.text((x, y+1010), box_label, font=small, fill='#a3aab2')
-        else:
-            draw.rectangle((x, y+48, x+1270, y+963), fill='#1e2227')
-            draw.text((x+30, y+360), 'Earlier view unavailable' if stage['key'] in ('before', 'using') else 'Waiting for a matching observation after two hours', font=body, fill='#a3aab2')
-    footer = [LIMIT]
-    if manifest['warnings']:
-        footer.extend(manifest['warnings'])
+    """Available observations only; absence and responsibility are never inferred."""
+    from . import evidence_image as visual
+    from .collage import place
+    available = [s for s in manifest['stages'] if pictures.get(s['key'])]
+    first = next((s for s in available if s['key'] == 'leaving'), available[0] if available else None)
+    if first is None:
+        raise ValueError('No retained photos to render.')
+    day = parse_stamp(first['at']).astimezone(timezone()).strftime('%b %-d')
+    dish_boxes = [s['box'] for s in available if s.get('box') and s['key'] != 'using']
+    region = visual.region(dish_boxes,pictures[first['key']])
+    panels = []
+    for stage in available:
+        key = stage['key']
+        label = {'before': 'Before · check this spot', 'using': 'Who was at the counter',
+                 'leaving': 'After' if 'before' in pictures else 'First saved view',
+                 'later': 'Seen again'}[key]
+        if key == 'later':
+            seconds = (parse_stamp(stage['at'])-parse_stamp(first['at'])).total_seconds()
+            from .collage import _later
+            label = 'Seen again · ' + _later(max(0,seconds))
+        people = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in stage.get('person_boxes',[])]
+        if key == 'using' and not people:
+            label = 'Counter view'
+        panel = {'jpeg':pictures[key], 'label':label,
+                 'time':parse_stamp(stage['at']).astimezone(timezone()).strftime('%b %-d · %-I:%M %p') +
+                        (' · approximate' if stage.get('time_basis') != 'capture' or manifest.get('render_sources',{}).get(key,{}).get('timestamp_estimated') else ''),
+                 'boxes':people if people else ([stage['box']] if stage.get('box') else []),
+                 'expected':key == 'before', 'people':key == 'using'}
+        if key != 'using':
+            panel['region'] = region
+        panels.append(panel)
+    notes = []
+    if 'before' not in pictures:
+        clock = parse_stamp(first['at']).astimezone(timezone()).strftime('%-I:%M %p')
+        notes.append(f"Arrival wasn't recorded — it was already here at {clock}.")
+    elif manifest.get('review_pending') or manifest.get('continuity_events'):
+        notes.append('Check that these views show the same dish.')
     else:
-        footer.append('Review Before → actual use → departure → matching later item before sharing an accusation.')
-    y = 2290
-    for text in footer:
-        for line in _lines(draw, text, small, 2580):
-            if y > 2390:
-                break
-            draw.text((30, y), line, font=small, fill='#bdc4cc')
-            y += 29
-    output = io.BytesIO()
-    canvas.save(output, 'JPEG', quality=89, subsampling=0)
-    return output.getvalue()
+        notes.append('Photos show separate moments; activity between them is unknown.')
+    if 'using' in pictures:
+        notes.append('Only name someone if you know they left these dishes')
+    if manifest.get('outcome') in ('resolved','cleared'):
+        notes.append('This record is closed; these are earlier photos.')
+    elif manifest.get('outcome') in ('dismissed','disputed') or manifest.get('status') == 'rejected':
+        notes.append('This record was disputed or set aside.')
+    # Detector nouns are unconfirmed (a bottle can be called a cup). Let the pixels
+    # identify the object rather than asserting a species or an owner in a title.
+    return visual.render('Dishes to check',f"{day} · {place(manifest.get('location'))}",panels,notes)
 
 
 class SequenceCollection:
@@ -226,11 +199,26 @@ class SequenceCollection:
         manifest['fingerprint'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
         return manifest, pictures
 
+    def _render_sources(self, manifest: dict, pictures: dict) -> tuple[dict, dict]:
+        from .render_sources import SourceFrames
+        source = SourceFrames(self.media.buffer)
+        rendered, provenance = {}, {}
+        for stage in manifest['stages']:
+            key = stage['key']
+            if key not in pictures:
+                continue
+            # Legacy record time is not a camera timestamp. Keep those stills.
+            at = parse_stamp(stage['at']).timestamp() if stage['time_basis'] == 'capture' else None
+            rendered[key], provenance[key] = source.best(at, pictures[key])
+            if key == 'using' and at is not None:
+                stage['person_boxes'] = source.people(at,[s['box'] for s in manifest['stages'] if s.get('box')])
+        return rendered, provenance
+
     def _row(self, obligation_id: int):
         with self.store.lock:
             return self.store.conn.execute('SELECT * FROM evidence_sequences WHERE obligation_id=?', (obligation_id,)).fetchone()
 
-    def refresh(self, limit: int = 20, *, obligation_id: int | None = None) -> int:
+    def refresh(self, limit: int = 20, *, obligation_id: int | None = None, force: bool = False) -> int:
         """One bounded background batch. Saved originals and the existing media quota remain authoritative."""
         with self.lock:
             with self.store.lock:
@@ -247,14 +235,20 @@ class SequenceCollection:
                 if not any(e['capture'].get('stage') == 'leaving' or e['label'].startswith(PREFIXES['leaving']) for e in item['evidence']):
                     continue
                 row = self._row(oid)
-                if row and json.loads(row['manifest']).get('source_token') == self._source_token(item):
+                current_render = row and json.loads(row['manifest']).get('render_version') == 1
+                if not force and current_render and row and json.loads(row['manifest']).get('source_token') == self._source_token(item):
                     continue
                 manifest, pictures = self._draft(item)
-                if row and row['fingerprint'] == manifest['fingerprint']:
+                if not force and current_render and row and row['fingerprint'] == manifest['fingerprint']:
                     continue
                 if not pictures:
                     continue
                 checks, reviewed_at = {}, None
+                if row:
+                    from .incidents import sequence_signature
+                    previous = json.loads(row['manifest'])
+                    if previous.get('source_token') == manifest['source_token'] and sequence_signature(previous) == sequence_signature(manifest):
+                        checks,reviewed_at = json.loads(row['checks']),row['reviewed_at']
                 with self.store.lock:
                     decision = self.store.conn.execute('SELECT data FROM incident_decisions WHERE obligation_id=?', (oid,)).fetchone()
                 if decision:
@@ -263,6 +257,12 @@ class SequenceCollection:
                     if decision.get('sequence_signature') == sequence_signature(manifest):
                         checks, reviewed_at = decision['checks'], decision['reviewed_at']
                         manifest['status'] = 'rejected' if any(v is False for v in checks.values()) else 'ready' if manifest['complete'] and all(checks.get(k) is True for k in STAGES) else manifest['status']
+                if any(v is False for v in checks.values()):
+                    manifest['status'] = 'rejected'
+                elif manifest['complete'] and all(checks.get(k) is True for k in STAGES):
+                    manifest['status'] = 'ready'
+                manifest['render_version'] = 1
+                pictures, manifest['render_sources'] = self._render_sources(manifest, pictures)
                 data = render_collage(manifest, pictures)
                 image_id = row['image_id'] if row else None
                 existing = self.store.evidence(image_id) if image_id else None
@@ -364,6 +364,7 @@ class SequenceCollection:
                 raise ValueError('All four distinct stages must be captured before the sequence can be approved.')
             updated = dict(saved)
             updated['status'] = 'rejected' if any(v is False for v in checks.values()) else 'ready' if all(checks.get(k) is True for k in STAGES) else manifest['status']
+            pictures, updated['render_sources'] = self._render_sources(updated,pictures)
             data = render_collage(updated, pictures)
             with self.media.lock, self.store.lock:
                 if self._source_token(self.store.obligation(obligation_id)) != manifest['source_token']:

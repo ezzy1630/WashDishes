@@ -339,3 +339,45 @@ zero, regardless of rating; nobody needs to empty the queue.
 The headline is “N clear ones to name”. A quiet “+M with weak evidence” control
 reveals weak visits for the current review session. They remain optional and come
 after strong/fair visits. Closed pages show history without a naming prompt.
+
+### Phone evidence images and re-rendering
+
+Derived proof collages and arrival filmstrips now use a 1080px-wide adaptive,
+stacked layout. Do not assume six frames or a fixed aspect ratio. The existing
+`filmstrip_width`/`filmstrip_height` and `photo_width`/`photo_height` are the actual
+JPEG dimensions and remain the layout contract; URLs and response shapes are
+unchanged. Text is at least 40 image pixels (14.4 CSS pixels at 390px full width).
+Exports use the house site's graphite palette and static system sans fallback,
+and are capped at 350,000 JPEG bytes. Weekly exports use the same palette/type.
+
+Only retained stages are drawn. The dish has its own contextual crop; recorded
+arrival windows also show up to two visually distinct people views, ranked by
+visible frontal face, head size and detail. This visual ranking supplies no name,
+responsibility, dish admission or score. Missing-arrival strips never select a
+nearby visitor. Original full scenes remain available on the record. Stage
+checks, timestamps and source hashes still refer to the saved original stills;
+`render_sources` documents display-only buffer replacements and their estimated
+times. The renderer only uses buffer frames within 0.75 seconds of a saved capture
+and with more source pixels; legacy record times keep their saved stills.
+
+Filmstrip metadata `frames` contains the retained source selections in time order;
+the image presents dish comparison first and then people context, with actual
+decoder times labeled approximate. Re-rendering preserves visit membership,
+identity bindings, evidence ids and expiry. No models for dish detection or
+identity are loaded by the re-render command.
+
+Run on an explicitly selected data root after deployment (first command is
+read-only; this task has not run either command on the live Jetson):
+
+```sh
+python -m wash_dishes.rerender --root /path/to/live --dry-run
+python -m wash_dishes.rerender --root /path/to/live --apply --limit 100
+```
+
+The default is dry-run. Scope is non-archived open records plus records with a
+this-week deadline, excluding dismissed/disputed records. `--limit` bounds image
+actions per invocation; `next_offset` and `--offset` allow bounded continuation. Expired media is not revived. Missing arrival endpoints
+leave the old strip intact and appear in `skipped`; sequences keep retained saved
+stills when video is gone. Apply forces a new render of selected derived images,
+without changing scoring, identities, admission or visit membership. Review
+checks are preserved when the original stage signature is unchanged.

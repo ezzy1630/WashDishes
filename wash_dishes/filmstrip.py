@@ -1,21 +1,18 @@
 """Arrival context for human naming, independent of the strict four-photo proof.
 
 Bodies hiding the spot are useful context here. Neither a person box nor this strip
-confirms ownership. Searches stream the journal; decoding is six small windows in
+confirms ownership. Searches stream the journal; decoding uses a bounded candidate pool in
 single-threaded, niced FFmpeg, on the existing background proof worker.
 """
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-from PIL import Image, ImageDraw
 
 from . import collage, putdown
 from .media import atomic_write
@@ -100,7 +97,7 @@ def select_frames(frames, box: list[float], window: dict, *, count: int = 6) -> 
     people = [f for f in candidates[1:-1] if f['person_boxes']]
     appeared = window.get('appeared')
     if len(people)>=count-2:
-        for fraction in (0,.2,.55,.85):
+        for fraction in (i/max(1,count-3) for i in range(count-2)):
             selected=people[round(fraction*(len(people)-1))]
             if selected not in chosen:
                 chosen.append(selected)
@@ -403,68 +400,71 @@ def duplicate_clusters(items: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def _region(boxes, frames, picture):
-    people = [b for f in frames for b in f['person_boxes']]
-    # Include the union of everyone's head/torso, not just a single guessed handler.
-    heads = [[x, y, w, min(h, max(w, h * .6))] for x, y, w, h in people]
-    if not heads:
-        # Missing person detections must not crop a real head out of an arrival.
-        # This is framing geometry only, never a synthesized person box in metadata.
-        heads = [[max(0,b[0]-.18),max(0,b[1]-.55),min(.55,1-max(0,b[0]-.18)),min(.7,1-max(0,b[1]-.55))] for b in boxes]
-    return collage._crop([*boxes, *heads], None, collage._aspect(picture, 500, 375))
-
-
 def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = None, approximate: bool = False, already_at: float | None = None) -> bytes:
-    width, height, margin, gap = 1200, 195 + ((len(frames) + 1) // 2) * 491, 24, 24
-    panel_w, panel_h = 564, 423
-    canvas = Image.new('RGB', (width, height), collage.PAPER)
-    draw = ImageDraw.Draw(canvas)
+    from . import evidence_image as visual
+    if not frames:
+        raise ValueError('No retained arrival photos.')
     boxes = boxes or [item['box']]
-    dish = f"{len(boxes)} dishes" if len(boxes) > 1 else collage.dish_name(item['dishes']).capitalize()
-    place = collage.place(item['location']) or 'kitchen'
-    title = f"{dish} on {place if place.lower().startswith('the ') else 'the ' + place.lower()}"
-    local = ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles'))
-    start, end = [datetime.fromtimestamp(frame['at'], timezone.utc).astimezone(local) for frame in (frames[0], frames[-1])]
+    day = datetime.fromtimestamp(frames[0]['at'],timezone.utc).astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles')))
     def clock(at):
-        return at.strftime('%I:%M %p').lstrip('0')
-    first_clock = clock(start).removesuffix(start.strftime(' %p')) if start.date() == end.date() and start.strftime('%p') == end.strftime('%p') else clock(start)
-    subtitle = f"{start.strftime('%b')} {start.day} · {first_clock}–{clock(end)}"
-    if start.date() != end.date():
-        subtitle = f"{start.strftime('%b')} {start.day} · {clock(start)} – {end.strftime('%b')} {end.day} · {clock(end)}"
-    note = 'Only name someone if you know they left these dishes'
-    if approximate:
-        note = 'Timing uncertain; put-down not established'
+        return datetime.fromtimestamp(at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M:%S %p')
+    last = frames[-1]
+    panels = [{'jpeg':last['jpeg'],'label':'Dish detail' if len(boxes) == 1 else 'Dish details',
+               'time':clock(last['at']) + ' · approximate','boxes':boxes}]
+    # Compare the same crop before/after. An already-present window never earns
+    # a before label, and duplicate pixels do not earn another panel.
+    if already_at is None and not approximate and frames[0]['jpeg'] != last['jpeg']:
+        panels.insert(0,{'jpeg':frames[0]['jpeg'],'label':'Earlier view · check this spot',
+                        'time':clock(frames[0]['at']) + ' · approximate','boxes':boxes,'expected':True,
+                        'region':visual.region(boxes,last['jpeg'])})
+    if already_at is None:
+        for frame in visual.distinct_people(frames):
+            heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
+            panels.append({'jpeg':frame['jpeg'],'label':'Who was at the counter',
+                           'time':clock(frame['at']) + ' · approximate','boxes':heads,'people':True})
+    notes = []
     if already_at is not None:
-        already_clock = clock(datetime.fromtimestamp(already_at, timezone.utc).astimezone(local))
-        note = f"Already there at {already_clock} — arrival not recorded"
-    title, title_font = collage._fit(draw, title, range(52, 31, -2), 650, width - 2 * margin)
-    draw.text((margin, 22), title, font=title_font, fill=collage.INK)
-    draw.text((margin, 80), subtitle, font=collage._type(28), fill=collage.MUTED)
-    draw.text((margin, 126), note, font=collage._type(28), fill=collage.MUTED)
-    region = _region(boxes, frames, frames[0]['jpeg'])
-    for i, frame in enumerate(frames):
-        x, y = margin + i % 2 * (panel_w + gap), 186 + i // 2 * (panel_h + 68)
-        # Paste the scene once, then draw each member spot on that same crop.
-        collage._panel(canvas, draw, frame['jpeg'], region, boxes[0], (x, y), (panel_w, panel_h), 'corners')
-        for box in boxes[1:]:
-            sx, sy = panel_w / (region[2]-region[0]), panel_h / (region[3]-region[1])
-            bx, by, bw, bh = box
-            cx, cy = x+(bx+bw/2-region[0])*sx, y+(by+bh/2-region[1])*sy
-            hw, hh = max(32,bw*sx/2+10), max(32,bh*sy/2+10)
-            rect = (max(x+6,cx-hw),max(y+6,cy-hh),min(x+panel_w-6,cx+hw),min(y+panel_h-6,cy+hh))
-            collage._mark(draw, rect, 'corners')
-        at = datetime.fromtimestamp(frame['at'], timezone.utc)
-        label = at.astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles'))).strftime('%I:%M:%S %p').lstrip('0')
-        label,font=collage._fit(draw,label,range(46,33,-2),450,panel_w)
-        draw.text((x, y + panel_h + 52), label, font=font, fill=collage.MUTED, anchor='ls')
-    out = io.BytesIO()
-    for quality in (84, 74, 64, 54, 44, 34):
-        out.seek(0)
-        out.truncate()
-        canvas.save(out, 'JPEG', quality=quality, optimize=True)
-        if out.tell() < 600_000:
-            return out.getvalue()
-    raise ValueError('Arrival filmstrip exceeds the photo budget.')
+        notes.append("Arrival wasn't recorded — it was already here at " + datetime.fromtimestamp(already_at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M %p') + '.')
+    elif approximate:
+        notes.append('Arrival timing is uncertain; check these views before naming.')
+    notes.append('Only name someone if you know they left these dishes')
+    return visual.render('Dishes to check',f"{day:%b %-d} · {collage.place(item['location'])}",panels,notes)
+
+
+def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline: float) -> list[dict]:
+    """Decode a bounded pool throughout the arrival, then rank pixels, not times.
+
+    Keep the original endpoints and only show people in a recorded arrival. No
+    visit membership, tracking decisions, or identity teaching are changed here.
+    """
+    segments = footage_segments(buffer)
+    candidates = list(found['frames'])
+    window = found['window']
+    if window.get('arrival_recorded',True):
+        x = min(b[0] for b in boxes)
+        y = min(b[1] for b in boxes)
+        union = [x,y,max(b[0]+b[2] for b in boxes)-x,max(b[1]+b[3] for b in boxes)-y]
+        candidates += select_frames(journal.frames(window['before'],window['after']),union,window,count=24)
+    decoded = {}
+    for selected in candidates:
+        if time.monotonic() >= deadline:
+            break
+        photo = _photo_at(segments,selected['at'])
+        if not photo or abs(photo[0]-selected['at']) > .75:
+            continue
+        at,jpeg = photo
+        nearby = list(journal.frames(at-.75,at+.75))
+        observation = min(nearby,key=lambda f:abs(f['at']-at)) if nearby else None
+        people = [p['box'] for p in observation['detections'] if p['kind'] == 'person' and
+                  any(putdown._reach(b,p['box']) <= .1 for b in boxes)] if observation and window.get('arrival_recorded',True) else []
+        decoded[round(at,3)] = {'at':at,'jpeg':jpeg,'person_boxes':people}
+    frames = sorted(decoded.values(),key=lambda f:f['at'])
+    if not frames or any(not any(abs(f['at']-endpoint['at']) <= .75 for f in frames)
+                         for endpoint in (found['frames'][0],found['frames'][-1])):
+        return []
+    from .evidence_image import distinct_people
+    selected = [frames[0],frames[-1],*distinct_people(frames)]
+    return sorted({round(f['at'],3):f for f in selected}.values(),key=lambda f:f['at'])
 
 
 def identity_frame(journal, frames: list[dict], boxes: list[list[float]], *, arrival_recorded: bool) -> dict | None:
@@ -590,30 +590,15 @@ class Filmstrips:
         obligation_ids = sorted(m['id'] for m in members)
         visit_id = hashlib.sha256((','.join(map(str,obligation_ids))).encode()).hexdigest()[:20]
         if not reason:
-            segments = footage_segments(self.media.buffer)
-            frames = []
-            for selected in found['frames']:
-                if time.monotonic() >= deadline:
-                    reason = 'Arrival context search reached its bounded time budget.'
-                    break
-                photo = _photo_at(segments,selected['at'])
-                if not photo:
-                    reason = 'Retained footage does not cover all arrival frames, or a source segment could not be decoded.'
-                    break
-                at,jpeg = photo
-                # Actual decoder PTS is the caption and metadata time. Boxes are the nearest journal observation.
-                nearest = list(self.journal.frames(at - .75, at + .75))
-                observation = min(nearest, key=lambda f: abs(f['at'] - at)) if nearest else None
-                people = [p for p in observation['detections'] if p['kind'] == 'person' and any(putdown._reach(m['box'], p['box']) <= .1 for m in members)] if observation else []
-                frames.append({'at': at, 'jpeg': jpeg, 'person_boxes': [p['box'] for p in people]})
-            if not reason and (len(frames) != 6 or len({round(f['at'],3) for f in frames}) != 6):
-                reason = 'The recording cannot supply six distinct arrival context frames.'
+            frames = display_frames(self.journal,self.media.buffer,found,[g[0]['box'] for g in physical],deadline=deadline)
+            if not frames:
+                reason = 'Retained footage cannot supply arrival photos.'
             if not reason:
                 evidence_id = f"arrival-{visit_id}"
                 filename = evidence_id + '.jpg'
                 atomic_write(self.media.safe_path(filename), render(item, frames, boxes=[g[0]['box'] for g in physical], approximate=found['window'].get('approximate', False), already_at=found['window'].get('first_visible_at') if not found['window'].get('arrival_recorded',True) else None))
                 try:
-                    metadata = {'visit_id': visit_id, 'obligation_ids': obligation_ids,
+                    metadata = {'visit_id': visit_id, 'obligation_ids': obligation_ids, 'render_version': 1, 'layout': 'stacked',
                                 'timestamp_estimated': True, 'time_basis': 'segment_mtime_and_decoded_pts',
                                 'canonical_obligation_ids': canonical_ids, 'duplicate_of': {str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
                                 'window': found['window'], 'dish_boxes': {str(m['id']): m['box'] for m in members},
