@@ -6,6 +6,7 @@ single-threaded, niced FFmpeg, on the existing background proof worker.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +21,19 @@ from .store import parse_stamp, stamp, utcnow
 
 KEEP = timedelta(days=7)
 MAX_WINDOW = 20 * 60
+TIMEOUT = 'Arrival context search reached its bounded time budget.'
+DECODE_RETRY = 'Retained arrival footage could not be decoded; retry pending.'
+RETRY_DELAY = timedelta(minutes=5)
+
+
+class _Footage(list):
+    """One search owns a bounded decode cache; never retain household pixels globally."""
+
+    def __init__(self, segments):
+        super().__init__(segments)
+        self.photos = {}
+        self.deadline = None
+        self.targets = []
 
 
 def arrival_window(frames, box: list[float], anchor: float, *, family: str | None = None) -> dict | str:
@@ -133,7 +147,7 @@ def _patch_window(buffer: Path, box: list[float], anchor: float, *, deadline: fl
     segments = [s for s in footage_segments(buffer) if s[0] <= anchor]
     if not segments or anchor - segments[-1][1] > 60:
         return 'No retained footage covers the first sighting or its arrival.'
-    latest = putdown.samples(segments[-1], box, first_only=True)
+    latest = putdown.samples(segments[-1], box, first_only=True, deadline=deadline)
     if not latest:
         return 'The recording at the first sighting could not be decoded.'
     reference = latest[0]
@@ -142,8 +156,8 @@ def _patch_window(buffer: Path, box: list[float], anchor: float, *, deadline: fl
     stride = max(1, len(segments) // 48)
     for segment in reversed(segments[::stride]):
         if time.monotonic() >= deadline:
-            return 'Arrival context search reached its bounded time budget.'
-        samples = putdown.samples(segment, box, first_only=True)
+            return TIMEOUT
+        samples = putdown.samples(segment, box, first_only=True, deadline=deadline)
         if not samples:
             continue
         sample = samples[0]
@@ -168,9 +182,11 @@ def plan(journal, buffer: Path, item: dict, *, deadline: float | None = None) ->
                     raise putdown._SearchTimeout
                 yield frame
     try:
-        return _plan(BoundedJournal(), buffer, item, deadline=deadline)
+        result = _plan(BoundedJournal(), buffer, item, deadline=deadline)
+        putdown._check_deadline(deadline)
+        return result
     except putdown._SearchTimeout:
-        return 'Arrival context search reached its bounded time budget.'
+        return TIMEOUT
 
 
 def footage_segments(buffer: Path):
@@ -191,14 +207,33 @@ def footage_segments(buffer: Path):
         # Camera records fixed ten-second segments, also the convention used by
         # Media.save_recent_clip. Wall times are estimates; decoder PTS stays exact.
         found.append((info.st_mtime-10,info.st_mtime,path))
-    return sorted(found)
+    return _Footage(sorted(found))
 
 
 def _photo_at(segments, at: float) -> tuple[float, bytes] | None:
     segment = next((s for s in segments if s[0] <= at < s[1]), None)
-    pictures = putdown.decoded_photos(segment, fps=2, t0=max(segment[0],at-.5), t1=min(segment[1],at+.75)) if segment else []
-    if not pictures and segment:
-        pictures=putdown.photos(segment)
+    pictures = []
+    if segment:
+        deadline = getattr(segments, 'deadline', None)
+        if deadline is not None:
+            putdown._check_deadline(deadline)
+        # Decode once per short recorder segment and encode only requested
+        # instants. Encoding all twenty 2-fps JPEGs costs seconds on the Jetson.
+        cache = getattr(segments, 'photos', None)
+        targets = ([t for t in getattr(segments, 'targets', []) if segment[0] <= t < segment[1]]
+                   if segment[1]-segment[0] <= 15 else []) or [at]
+        key = (segment[2], tuple(targets))
+        if cache is None or key not in cache:
+            pictures = putdown.decoded_photos(segment, fps=2,
+                t0=max(segment[0], min(targets)-.5), t1=min(segment[1], max(targets)+.75),
+                sample_times=targets, deadline=deadline)
+            if cache is not None:
+                cache[key] = pictures
+        else:
+            pictures = cache[key]
+        if deadline is not None:
+            putdown._check_deadline(deadline)
+
     return min(pictures,key=lambda p:abs(p[0]-at)) if pictures else None
 
 
@@ -260,14 +295,19 @@ def _plan(journal, buffer: Path, item: dict, *, deadline: float) -> dict | str:
         return 'No saved dish box locates the arrival spot.'
     bounds = journal.bounds()
     segments = footage_segments(buffer)
+    if isinstance(segments, _Footage):
+        segments.deadline = deadline
     reference = _photo_at(segments,anchor)
     if reference is None:
-        return 'No retained footage covers the first recorded sighting.'
+        return DECODE_RETRY if any(s[0] <= anchor < s[1] for s in segments) else 'No retained footage covers the first recorded sighting.'
     reference_patch = putdown._jpeg_patch(reference[1],box)
     end = min(anchor+30,bounds[1]) if bounds else anchor
     candidates = []
     if bounds:
-        start = max(bounds[0],anchor-50*3600)
+        # A recent arrival needs a clear view within MAX_WINDOW. Older nearby
+        # visitors cannot establish who placed a dish at this first sighting.
+        # Include a minute of pre-roll for absence/approach continuity.
+        start = max(bounds[0], anchor-MAX_WINDOW-60)
         # The journal locates visits, not guilt. Compare the actual spot before/after
         # each visit with its first-observed appearance before claiming an arrival.
         visits = _visits(journal.frames(start,end),box)
@@ -278,11 +318,20 @@ def _plan(journal, buffer: Path, item: dict, *, deadline: float) -> dict | str:
             candidates.insert(0,detected)
     else:
         window = _patch_window(buffer,box,anchor,deadline=deadline)
+        if window == TIMEOUT:
+            raise putdown._SearchTimeout
         if isinstance(window,dict):
             candidates.append(window)
     for window in candidates[:12]:
-        if time.monotonic()>=deadline:
-            break
+        putdown._check_deadline(deadline)
+        if bounds and any(s[0] <= window['before']-.75 and window['before']+.75 < s[1] for s in segments):
+            # These observations lie inside the final twelve-second veto for
+            # every admissible decoded endpoint (+/- .75s). Reject known
+            # occupied/covered spots before spending CPU on two full decodes.
+            prior = journal.frames(window['before']-10, window['before']-1)
+            if any(putdown._overlap(box, d['box']) > (.15 if d['kind']=='person' else .2)
+                   for f in prior for d in f['detections']):
+                continue
         before, after = _photo_at(segments,window['before']), _photo_at(segments,window['after'])
         if before is None:
             choices = [s for s in segments if window['before']<=s[0]<window['appeared']]
@@ -440,18 +489,33 @@ def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline:
     visit membership, tracking decisions, or identity teaching are changed here.
     """
     segments = footage_segments(buffer)
+    if isinstance(segments, _Footage):
+        segments.deadline = deadline
     candidates = list(found['frames'])
     window = found['window']
-    if window.get('arrival_recorded',True):
+    # When planning used most of the budget, keep the six original views.
+    # Extra ranking candidates must not displace those endpoint/visitor views.
+    if window.get('arrival_recorded',True) and deadline-time.monotonic() > 15:
         x = min(b[0] for b in boxes)
         y = min(b[1] for b in boxes)
         union = [x,y,max(b[0]+b[2] for b in boxes)-x,max(b[1]+b[3] for b in boxes)-y]
-        candidates += select_frames(journal.frames(window['before'],window['after']),union,window,count=24)
+        candidates += select_frames(journal.frames(window['before'],window['after']),union,window,count=12)
+    # Saved endpoints define the visit. context_start is approach pre-roll for
+    # initial planning; applying it again must not expand an existing filmstrip.
+    first, last = found['frames'][0]['at'], found['frames'][-1]['at']
+    candidates = sorted({f['at']: f for f in candidates if first <= f['at'] <= last}.values(), key=lambda f: f['at'])
+    # Decode endpoints first, so interior ranking cannot consume their budget.
+    candidates = [candidates[0], candidates[-1], *candidates[1:-1]] if candidates else []
+    if isinstance(segments, _Footage):
+        segments.targets = [f['at'] for f in candidates]
     decoded = {}
     for selected in candidates:
         if time.monotonic() >= deadline:
             break
-        photo = _photo_at(segments,selected['at'])
+        try:
+            photo = _photo_at(segments,selected['at'])
+        except putdown._SearchTimeout:
+            break
         if not photo or abs(photo[0]-selected['at']) > .75:
             continue
         at,jpeg = photo
@@ -516,31 +580,38 @@ class Filmstrips:
     def __init__(self, store, media, journal, *, identify=None):
         self.store, self.media, self.journal = store, media, journal
         self.identify = identify
-        self.plans = {}
         with store.lock, store.conn:
             store.conn.execute("""CREATE TABLE IF NOT EXISTS filmstrip_jobs(
                 obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id), status TEXT NOT NULL,
                 attempted_at TEXT NOT NULL, reason TEXT, evidence_id TEXT REFERENCES evidence(id))""")
 
     def generate(self, obligation_id: int, *, now: datetime | None = None) -> dict:
-        now = now or utcnow()
+        # Cross-process claim shared by the service and the recovery CLI. A crash
+        # releases it automatically; never wait behind another footage search.
+        with (self.store.root / '.filmstrip.lock').open('a') as claim:
+            try:
+                fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {'obligation_id': obligation_id, 'status': 'busy'}
+            return self._generate(obligation_id, now=now or utcnow())
+
+    def _generate(self, obligation_id: int, *, now: datetime) -> dict:
         with self.store.lock:
             existing = self.store.conn.execute('SELECT * FROM filmstrip_jobs WHERE obligation_id=?', (obligation_id,)).fetchone()
-            if existing:
+            if existing and existing['status'] != 'retry' and existing['reason'] != TIMEOUT:
                 return dict(existing)
-            item = self.store.obligation(obligation_id)
+            if existing and parse_stamp(existing['attempted_at']) + RETRY_DELAY > now:
+                return dict(existing)
+            prior = self.store.conn.execute('SELECT v.* FROM arrival_visits v JOIN arrival_visit_members m ON m.visit_id=v.id WHERE m.obligation_id=?', (obligation_id,)).fetchone()
+            old = json.loads(prior['metadata']) if prior else None
+            item = self.store.obligation(old['canonical_obligation_ids'][0] if old else obligation_id)
         deadline = time.monotonic() + 30
-        found = self.plans.get(obligation_id)
-        if found is None:
-            found = plan(self.journal, self.media.buffer, item, deadline=deadline-10)
-            self.plans[obligation_id] = found
-        if len(self.plans) > 64:
-            self.plans.pop(next(iter(self.plans)))
+        found = plan(self.journal, self.media.buffer, item, deadline=deadline-10)
         evidence_id = None
         reason = found if isinstance(found, str) else None
-        members = [item]
+        members = [self.store.obligation(oid) for oid in old['obligation_ids']] if old else [item]
         member_plans = [found] if not reason else []
-        if not reason:
+        if not reason and not old:
             with self.store.lock:
                 candidates = self.store.conn.execute("""SELECT id FROM obligations WHERE id!=? AND source IN ('vision','baseline')
                     AND lifecycle NOT IN ('dismissed','disputed') AND archived_at IS NULL AND created_at>=? AND created_at<=?
@@ -562,7 +633,7 @@ class Filmstrips:
             # Other physical dishes can share the same naming unit only through a
             # continuous, unambiguous person visit. Duplicate aliases need no new name.
             for other in others:
-                if reason or other in members or time.monotonic()>=deadline:
+                if reason or other in members or time.monotonic()>=deadline-15:
                     continue
                 if abs((parse_stamp(other['created_at'])-parse_stamp(item['created_at'])).total_seconds())>240:
                     continue
@@ -571,10 +642,7 @@ class Filmstrips:
                 a,b=item['box'],other['box']
                 if abs(a[0]-b[0])+abs(a[1]-b[1])>.4:
                     continue
-                other_plan = self.plans.get(other['id'])
-                if other_plan is None:
-                    other_plan = plan(self.journal,self.media.buffer,other,deadline=deadline-10)
-                    self.plans[other['id']] = other_plan
+                other_plan = plan(self.journal,self.media.buffer,other,deadline=deadline-10)
                 if isinstance(other_plan,dict) and found['window'].get('arrival_recorded',True) and other_plan['window'].get('arrival_recorded',True) and all(same_visit(self.journal,prior,other_plan) for prior in member_plans):
                     cluster = next(g for g in clusters if any(m['id']==other['id'] for m in g))
                     members.extend(m for m in cluster if m not in members)
@@ -588,65 +656,122 @@ class Filmstrips:
                 union=[x,y,max(m['box'][0]+m['box'][2] for m in members)-x,max(m['box'][1]+m['box'][3] for m in members)-y]
                 found=found|{'window':combined,'frames':select_frames(self.journal.frames(combined['before'],combined['after']),union,combined)}
         physical = duplicate_clusters(members)
+        if old:
+            physical = [[next(m for m in members if m['id'] == oid)] for oid in old['canonical_obligation_ids']]
         canonical_ids = [g[0]['id'] for g in physical]
         obligation_ids = sorted(m['id'] for m in members)
-        visit_id = hashlib.sha256((','.join(map(str,obligation_ids))).encode()).hexdigest()[:20]
+        visit_id = prior['id'] if prior else hashlib.sha256((','.join(map(str,obligation_ids))).encode()).hexdigest()[:20]
+        created = parse_stamp(prior['created_at']) if prior else now
         if not reason:
             frames = display_frames(self.journal,self.media.buffer,found,[g[0]['box'] for g in physical],deadline=deadline)
             if not frames:
-                reason = 'Retained footage cannot supply arrival photos.'
+                reason = TIMEOUT if time.monotonic() >= deadline else DECODE_RETRY
             if not reason:
                 evidence_id = f"arrival-{visit_id}"
                 filename = evidence_id + '.jpg'
                 atomic_write(self.media.safe_path(filename), render(item, frames, boxes=[g[0]['box'] for g in physical], approximate=found['window'].get('approximate', False), already_at=found['window'].get('first_visible_at') if not found['window'].get('arrival_recorded',True) else None))
                 try:
-                    metadata = {'visit_id': visit_id, 'obligation_ids': obligation_ids, 'render_version': 1, 'layout': 'stacked',
+                    metadata = {**(old or {}), 'visit_id': visit_id, 'obligation_ids': obligation_ids, 'render_version': 1, 'layout': 'stacked',
                                 'timestamp_estimated': True, 'time_basis': 'segment_mtime_and_decoded_pts',
-                                'canonical_obligation_ids': canonical_ids, 'duplicate_of': {str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
+                                'canonical_obligation_ids': canonical_ids, 'duplicate_of': old['duplicate_of'] if old else {str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
                                 'window': found['window'], 'dish_boxes': {str(m['id']): m['box'] for m in members},
                                 'frames': [{k: v for k, v in f.items() if k != 'jpeg'} for f in frames]}
-                    if self.identify:
-                        anchor = identity_frame(self.journal, frames, [m['box'] for m in members],
-                                                arrival_recorded=found['window'].get('arrival_recorded') is True)
-                        if anchor:
-                            try:
-                                captured = self.identify(item['id'], anchor, metadata)
-                            except Exception:
-                                # Identity model failure must not discard usable human context.
-                                captured = None
-                            if captured:
-                                metadata['identity_evidence_id'] = captured
+                    anchor = identity_frame(self.journal, frames, [m['box'] for m in members],
+                                            arrival_recorded=found['window'].get('arrival_recorded') is True)
+                    if anchor:
+                        try:
+                            captured = self.identify(item['id'], anchor, metadata) if self.identify else None
+                        except Exception:
+                            # Identity model failure must not discard usable human context.
+                            captured = None
+                        if captured:
+                            metadata['identity_evidence_id'] = captured
+                        else:
+                            # CLI recovery does not load a second set of models.
+                            # Let the running worker extract cues from this exact
+                            # validated depicted frame, never a later visitor.
+                            metadata['identity_pending_id'] = self.media.save_snapshot(item['id'], anchor['jpeg'], 'Arrival identity pending',
+                                at=datetime.fromtimestamp(anchor['at'], timezone.utc),
+                                capture={'identity_source': 'arrival_visit_pending', 'visit_id': visit_id, 'person_box': anchor['person_box']})
+                            with self.store.lock, self.store.conn:
+                                self.store.conn.execute('UPDATE evidence SET expires_at=? WHERE id=?',
+                                    (stamp(created+KEEP), metadata['identity_pending_id']))
                     with self.store.lock, self.store.conn:
                         self.store.conn.execute("""INSERT INTO evidence(id,obligation_id,filename,kind,created_at,expires_at,label,capture)
-                            VALUES(?,?,?,'filmstrip',?,?,'arrival',?)""", (evidence_id,obligation_id,filename,stamp(now),stamp(now+KEEP),json.dumps(metadata)))
-                        self.store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?)', (visit_id,evidence_id,stamp(now),json.dumps(metadata)))
-                        self.store.conn.executemany('INSERT INTO arrival_visit_members VALUES(?,?)', [(oid,visit_id) for oid in obligation_ids])
-                        self.store.conn.executemany('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?)',
+                            VALUES(?,?,?,'filmstrip',?,?,'arrival',?)""", (evidence_id,obligation_id,filename,stamp(created),stamp(created+KEEP),json.dumps(metadata)))
+                        self.store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET evidence_id=excluded.evidence_id,metadata=excluded.metadata', (visit_id,evidence_id,stamp(created),json.dumps(metadata)))
+                        self.store.conn.executemany('INSERT OR IGNORE INTO arrival_visit_members VALUES(?,?)', [(oid,visit_id) for oid in obligation_ids])
+                        self.store.conn.executemany('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?) ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id',
                             [(oid, 'saved', stamp(now), None, evidence_id) for oid in obligation_ids])
                 except Exception:
                     self.media.safe_path(filename).unlink(missing_ok=True)
                     raise
+        if reason in (TIMEOUT, DECODE_RETRY):
+            with self.store.lock, self.store.conn:
+                self.store.conn.executemany('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?) ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id',
+                    [(oid, 'retry', stamp(now), reason, None) for oid in obligation_ids])
+            return {'obligation_id': obligation_id, 'status': 'retry', 'reason': reason, 'evidence_id': None}
         with self.store.lock, self.store.conn:
             if reason:
                 metadata = {'visit_id':visit_id,'obligation_ids':obligation_ids,'canonical_obligation_ids':canonical_ids,
                             'duplicate_of':{str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
                             'frames':[],'window':{'arrival_recorded':False,'reason':reason}}
-                self.store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?)',(visit_id,None,stamp(now),json.dumps(metadata)))
-                self.store.conn.executemany('INSERT INTO arrival_visit_members VALUES(?,?)',[(oid,visit_id) for oid in obligation_ids])
-                self.store.conn.executemany('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?)',
+                self.store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata',(visit_id,None,stamp(created),json.dumps(metadata)))
+                self.store.conn.executemany('INSERT OR IGNORE INTO arrival_visit_members VALUES(?,?)',[(oid,visit_id) for oid in obligation_ids])
+                self.store.conn.executemany('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?) ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id',
                     [(oid, 'unavailable', stamp(now), reason, None) for oid in obligation_ids])
                 self.store._event(obligation_id, 'arrival_filmstrip_unavailable', reason, at=now)
         return {'obligation_id': obligation_id, 'status': 'unavailable' if reason else 'saved', 'reason': reason, 'evidence_id': evidence_id}
 
+    def complete_identity(self, *, now: datetime) -> int | None:
+        if not self.identify:
+            return None
+        with self.store.lock:
+            row = self.store.conn.execute("""SELECT v.* FROM arrival_visits v JOIN evidence e ON e.id=v.evidence_id
+                WHERE e.expired=0 AND e.expires_at>? AND json_extract(v.metadata,'$.identity_pending_id') IS NOT NULL
+                AND COALESCE(json_extract(v.metadata,'$.identity_attempted_at'),'')<=? ORDER BY v.created_at LIMIT 1""",
+                (stamp(now), stamp(now-RETRY_DELAY))).fetchone()
+            if not row:
+                return None
+            meta = json.loads(row['metadata'])
+            source = self.store.evidence(meta['identity_pending_id'])
+        if not source or source['expired']:
+            return None
+        try:
+            jpeg = self.media.safe_path(source['filename']).read_bytes()
+        except OSError:
+            return None
+        frame = {'jpeg': jpeg,
+                 'at': parse_stamp(source['created_at']).timestamp(),
+                 'person_box': json.loads(source['capture'])['person_box']}
+        oid = meta['canonical_obligation_ids'][0]
+        try:
+            captured = self.identify(oid, frame, meta)
+        except Exception:
+            captured = None
+        meta['identity_attempted_at'] = stamp(now)
+        if captured:
+            meta['identity_evidence_id'] = captured
+            meta.pop('identity_pending_id')
+        with self.store.lock, self.store.conn:
+            current = self.store.conn.execute('SELECT metadata FROM arrival_visits WHERE id=?', (row['id'],)).fetchone()
+            if not current or current['metadata'] != row['metadata']:
+                return oid
+            self.store.conn.execute('UPDATE arrival_visits SET metadata=? WHERE id=?', (json.dumps(meta),row['id']))
+            self.store.conn.execute('UPDATE evidence SET capture=? WHERE id=?', (json.dumps(meta),row['evidence_id']))
+        return oid
+
     def run_once(self, *, now: datetime | None = None) -> int | None:
         now = now or utcnow()
+        if (completed := self.complete_identity(now=now)) is not None:
+            return completed
         with self.store.lock:
             rows = self.store.conn.execute("""SELECT o.id FROM obligations o WHERE o.source IN ('vision','baseline')
                 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.created_at>=? AND o.due_at<=?
-                AND NOT EXISTS (SELECT 1 FROM filmstrip_jobs f WHERE f.obligation_id=o.id)
+                AND NOT EXISTS (SELECT 1 FROM filmstrip_jobs f WHERE f.obligation_id=o.id AND NOT ((f.status='retry' OR f.reason=?) AND f.attempted_at<=?))
                 AND (o.left_out_at IS NOT NULL OR EXISTS (SELECT 1 FROM evidence e WHERE e.obligation_id=o.id
                     AND e.kind='snapshot' AND e.created_at>=o.due_at AND e.label LIKE 'Matching dish still visible after the deadline%'))
-                ORDER BY o.due_at ASC LIMIT 16""", (stamp(now - KEEP), stamp(now))).fetchall()
+                ORDER BY o.due_at ASC LIMIT 16""", (stamp(now - KEEP), stamp(now), TIMEOUT, stamp(now-RETRY_DELAY))).fetchall()
         for row in rows:
             item = self.store.obligation(row['id'])
             with self.store.lock:
@@ -655,7 +780,7 @@ class Filmstrips:
                 self.generate(row['id'], now=now)
             else:
                 with self.store.lock, self.store.conn:
-                    self.store.conn.execute('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?)',
+                    self.store.conn.execute('INSERT INTO filmstrip_jobs VALUES(?,?,?,?,?) ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id',
                         (row['id'], 'unavailable', stamp(now), 'Deadline continuity is unverified; no left-out arrival context generated.', None))
             return row['id']
         return None

@@ -120,7 +120,7 @@ def test_three_dishes_from_one_visit_share_one_evidence_and_current_consensus_gu
         for item in items:
             saved=store.obligation(item['id'])
             assert saved['arrival_visit_id']==metadata['visit_id']
-            assert saved['evidence'][0]['id']==rows[0]['id']
+            assert [e['id'] for e in saved['evidence'] if e['kind']=='filmstrip']==[rows[0]['id']]
             assert strips.generate(item['id'])['evidence_id']==rows[0]['id']
         alex=store.add_resident('Alex')['id']
         sam=store.add_resident('Sam')['id']

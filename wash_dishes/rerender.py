@@ -27,6 +27,14 @@ class ReadJournal:
     def __init__(self, path: Path, fallback=()):
         self.path, self.fallback = path, fallback
 
+    def bounds(self):
+        if not self.path.is_file():
+            return None
+        with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+            first = conn.execute("SELECT at FROM frames ORDER BY at LIMIT 1").fetchone()
+            last = conn.execute("SELECT at FROM frames ORDER BY at DESC LIMIT 1").fetchone()
+            return (first[0], last[0]) if first else None
+
     def frames(self, start, end):
         if self.path.is_file():
             with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as conn:
@@ -39,7 +47,7 @@ class ReadJournal:
                 if start <= f["at"] <= end:
                     yield {
                         "at": f["at"],
-                        "detections": [{"kind": "person", "box": b} for b in f.get("person_boxes", [])],
+                        "detections": [{"kind": "person", "score": 1.0, "box": b} for b in f.get("person_boxes", [])],
                     }
 
 
@@ -123,12 +131,13 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
                 continue
             boxes = [meta["dish_boxes"][str(oid)] for oid in meta["canonical_obligation_ids"]]
             journal = ReadJournal(root / "journal.db", meta["frames"])
+            deadline = time.monotonic() + 60
             frames = filmstrip.display_frames(
                 journal,
                 media.buffer,
                 {"window": meta["window"], "frames": meta["frames"]},
                 boxes,
-                deadline=time.monotonic() + 60,
+                deadline=deadline,
             )
             # Do not substitute a partial window or a nearby visitor for missing
             # original endpoints. Keep the old image when its sources have expired.
@@ -138,7 +147,11 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
                 or abs(frames[-1]["at"] - meta["frames"][-1]["at"]) > 0.75
             ):
                 result["skipped"].append(
-                    action | {"reason": "Original window endpoints are no longer retained."}
+                    action | {"reason": "Arrival rerender reached its time budget; original image retained."
+                              if time.monotonic() >= deadline else
+                              "Original arrival endpoints could not be decoded within tolerance; original image retained.",
+                              "expected_endpoints": [meta["frames"][0]["at"], meta["frames"][-1]["at"]],
+                              "decoded_endpoints": [frames[0]["at"], frames[-1]["at"]] if frames else []}
                 )
                 continue
             item = store.obligation(meta["canonical_obligation_ids"][0])

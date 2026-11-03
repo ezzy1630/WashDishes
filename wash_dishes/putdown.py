@@ -60,22 +60,22 @@ def segments(buffer: Path) -> list[tuple[float, float, Path]]:
     return [(ends[i - 1][0], t, p) for i, (t, p) in enumerate(ends) if i and t - ends[i - 1][0] < 60]
 
 
-def _ffmpeg(path: Path, output: list[str], first_only: bool) -> tuple[list[float], bytes]:
+def _ffmpeg(path: Path, output: list[str], first_only: bool, *, deadline: float | None = None) -> tuple[list[float], bytes]:
     command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-threads", "1", "-filter_threads", "1", "-skip_frame", "nokey", "-i", str(path),
                *(["-frames:v", "1"] if first_only else []), "-fps_mode", "passthrough", *output, "-"]
     try:
-        run = subprocess.run(command, capture_output=True, timeout=60, preexec_fn=lambda: os.nice(15))
+        run = subprocess.run(command, capture_output=True, timeout=max(.01, min(60, deadline-time.monotonic())) if deadline is not None else 60, preexec_fn=lambda: os.nice(15))
     except (OSError, subprocess.TimeoutExpired):
         return [], b""
     return [float(t) for t in re.findall(rb"pts_time:\s*([0-9.]+)", run.stderr)], run.stdout
 
 
-def samples(segment: tuple[float, float, Path], box: list[float], first_only: bool = False) -> list[Sample]:
+def samples(segment: tuple[float, float, Path], box: list[float], first_only: bool = False, *, deadline: float | None = None) -> list[Sample]:
     import numpy as np
     start, end, path = segment
     x, y, w, h = box
     crop = f"crop=iw*{w:.5f}:ih*{h:.5f}:iw*{x:.5f}:ih*{y:.5f},scale={SIDE}:{SIDE}:flags=area,format=gray,showinfo"
-    times, data = _ffmpeg(path, ["-vf", crop, "-f", "rawvideo"], first_only)
+    times, data = _ffmpeg(path, ["-vf", crop, "-f", "rawvideo"], first_only, deadline=deadline)
     out = []
     for k in range(min(len(times), len(data) // SIDE ** 2)):
         q = np.frombuffer(data, np.uint8, SIDE ** 2, k * SIDE ** 2).reshape(SIDE, SIDE).astype(np.float32)
@@ -95,7 +95,8 @@ def photos(segment: tuple[float, float, Path]) -> list[tuple[float, bytes]]:
 
 
 def decoded_photos(segment: tuple[float, float, Path], *, fps: float | None = None,
-                   t0: float | None = None, t1: float | None = None) -> list[tuple[float, bytes]]:
+                   t0: float | None = None, t1: float | None = None,
+                   deadline: float | None = None, sample_times: list[float] | None = None) -> list[tuple[float, bytes]]:
     """Decode actual frames, including inter-keyframes, in one bounded segment/window."""
     start, end, path = segment
     offset = max(0.0, (t0 if t0 is not None else start) - start)
@@ -104,13 +105,19 @@ def decoded_photos(segment: tuple[float, float, Path], *, fps: float | None = No
         return []
     # MPEG-TS seeking can jump to the next keyframe. Decode the small segment and
     # trim after decoding so a sub-second reach is retained, with its real PTS.
-    filters = [f"trim=start={offset}:end={offset + duration}"] + ([f"fps={fps}"] if fps else []) + ["showinfo", "setpts=PTS-STARTPTS"]
+    filters = [f"trim=start={offset}:end={offset + duration}"] + ([f"fps={fps}"] if fps else [])
+    if sample_times:
+        # Apply after fps sampling and before JPEG encoding; retain actual PTS.
+        choices = '+'.join(f'between(t,{at-start-tolerance:.6f},{at-start+tolerance:.6f})'
+                           for at in sample_times for tolerance in [.55 if at < start+.5 or at > end-.5 else .3])
+        filters.append(f"select='{choices}'")
+    filters += ["showinfo", "setpts=PTS-STARTPTS"]
     command = ["nice", "-n", "10", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "info", "-threads", "1",
-               "-i", str(path), "-an", "-filter_threads", "1",
+               "-t", f"{offset+duration:.6f}", "-i", str(path), "-an", "-filter_threads", "1",
                "-vf", ",".join(filters), "-fps_mode", "passthrough", "-q:v", "4", "-threads", "1",
                "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
     try:
-        run = subprocess.run(command, capture_output=True, timeout=60)
+        run = subprocess.run(command, capture_output=True, timeout=max(.01, min(60, deadline-time.monotonic())) if deadline is not None else 60)
     except (OSError, subprocess.TimeoutExpired):
         return []
     if run.returncode:
