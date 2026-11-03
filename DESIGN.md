@@ -154,6 +154,29 @@ Corners are gently rounded and functional. Proof pictures and the Send button us
 
 ## Components
 
+### Weekly kitchen duty
+
+People begins with This week: a labeled native week select, a plain pick sentence,
+current duty, and ruled resident rows with modest right-aligned points. All active
+housemates appear, including zeroes. Unnamed count links into visit review; the
+all-time named-picture list stays below. Closed weeks say that names, disputes and
+points are frozen. Duty always describes the current assignment.
+
+Visit review uses arrival filmstrips or saved photos, a one-tap camera-guess
+confirmation when available, and a labeled housemate select. A guess remains
+explicitly provisional. Settlement buttons say It was them and Not them. Existing
+graphite tokens, native fields and 13px readable metadata (`#919aa4`) apply;
+no shadows or continuous animations. At 390px, rows stay readable, settings
+fields stack, and all actions remain inside the 16px gutters.
+Review explains that nearby presence is insufficient. Not a dish, It's clean,
+Same dish as another (with an original-visit select), and Can't tell sit below
+naming. Can't tell explains its private hide/no-label behavior. Reviewed answers
+show the answerer's name and time, with operator Undo answer on open weeks.
+
+Setup adds Kitchen duty with enabled, pan/pot/other weights, minimum points/lead
+and a separate house-vote duty form. Housemates shows account status and Make
+sign-in link inline, then a read-only copy field with seven-day/single-use wording.
+
 ### Buttons
 
 Compact, sentence-case actions. Standard and primary buttons are (34px) high with horizontal padding of (13px), medium weight and the button radius. Standard buttons use control-colored fills and outlined borders; hover raises the fill and strengthens the border. Primary saves use the pale action color. Quiet buttons have transparent resting backgrounds. Disabled actions reduce opacity to (0.45). A visible keyboard outline remains available.

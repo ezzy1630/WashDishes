@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -16,7 +17,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import checks, demo, ledger
+from . import house as house_api
 from .config import Config, camera_url
+from .house_auth import HouseConfig
 from .incidents import ReviewConflict
 from .media import Media
 from .proof import proof_archive
@@ -156,6 +159,7 @@ class BodyLimit:
 def create_app(config: Config | None = None) -> FastAPI:
     config = config or Config.environment()
     config.prepare()
+    house_config = HouseConfig.load(config.root)
     store = Store(config.root)
     media = Media(config.root, store)
     access = Access(config.root, config.password, config.demo)
@@ -168,7 +172,8 @@ def create_app(config: Config | None = None) -> FastAPI:
         if config.workers:
             runtime.start()
         try:
-            yield
+            async with app.state.house.scheduler(config.workers):
+                yield
         finally:
             runtime.stop()
             store.close()
@@ -177,6 +182,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.store, app.state.media, app.state.runtime, app.state.access, app.state.config = store, media, runtime, access, config
     hosts = ["localhost", "127.0.0.1", "[::1]", "*.ts.net", "testserver"]
     hosts += [h.strip() for h in os.getenv("WASHDISHES_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    if house_config.public_origin:
+        hosts.append(urlsplit(house_config.public_origin).hostname)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     app.add_middleware(BodyLimit)
 
@@ -189,7 +196,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         if length > 9 * 1024 * 1024:
             return JSONResponse({"detail": "Uploads must be smaller than 8 MB."}, status_code=413)
         origin = request.headers.get("origin")
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if not request.url.path.startswith('/house/') and request.method not in ("GET", "HEAD", "OPTIONS"):
             expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
             if (origin and origin != expected) or request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "Cross-origin changes are not allowed."}, status_code=403)
@@ -718,4 +725,5 @@ def create_app(config: Config | None = None) -> FastAPI:
     def index():
         return FileResponse(static / "index.html", headers={"Cache-Control": "no-cache"})
 
+    house_api.install(app, authenticated, config=house_config)
     return app
