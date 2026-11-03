@@ -201,10 +201,13 @@ def main():
                 report.setdefault("browser_steps", {})[mode] = json.loads((run / (mode + "-steps.json")).read_text())
             finally:
                 # Own the process group so even a driver timeout cannot orphan Chrome.
-                try:
-                    os.killpg(driver.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                # A completed driver has already closed Chrome; its old group may
+                # contain a privileged macOS updater that is not ours to signal.
+                if driver.poll() is None:
+                    try:
+                        os.killpg(driver.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 try:
                     driver.wait(timeout=5)
                 except subprocess.TimeoutExpired:
