@@ -21,6 +21,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from .remembered import unit_embedding
 from .store import Store, stamp
 
 CLIP_NAME = "clip-vit-b32-laion2b.safetensors"
@@ -221,7 +222,8 @@ class DishVerifier:
         vector = self.embed([context_crop(image, box, scale=1.2, minimum=0)])[0]
         scores = self._negative_text @ vector
         index = int(np.argmax(scores[len(DISH_WORDS):]))
-        return {'label': NON_DISH_WORDS[index], 'margin': float(scores[len(DISH_WORDS)+index]-scores[:len(DISH_WORDS)].max())}
+        return {'label': NON_DISH_WORDS[index], 'margin': float(scores[len(DISH_WORDS)+index]-scores[:len(DISH_WORDS)].max()),
+                'embedding': vector.tolist()}
 
     def empty_spot(self, image: Any, box: list[float], areas: list[dict]) -> bool:
         """Compare only the proposed spot with an operator-captured empty-area reference.
@@ -284,6 +286,9 @@ def store_hook(verifier: DishVerifier, store: Store, *, threshold: float | None 
                 return {'dish': None, 'score': None, 'reason': f"Remembered object #{remembered['id']} (similarity {remembered['similarity']:.6f}); awaiting review"}
             scored = verifier.score(vector)
             negative = verifier.negative(image, box) if scored and scored[1] else None
+            tight_embedding = negative.get('embedding') if negative else None
+            if tight_embedding is not None:
+                tight_embedding = unit_embedding(tight_embedding)
             empty = verifier.empty_spot(image, box, store.settings()['areas']) if scored and scored[1] else False
         except Exception as error:
             log.warning('New dish deferred: verifier failed (%s)', type(error).__name__)
@@ -298,7 +303,7 @@ def store_hook(verifier: DishVerifier, store: Store, *, threshold: float | None 
             dish, reason = False, 'Matches the empty-area reference at this spot'
         if threshold is not None:
             dish = value >= threshold
-        sample = store.add_dish_sample(vector.tolist(), value)
+        sample = store.add_dish_sample(vector.tolist(), value, tight_embedding=tight_embedding)
         return {"dish": dish, "score": round(value, 4), "sample": sample, "reason": reason}
     return verify
 

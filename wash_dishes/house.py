@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import house_verdicts, house_visits, league, review_evidence
+from . import house_verdicts, house_visits, league, review_evidence, review_objects
 from .house_auth import HouseConfig, JWTVerifier, SupabaseAdmin
 from .house_schema import slug_for
 from .store import parse_stamp, stamp, utcnow
@@ -338,10 +338,10 @@ class House:
             evidence = [e | live[e['id']] for e in evidence if e['id'] in live]
             raw = {d['id']: d for d in data['dishes']}
             basis = data.get('guess_basis', {}) if closed else self.store.suggestion_basis(list(raw))
-            samples = {r['obligation_id']: r['embedding'] for r in self.store.conn.execute(
-                'SELECT obligation_id,embedding FROM dish_samples WHERE id IN (SELECT max(id) FROM dish_samples WHERE obligation_id IN (SELECT value FROM json_each(?)) GROUP BY obligation_id)',
+            samples = {r['obligation_id']: dict(r) for r in self.store.conn.execute(
+                'SELECT obligation_id,embedding,tight_embedding FROM dish_samples WHERE id IN (SELECT max(id) FROM dish_samples WHERE obligation_id IN (SELECT value FROM json_each(?)) GROUP BY obligation_id)',
                 (json.dumps(list(raw)),))}
-            memories = [dict(r) for r in self.store.conn.execute('SELECT m.embedding,m.area_id,m.area_role FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id')]
+            memories = [dict(r) for r in self.store.conn.execute('SELECT m.embedding,m.area_id,m.area_role,r.verdict FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id')]
             areas = self.store.settings()['areas']
             hidden = set() if _include_hidden else {r[0] for r in self.store.conn.execute('SELECT visit_id FROM house_hidden_visits WHERE resident_id=?', (actor['id'] if actor else 0,))}
             first = league.week_times(league.week_bounds())[0]
@@ -350,16 +350,25 @@ class House:
                 "SELECT start,json_extract(snapshot,'$.pick.name') pick_name FROM league_weeks WHERE start>=?", ((first.date() - timedelta(weeks=7)).isoformat(),))}
         data = league.project(data)
         probe = review_evidence.kitchen_probe(self.store.root)
+        object_probe = review_objects.probe(self.store.root)
         for memory in memories:
             memory['embedding'] = json.loads(memory['embedding'])
+        non_dish_memories = [m for m in memories if m['verdict'] == 'not_dish']
         # Same configured area geometry as Inventory, without importing inference.
         from .inventory import area_for
         signals = {}
         for oid, item in raw.items():
             box = item.get('box')
             box = json.loads(box) if isinstance(box, str) else box
-            signals[oid] = review_evidence.signals(samples.get(oid), probe, memories,
-                                                  area_for(box, areas) if box else None)
+            sample = samples.get(oid, {})
+            area = area_for(box, areas) if box else None
+            signals[oid] = review_evidence.signals(sample.get('embedding'), probe, memories,
+                                                  area) | review_objects.signals(
+                                                      sample.get('tight_embedding'), object_probe)
+            # A clean pan can be dirty on its next trip. Only explicit object
+            # corrections teach this review demotion; keep the admission guard unchanged.
+            signals[oid]['remembered_non_dish'] = review_evidence.signals(
+                sample.get('embedding'), None, non_dish_memories, area)['remembered_near_match']
         evidence_by_dish = {}
         for entry in evidence:
             evidence_by_dish.setdefault(entry['obligation_id'], []).append(entry)
@@ -419,7 +428,11 @@ class House:
             rating = review_evidence.rate(group.get('capture', {}), has_filmstrip=bool(url),
                 has_photo=any(formatted[oid]['photo_url'] for oid in group['dish_ids']),
                 dish_confident=all(s.get('dish_confident', False) for s in member_signals),
-                remembered_near_match=any(s.get('remembered_near_match', False) for s in member_signals))
+                remembered_near_match=any(s.get('remembered_near_match', False) for s in member_signals),
+                # A mixed visit stays visible. Missing features cannot vote to hide a member.
+                non_dish=bool(member_signals) and all(s.get('non_dish', False) or s.get('remembered_non_dish', False)
+                                                     for s in member_signals),
+                dish_likely=bool(member_signals) and all(s.get('dish_likely', False) for s in member_signals))
             visits.append(house_visits.serialize(group, raw, formatted, guess=guess, filmstrip_url=url) | rating)
         # Stable passes preserve newest first within each evidence tier.
         visits.sort(key=lambda v: (parse_stamp(v['at']), v['id']), reverse=True)

@@ -52,3 +52,14 @@ def test_saved_features_use_kitchen_confidence_and_same_area_memory(tmp_path):
     assert signals(None, probe, [], area)['dish_confident'] is False
     assert signals('[1]', probe, [], area)['dish_confident'] is False
     assert signals(vector, None, [], area)['dish_confident'] is False
+
+
+def test_object_hint_demotes_even_with_arrival_but_dish_hint_preserves_a_still():
+    capture = {'window': {'arrival_recorded': True}, 'frames': [{'person_boxes': [[0, 0, 1, 1]]}]}
+    junk = rate(capture, has_filmstrip=True, has_photo=True, dish_confident=True,
+                remembered_near_match=False, non_dish=True)
+    assert junk == {'evidence': 'weak', 'reason': 'Looks like a household object; check Not a dish'}
+    assert rate({}, has_filmstrip=False, has_photo=True, dish_confident=False,
+                remembered_near_match=False, dish_likely=True)['evidence'] == 'fair'
+    assert rate({}, has_filmstrip=False, has_photo=False, dish_confident=False,
+                remembered_near_match=False, dish_likely=True)['evidence'] == 'weak'

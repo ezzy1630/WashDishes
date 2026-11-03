@@ -190,6 +190,8 @@ class Store:
                 self.conn.execute(f"ALTER TABLE person_samples ADD COLUMN {name} {definition}")
         if "capture" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(evidence)")}:
             self.conn.execute("ALTER TABLE evidence ADD COLUMN capture TEXT NOT NULL DEFAULT '{}'")
+        if "tight_embedding" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(dish_samples)")}:
+            self.conn.execute("ALTER TABLE dish_samples ADD COLUMN tight_embedding TEXT")
         from .house_schema import migrate
         migrate(self.conn)
         self.conn.execute("PRAGMA user_version=8")
@@ -740,10 +742,13 @@ class Store:
 
     # Second look: what it saw, and what people decided
 
-    def add_dish_sample(self, embedding: list[float], score: float | None, *, at: datetime | None = None) -> int:
+    def add_dish_sample(self, embedding: list[float], score: float | None, *, at: datetime | None = None,
+                        tight_embedding: list[float] | None = None) -> int:
+        tight = unit_embedding(tight_embedding) if tight_embedding is not None else None
         with self.lock, self.conn:
-            return self.conn.execute("INSERT INTO dish_samples(created_at,embedding,score) VALUES(?,?,?)",
-                                     (stamp(at), json.dumps([round(v, 5) for v in embedding]), score)).lastrowid
+            return self.conn.execute("INSERT INTO dish_samples(created_at,embedding,score,tight_embedding) VALUES(?,?,?,?)",
+                                     (stamp(at), json.dumps([round(v, 5) for v in embedding]), score,
+                                      json.dumps([round(v, 5) for v in tight]) if tight is not None else None)).lastrowid
 
     def link_dish_sample(self, sample_id: int, obligation_id: int) -> None:
         with self.lock, self.conn:

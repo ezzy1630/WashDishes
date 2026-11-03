@@ -20,7 +20,7 @@ washdishes = "wash_dishes.__main__:main"
 include = ["wash_dishes*"]
 
 [tool.setuptools.package-data]
-wash_dishes = ["static/*"]
+wash_dishes = ["static/*", "review-probe.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
