@@ -986,7 +986,7 @@ dialog::backdrop {
 }
 .zoom-scroll {
   overflow: auto;
-  max-height: calc(100dvh - 140px);
+  max-height: calc(100dvh - 240px);
 }
 .zoom-scroll img {
   max-width: none;
@@ -1617,9 +1617,9 @@ dialog::backdrop {
   box-shadow: inset 0 0 0 1px var(--review);
   color: var(--review);
 }
-/* Six arrival frames keep their wide shape; the enlarged view pans at full size. */
+/* Arrival grids reserve Lane A’s two-column, three-row canvas before loading. */
 .photo.filmstrip {
-  aspect-ratio: 1600/280;
+  aspect-ratio: 1200/1668;
   border-radius: 8px;
 }
 .zoom-scroll {
@@ -1665,7 +1665,7 @@ dialog::backdrop {
     grid-row: 3;
   }
   .photo.filmstrip {
-    aspect-ratio: 1600/280;
+    aspect-ratio: 1200/1668;
   }
   .zoom-scroll {
     max-height: calc(100dvh - 220px);
@@ -1680,11 +1680,11 @@ dialog::backdrop {
 }
 .photo.filmstrip {
   box-sizing: content-box;
-  aspect-ratio: 1600/240;
-  padding-bottom: 24px;
+  aspect-ratio: 1200/1668;
+  padding-bottom: 0;
 }
 .photo.filmstrip img {
-  height: calc(100% - 24px);
+  height: 100%;
 }
 .photo.filmstrip .zoom-hint {
   top: auto;
@@ -1700,7 +1700,7 @@ dialog::backdrop {
 }
 .arrival-photo .photo.filmstrip {
   box-sizing: border-box;
-  aspect-ratio: 1600/240;
+  aspect-ratio: 1200/1668;
   padding: 0;
 }
 .arrival-photo .photo.filmstrip img {

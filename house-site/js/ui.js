@@ -149,7 +149,7 @@ function zoomPhoto(src, label) {
     src,
     alt: label,
     referrerpolicy: "no-referrer",
-    width: 1600,
+    width: 1200,
   });
   const viewport = h(
     "div",
@@ -160,7 +160,7 @@ function zoomPhoto(src, label) {
     },
     image,
   );
-  let width = 1600;
+  let width = 1200;
   function resize(
     /** @type {number} */ next,
     /** @type {number} */ center = viewport.clientWidth / 2,
@@ -177,7 +177,7 @@ function zoomPhoto(src, label) {
     h(
       "p",
       { class: "help" },
-      "Scroll across the frames. Pinch or use the zoom buttons.",
+      "Scroll through the frames. Pinch or use the zoom buttons.",
     ),
     button("−", () => resize(width / 1.5), "secondary"),
     button("+", () => resize(width * 1.5), "secondary"),

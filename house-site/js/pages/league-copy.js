@@ -62,6 +62,7 @@ export function weekSubtitle(data) {
     start.getUTCMonth() === end.getUTCMonth();
   const range = `${date(data.week.start, data.week.timezone)} – ${sameMonth ? end.getUTCDate() : date(data.week.end, data.week.timezone)}`;
   if (data.week.closed) return `${range} · closed`;
+  // Format the API instant; the browser never derives a close time from week dates.
   const stamp = new Date(data.week.closes_at);
   const minute = new Intl.DateTimeFormat("en-US", {
     minute: "numeric",

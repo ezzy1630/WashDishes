@@ -95,6 +95,21 @@ async function capture(page, name, size, theme) {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
   });
+  if (name === "filmstrip-zoom") {
+    const dialog = await page
+      .locator("dialog[open]")
+      .evaluate((el) => ({
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        closeTop: el.querySelector("button").getBoundingClientRect().top,
+      }));
+    assert.equal(
+      dialog.scrollHeight,
+      dialog.clientHeight,
+      "zoom scroll stays inside its image viewport",
+    );
+    assert.ok(dialog.closeTop >= 0, "zoom Close stays on screen");
+  }
   const layout = await inspectLayout(page);
   assert.ok(
     layout.scrollWidth <= layout.clientWidth,
@@ -133,7 +148,10 @@ async function capture(page, name, size, theme) {
     `${name} accessibility`,
   );
   const filename = `${scratch}/screenshots/${name}-${size}-${theme}.png`;
-  await page.screenshot({ path: filename, fullPage: name !== "filmstrip-zoom" });
+  await page.screenshot({
+    path: filename,
+    fullPage: name !== "filmstrip-zoom",
+  });
   shots.push(filename);
 }
 try {
@@ -162,7 +180,7 @@ try {
       await capture(page, "this-week", size, theme);
       assert.equal(
         await page.locator(".page-heading p").innerText(),
-        "Nov 2 – 8 · closes Mon 12 AM",
+        "Nov 2 – 8 · closes Mon 12 PM",
       );
       assert.equal(await page.locator(".rankings li").count(), 3);
       assert.equal(await page.locator(".rank-bar path").count(), 0);
@@ -198,6 +216,23 @@ try {
         .getByRole("heading", { name: "Whose dishes are these?" })
         .waitFor();
       await capture(page, "name-visits", size, theme);
+      const widths = await page
+        .locator(".naming .arrival-photo")
+        .evaluate((el) => {
+          let container = el.parentElement;
+          while (getComputedStyle(container).display === "contents")
+            container = container.parentElement;
+          return {
+            photo: el.getBoundingClientRect().width,
+            content: container.getBoundingClientRect().width,
+          };
+        });
+      assert.equal(
+        Math.round(widths.photo),
+        Math.round(widths.content),
+        "arrival grid fills the evidence content width",
+      );
+
       assert.deepEqual(
         await page.locator(".name-chips button").allTextContents(),
         [
@@ -221,8 +256,8 @@ try {
           height: img.naturalHeight,
         }));
       assert.ok(
-        dimensions.width <= 1600 && dimensions.width / dimensions.height >= 5,
-        "six-frame strip has a wide aspect",
+        dimensions.width === 1200 && dimensions.height === 1668,
+        "arrival evidence matches Lane A’s two-column grid",
       );
       await page
         .getByRole("button", { name: /Enlarge.*arrival photos/ })
@@ -232,13 +267,13 @@ try {
         await page
           .locator(".zoom-scroll img")
           .evaluate((img) => Math.round(img.getBoundingClientRect().width)),
-        1600,
+        1200,
       );
       await page.locator(".zoom-scroll").evaluate((el) => {
-        el.scrollLeft = 600;
+        el.scrollTop = 600;
       });
       assert.ok(
-        await page.locator(".zoom-scroll").evaluate((el) => el.scrollLeft > 0),
+        await page.locator(".zoom-scroll").evaluate((el) => el.scrollTop > 0),
       );
       await capture(page, "filmstrip-zoom", size, theme);
       await page.keyboard.press("Escape");
@@ -287,6 +322,22 @@ try {
     }),
     page = await context.newPage();
   observe(page);
+  await check(
+    "close time follows the API, including a different weekday and minute",
+    async () => {
+      await control({ closesAt: "2026-11-10T15:30:00-08:00" });
+      await signedIn(page);
+      await page
+        .getByText("Nov 2 – 8 · closes Tue 3:30 PM", { exact: true })
+        .waitFor();
+      await control({ closesAt: null });
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page
+        .getByText("Nov 2 – 8 · closes Mon 12 PM", { exact: true })
+        .waitFor();
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    },
+  );
   await check(
     "sign-in rejects bad password; ten alphabetical names",
     async () => {
@@ -423,7 +474,7 @@ try {
     },
   );
   await check(
-    "phone pinch and zoom controls resize and pan the real wide strip",
+    "phone pinch and zoom controls resize and pan the two-column arrival grid",
     async () => {
       await navigation(page, "Name dishes");
       await page
@@ -432,7 +483,7 @@ try {
       const viewport = page.locator(".zoom-scroll"),
         img = page.locator(".zoom-scroll img");
       await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-      assert.equal(await img.evaluate((el) => el.width), 2400);
+      assert.equal(await img.evaluate((el) => el.width), 1800);
       await page.keyboard.press("Escape");
       await page
         .getByRole("button", { name: /Enlarge.*arrival photos/ })
@@ -459,7 +510,7 @@ try {
         touchPoints: [],
       });
       assert.ok(
-        (await img.evaluate((el) => el.width)) > 1600,
+        (await img.evaluate((el) => el.width)) > 1200,
         "two-finger pinch enlarges the image",
       );
       await page.keyboard.press("Escape");

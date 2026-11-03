@@ -9,7 +9,7 @@ const port = Number(process.env.PORT || 4317);
 const scratch =
   process.env.DISHWATCH_SCRATCH ||
   "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
-const fixtureRoot = path.join(scratch, "review2/fixtures");
+const fixtureRoot = path.join(scratch, "review3/fixtures");
 const fixtureInfo = JSON.parse(
   execFileSync(
     "python3",
@@ -35,7 +35,8 @@ const residents = slugs.map((slug, i) => ({
   name: slug[0].toUpperCase() + slug.slice(1),
 }));
 const at = "2026-11-03T01:00:00-08:00";
-let dutyMode = "carry",
+let closesAt = null,
+  dutyMode = "carry",
   offline = false,
   malformed = false,
   delay = 0;
@@ -112,6 +113,7 @@ function reset() {
       verdict: { kind: "not_dish", by: lookup(9), at },
     },
   ];
+  closesAt = null;
   dutyMode = "carry";
   offline = false;
   malformed = false;
@@ -226,9 +228,13 @@ function week(start, user) {
     week: {
       start: old ? "2026-10-26" : older ? "2026-10-19" : "2026-11-02",
       end: old ? "2026-11-01" : older ? "2026-10-25" : "2026-11-08",
-      closes_at: old
-        ? "2026-11-02T00:00:00-08:00"
-        : "2026-11-09T00:00:00-08:00",
+      closes_at:
+        closesAt ||
+        (old
+          ? "2026-11-02T12:00:00-08:00"
+          : older
+            ? "2026-10-26T12:00:00-07:00"
+            : "2026-11-09T12:00:00-08:00"),
       closed: old || older,
       timezone: "America/Los_Angeles",
     },
@@ -254,7 +260,7 @@ function week(start, user) {
             resident_id: 1,
             name: "Ezzy",
             since:
-              dutyMode === "carry" ? "2026-10-26" : "2026-11-02T00:00:00-08:00",
+              dutyMode === "carry" ? "2026-10-26" : "2026-11-02T12:00:00-08:00",
             why:
               dutyMode === "override"
                 ? "Set by the operator after a house vote."
@@ -313,6 +319,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/dev/control" && req.method === "POST") {
       const b = await body(req);
       if (b.reset) reset();
+      if ("closesAt" in b) closesAt = b.closesAt;
       if (["pick", "carry", "override", "disabled"].includes(b.dutyMode))
         dutyMode = b.dutyMode;
       if ("offline" in b) offline = !!b.offline;
