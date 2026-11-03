@@ -13,13 +13,24 @@ export function minePage(context) {
     open = data.visits.filter(
       (d) => d.dispute?.state === "open" && d.can_settle,
     );
+  const points =
+    data.standings.find(
+      (p) => String(p.resident_id) === String(state.me?.resident.id),
+    )?.points ?? 0;
   return h(
     "div",
     {},
     heading(
       "My dishes",
-      "Visits named as yours. Take a look — you always get a say.",
+      `${points} ${points === 1 ? "point" : "points"} count toward your week. Only you can dispute a visit named as yours.`,
     ),
+    open.length
+      ? h(
+          "a",
+          { class: "settlement-jump secondary", href: "#settlements" },
+          `${open.length} ${open.length === 1 ? "dispute needs" : "disputes need"} a third housemate. Help settle it.`,
+        )
+      : null,
     h(
       "div",
       { class: "mine-layout" },
@@ -45,7 +56,7 @@ export function minePage(context) {
       ),
       h(
         "section",
-        { class: "settlement-list" },
+        { class: "settlement-list", id: "settlements" },
         h(
           "div",
           { class: "section-heading" },
@@ -55,7 +66,7 @@ export function minePage(context) {
         h(
           "p",
           { class: "help section-intro" },
-          "Only settle it if you know. The people involved sit this one out.",
+          "Points are paused. Only settle it if you know; the named person and the person who named them can’t settle it.",
         ),
         open.length
           ? h(

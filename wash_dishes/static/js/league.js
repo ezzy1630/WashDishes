@@ -47,17 +47,17 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     const leaders = standings.filter(p => p.points > 0);
     fill(summary,
       h('header', { class: 'home-section-head' }, h('h1', { id: 'page-title', tabindex: '-1' }, current ? 'This week' : `Week of ${label(week.start)}`), choose),
-      h('p', { class: 'league-note' }, `League started ${label(data.start_week)}.`),
       h('div', { class: 'week-duty' }, h('p', {}, 'On kitchen ', h('strong', {}, duty?.name || 'Nobody yet')),
-        h('p', {}, !rules.enabled ? 'Kitchen duty is off.' : week.closed ? 'Week closed · points frozen' : `Closes ${label(week.end)} at noon · house time`)),
+        h('p', {}, !rules.enabled ? 'Kitchen duty is off.' : week.closed ? 'Week closed · points frozen' : `Closes ${new Intl.DateTimeFormat('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: week.timezone }).format(new Date(week.closes_at))} · house time`)),
       h('ol', { class: 'week-standings', 'aria-label': 'Weekly points' }, leaders.slice(0, 3).map(p => h('li', {},
         h('a', { href: `#/people/${p.resident_id}` }, p.name), h('b', {}, `${p.points} pt`)))),
-      leaders.length < standings.length ? h('p', { class: 'league-note' }, leaders.length ? 'Everyone else 0' : 'Everyone 0 points') : null,
       leaders.length > 3 ? h('p', { class: 'league-note' }, leaders.slice(3).map(p => `${p.name} ${p.points} pt`).join(' · ')) : null,
+      leaders.length < standings.length ? h('p', { class: 'league-note' }, leaders.length ? 'Everyone else 0' : 'Everyone 0 points') : null,
       h('p', { class: 'week-next' }, pick.state === 'pick' ? `${pick.name} ${week.closed ? 'was picked for' : 'is in line for'} next week’s kitchen.`
         : pick.state === 'disabled' ? 'Kitchen duty is off.' : week.closed ? 'No one picked this week.' : 'No clear pick for next week yet.'),
       h('p', { class: 'league-note' }, pick.reason,
-        pick.state !== 'pick' && pick.state !== 'disabled' && duty ? ` · ${duty.name} stays on kitchen.` : ''));
+        pick.state !== 'pick' && pick.state !== 'disabled' && duty ? ` · ${duty.name} stays on kitchen.` : ''),
+      h('p', { class: 'league-note' }, `League started ${label(data.start_week)}.`));
     renderQueue(); renderHistory(); renderShare();
   }
 
@@ -66,7 +66,9 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     const available = data.week.closed ? [] : data.visits.filter(v => ((!v.resident && v.can_name) || v.can_settle) && !pending.has(v.id));
     const clear = available.filter(v => !v.resident && v.evidence !== 'weak').length;
     const weak = available.filter(v => !v.resident && v.evidence === 'weak').length;
+    const disputes = available.filter(v => v.can_settle).length;
     queueTitle.textContent = data.week.closed ? 'Week closed' : `${clear} clear ${clear === 1 ? 'one' : 'ones'} to name`;
+    queueNote.textContent = disputes ? `${disputes} ${disputes === 1 ? 'dispute needs' : 'disputes need'} settling. Those points are paused. Unnamed visits don’t count.` : 'One visit = one kitchen trip. Unnamed visits don’t count.';
     weakLink.hidden = !weak;
     weakLink.textContent = showWeak ? 'Hide weak evidence' : `+${weak} with weak evidence`;
     weakLink.setAttribute('aria-expanded', String(showWeak));

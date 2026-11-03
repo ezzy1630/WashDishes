@@ -26,6 +26,7 @@ async function request(path, options = {}) {
       headers,
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
+      keepalive: options.body !== undefined,
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",

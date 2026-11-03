@@ -1756,3 +1756,314 @@ dialog::backdrop {
   display: block;
   margin-top: 4px;
 }
+
+/* A person's week leads; the ledger supports the next decision. */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  gap: 8px;
+}
+.nav a {
+  justify-content: center;
+  padding-inline: 16px;
+  font-size: 14px;
+}
+.main {
+  padding-top: 28px;
+}
+.personal-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 0 24px;
+  margin-bottom: 24px;
+  border-block: 1px solid var(--line);
+}
+.personal-status h2 {
+  font-size: 21px;
+}
+.personal-status p {
+  color: var(--secondary);
+  margin-top: 6px;
+  max-width: 64ch;
+}
+.personal-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  flex: none;
+  font-weight: 550;
+}
+.week-layout {
+  gap: 40px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+.duty {
+  padding: 18px;
+  gap: 12px;
+}
+.duty p {
+  line-height: 1.55;
+}
+.pick {
+  margin: 24px 0;
+}
+.name-cta {
+  border-bottom: 0;
+  padding: 20px;
+  background: var(--review-bg);
+  border-radius: 14px;
+}
+.name-cta h2 {
+  font-size: 21px;
+  max-width: none;
+}
+.name-cta p {
+  margin-top: 6px;
+  max-width: none;
+}
+.name-cta .cta-action {
+  font-size: 14px;
+  margin-top: 16px;
+  min-height: 48px;
+  justify-content: space-between;
+}
+.name-cta:hover .cta-action {
+  text-decoration: none;
+}
+.house-rules {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+.house-rules p {
+  font-size: 13px;
+}
+.name-panel .person-question {
+  font-size: 21px;
+  margin-bottom: 8px;
+}
+.camera-guess {
+  margin-top: 16px;
+  padding: 12px;
+  border: 0;
+}
+.camera-guess .help {
+  margin-top: 2px;
+}
+.guess-choice {
+  font-size: 13px;
+}
+.guess-basis summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.guess-basis .help {
+  padding-bottom: 8px;
+}
+.name-chips {
+  margin-top: 16px;
+}
+.chip {
+  font-size: 14px;
+  min-height: 48px;
+}
+.other-answers {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.verdict-button {
+  border-color: var(--border);
+  font-size: 13px;
+  min-height: 48px;
+}
+.verdict-button:last-child {
+  color: var(--text);
+  background: var(--control);
+}
+.verdict-answers {
+  padding-top: 12px;
+  margin-top: 16px;
+}
+.answer-receipts {
+  position: sticky;
+  top: 54px;
+  z-index: 4;
+  background: var(--bg);
+  margin-bottom: 20px;
+}
+.answer-receipt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--review-bg);
+  border-bottom: 1px solid var(--line);
+}
+.answer-receipt p {
+  font-size: 13px;
+  min-width: 0;
+}
+.answer-receipt span {
+  display: block;
+  color: var(--secondary);
+}
+.answer-receipt button {
+  flex: none;
+}
+.answer-error {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--waiting-bg);
+  color: var(--waiting);
+  margin-bottom: 20px;
+  border-radius: 12px;
+}
+.settlement-help {
+  flex-basis: 100%;
+}
+.settlement-jump {
+  margin-bottom: 24px;
+}
+.settlement-list {
+  scroll-margin-top: 72px;
+}
+.week-choice.selected {
+  border: 1px solid var(--text);
+}
+.past-freeze {
+  margin-top: 12px;
+}
+.empty {
+  max-width: 60ch;
+}
+.empty + .primary {
+  margin-bottom: 16px;
+}
+.loading {
+  min-height: 300px;
+}
+.auth-symbol {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+}
+.auth {
+  padding-top: 32px;
+}
+/* Hidden offscreen controls must not appear in full-page capture or magnification. */
+.skip-link:not(:focus) {
+  clip-path: inset(50%);
+}
+@media (max-width: 760px) {
+  .nav a {
+    flex: 1;
+    min-width: 0;
+    padding-inline: 4px;
+    font-size: 13px;
+  }
+  .header-inner {
+    padding-block: 12px;
+  }
+  .brand small {
+    font-size: 11px;
+  }
+  .main {
+    padding-top: 24px;
+  }
+  .page-heading {
+    margin-bottom: 20px;
+  }
+  .personal-status {
+    display: block;
+    padding-block: 16px;
+    margin-bottom: 20px;
+  }
+  .personal-status h2 {
+    font-size: 21px;
+  }
+  .personal-status p {
+    font-size: 13px;
+  }
+  .personal-link {
+    margin-top: 4px;
+    font-size: 13px;
+  }
+  .week-layout {
+    gap: 0;
+  }
+  .week-layout .review-cta {
+    border-top: 0;
+    padding-top: 0;
+    margin-bottom: 28px;
+  }
+  .name-cta {
+    padding: 16px;
+  }
+  .name-cta h2 {
+    font-size: 19px;
+  }
+  .name-cta .cta-action {
+    margin-top: 12px;
+  }
+  .duty h2 {
+    font-size: 16px;
+  }
+  .duty {
+    padding: 16px;
+  }
+  .pick {
+    margin: 20px 0;
+  }
+  .naming {
+    gap: 12px;
+  }
+  .name-panel .person-question {
+    font-size: 21px;
+  }
+  .name-panel .help {
+    font-size: 13px;
+  }
+  .camera-guess .guess-basis {
+    margin-top: 0;
+  }
+  .name-panel .camera-guess {
+    margin-top: 12px;
+  }
+  .mine-layout .empty {
+    padding-block: 20px;
+  }
+  .auth h1 {
+    font-size: 27px;
+  }
+  .answer-receipts {
+    top: 50px;
+  }
+}
+@media (max-width: 760px) {
+  .nav {
+    gap: 0;
+  }
+  .nav a {
+    white-space: nowrap;
+  }
+}
+@media (max-width: 760px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
