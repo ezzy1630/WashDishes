@@ -1,3 +1,4 @@
+import { learningPrompt } from "./help.js";
 import { h, heading, icon } from "../ui.js";
 import { dutyCopy, weekSubtitle, pickDetail } from "./league-copy.js";
 /** @typedef {import("../types.js").Week} Week */
@@ -12,6 +13,7 @@ export function weekPage(context) {
     "div",
     {},
     heading("This week", weekSubtitle(data)),
+    learningPrompt(context),
     h(
       "div",
       { class: "week-layout" },

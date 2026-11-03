@@ -40,6 +40,7 @@ let closesAt = null,
   offline = false,
   malformed = false,
   delay = 0;
+let learningState="cards", learningAnswers=[], helpCards=[];
 let dishes = [];
 let confirmed = new Set();
 let passwords = new Map();
@@ -95,6 +96,8 @@ function item(id, kind, owner = null, dispute = null) {
   };
 }
 function reset() {
+  learningAnswers=[]; learningState="cards";
+  helpCards=["present","kind","missed","identity","same"].map((task,i)=>({id:i+1,task,box:task==="missed"?null:[.2,.4,.3,.35],reason:i===0?"Uncertain detection":"A second look helps",captured_at:at,image_url:`http://127.0.0.1:${port}/dev/photos/101-later.jpg`,other_image_url:task==="same"?`http://127.0.0.1:${port}/dev/photos/103-later.jpg`:null}));
   confirmed.clear();
   passwords = new Map(slugs.map((s) => [s, "house-demo"]));
   invites = new Set(["demo-invite", "demo-reset"]);
@@ -374,9 +377,21 @@ const server = http.createServer(async (req, res) => {
         );
     const url = new URL(req.url, `http://127.0.0.1:${port}`),
       pathname = url.pathname;
+    if (pathname === "/api/learning") {
+      json(res,200,{house_truth:0,runs:learningState==="empty"?[]:[{id:1,started_at:at,finished_at:at,status:"rejected",details:{train_count:0,test_count:0,models:{probe:{status:"insufficient_truth",reason:"No independent reserved captures yet."}}}}],conflicts:learningState==="conflict"?[{id:1,task:"present",evidence_id:"synthetic",labels:[{answer:"yes",value:'"yes"',actor_id:1},{answer:"no",value:'"no"',actor_id:2}]}]:[],models:["probe","identity","detector"]});return;
+    }
+    if(pathname.startsWith("/api/learning/") && req.method==="POST"){learningState="empty";json(res,200,{ok:true});return;}
+    if(pathname==="/dev/learning-operator.html" || pathname==="/dev/learning-operator.js") {
+      res.writeHead(200,{"Content-Type":pathname.endsWith(".js")?"text/javascript":"text/html"});res.end(await readFile(path.join(site,pathname)));return;
+    }
+    if(pathname.startsWith("/static/") && !pathname.includes("..")){
+      const relative=pathname.slice("/static/".length);const file=path.join(site,"../wash_dishes/static",relative);
+      res.writeHead(200,{"Content-Type":file.endsWith(".js")?"text/javascript":file.endsWith(".css")?"text/css":file.endsWith(".woff2")?"font/woff2":"application/octet-stream"});res.end(await readFile(file));return;
+    }
     if (pathname === "/dev/control" && req.method === "POST") {
       const b = await body(req);
       if (b.reset) reset();
+      if(b.learningState) learningState=b.learningState;
       if (b.evidenceQueue) dishes.push(item(113, "cup"));
       if ("closesAt" in b) closesAt = b.closesAt;
       if (["pick", "carry", "override", "disabled"].includes(b.dutyMode))
@@ -446,6 +461,12 @@ const server = http.createServer(async (req, res) => {
         json(res, 200, { resident: lookup(user.id), house: "Highest House" });
         return;
       }
+      if(route === "/learning") {if(learningState==="loading")await new Promise(resolve=>setTimeout(resolve,12000));if(learningState==="load-error"){json(res,503,{detail:"Fixture unavailable"});return;}json(res,200,{personal_labels:learningAnswers.filter(a=>a.answer!=="unsure").length,house_truth:0,last_learned:null,runs:[],questions:learningState==="empty"?[]:helpCards.filter(q=>!learningAnswers.some(a=>a.qid===q.id)).map(q=>learningState==="missing"?{...q,image_url:`http://127.0.0.1:${port}/dev/photos/missing.jpg`}:q)});return;}
+      const helpAnswer=route.match(/^\/learning\/(\d+)\/answer$/);
+      if(helpAnswer && req.method==="POST"){const b=await body(req);if(learningState==="error"){json(res,503,{detail:"Fixture save failed"});return;}const a={id:learningAnswers.length+1,qid:Number(helpAnswer[1]),...b};learningAnswers.push(a);json(res,200,{id:a.id,state:learningState==="conflict"?"conflict":b.answer==="me"?"trusted":"pending"});return;}
+      const helpUndo=route.match(/^\/learning\/labels\/(\d+)\/undo$/);
+      if(helpUndo){learningAnswers=learningAnswers.filter(a=>a.id!==Number(helpUndo[1]));json(res,200,{ok:true});return;}
+      if(route.endsWith("/feedback")){json(res,200,{question_id:3,independent_review:false});return;}
       if (route === "/week") {
         json(
           res,

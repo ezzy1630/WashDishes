@@ -4,11 +4,12 @@ import { createAuthScreens } from "./pages/auth.js";
 import { minePage } from "./pages/mine.js";
 import { namePage } from "./pages/name.js";
 import { pastPage } from "./pages/past.js";
+import { helpPage } from "./pages/help.js";
 import { weekPage } from "./pages/week.js";
 import { announce, brand, button, fill, h, heading } from "./ui.js";
 
 /** @typedef {import('./types.js').Visit} Visit */
-/** @typedef {'week'|'name'|'mine'|'past'} Page */
+/** @typedef {'week'|'name'|'mine'|'past'|'help'} Page */
 const root = /** @type {HTMLDivElement} */ (document.getElementById("app"));
 /** @type {import('./types.js').State} */
 const state = {
@@ -32,7 +33,7 @@ function href(path) {
 }
 /** @returns {Page} */
 function page() {
-  return location.pathname.startsWith("/name")
+  return location.pathname.startsWith("/help") ? "help" : location.pathname.startsWith("/name")
     ? "name"
     : location.pathname.startsWith("/mine")
       ? "mine"
@@ -126,6 +127,7 @@ function shell(content) {
     ["name", "Name dishes", "/name"],
     ["mine", "My dishes", "/mine"],
     ["past", "Past weeks", "/past"],
+    ["help", "Help camera", "/help"],
   ]);
   fill(
     root,
@@ -249,7 +251,7 @@ function render() {
     return;
   }
   shell(
-    page() === "name"
+    page() === "help" ? helpPage(context) : page() === "name"
       ? namePage(context)
       : page() === "mine"
         ? minePage(context)

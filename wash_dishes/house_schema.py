@@ -6,6 +6,8 @@ import unicodedata
 
 
 def migrate(conn) -> None:
+    from .learning import migrate as learning_migrate
+    learning_migrate(conn)
     for table, additions in {
         'residents': [('auth_user_id', 'TEXT'), ('auth_slug', 'TEXT')],
         'obligations': [

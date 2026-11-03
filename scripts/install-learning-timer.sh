@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Explicit opt-in replacement for the three legacy trainers. Does not stop the camera.
+set -euo pipefail
+[[ "$(uname -s)" == Linux ]] || { echo 'Install on the Jetson only.' >&2; exit 1; }
+repo="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+units="$HOME/.config/systemd/user"
+mkdir -p "$units"
+cat > "$units/dish-watch-learning.service" <<EOF
+[Unit]
+Description=Dish Watch: independent human truth learning
+[Service]
+Type=oneshot
+WorkingDirectory=${repo//%/%%}
+Environment="WASHDISHES_DATA_DIR=${WASHDISHES_DATA_DIR:-$HOME/.local/share/washdishes/live}"
+Nice=10
+UMask=0077
+NoNewPrivileges=true
+ExecStart="$repo/.venv/bin/python" -m wash_dishes learn-nightly
+TimeoutStartSec=6h
+EOF
+cat > "$units/dish-watch-learning.timer" <<'EOF'
+[Unit]
+Description=Dish Watch: quiet-hour learning
+[Timer]
+OnCalendar=*-*-* 04:45
+Persistent=false
+[Install]
+WantedBy=timers.target
+EOF
+systemd-analyze --user verify "$units/dish-watch-learning.service" "$units/dish-watch-learning.timer"
+# A single scheduler owns all training once explicitly installed.
+systemctl --user disable --now dish-watch-identity.timer dish-watch-verifier.timer dish-watch-improve.timer
+systemctl --user daemon-reload
+systemctl --user enable --now dish-watch-learning.timer

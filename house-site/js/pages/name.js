@@ -1,3 +1,4 @@
+import { correctionLink } from "./help.js";
 import {
   button,
   date,
@@ -274,6 +275,7 @@ export function namePage(context) {
     h(
       "article",
       { class: "naming", "data-dish-id": visit.id },
+      correctionLink(context, visit),
       h(
         "div",
         { class: "evidence" },

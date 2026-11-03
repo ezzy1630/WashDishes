@@ -482,6 +482,8 @@ class Runtime:
             if now - self.last_count_sample >= 10:
                 self.count_history.append({"at": frame_at, **counts})
                 self.last_count_sample = now
+                from .learning_state import note
+                note(self.store.root, frame_at, len(people), loaded=self.vision is not None)
 
     def live_state(self) -> dict:
         settings = self.store.settings()

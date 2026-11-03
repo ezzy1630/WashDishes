@@ -80,6 +80,10 @@ def seed(app) -> dict:
                            capture=capture | {"visit_id": visit_id, "obligation_ids": ids})
         visits.append({"id": visit_id, "dish_ids": ids, "points": sum(2 if k in ("pot", "pan") else 1 for k in kinds),
                        "evidence_id": evidence_id, "closed": index == 3})
+    from wash_dishes import learning
+    evidence = store.conn.execute("SELECT id,obligation_id FROM evidence WHERE kind='snapshot' ORDER BY created_at DESC LIMIT 1").fetchone()
+    with store.conn:
+        learning.add_question(store, source='e2e-help', task='present', evidence_id=evidence['id'], obligation_id=evidence['obligation_id'], box=[.2,.4,.3,.35])
     league.override(store, residents["ezzy"])
     return {"residents": residents, "visits": visits, "week_start": monday.date().isoformat(),
             "closed_start": (monday - timedelta(days=14)).date().isoformat(), "seeded_at": now.isoformat()}
