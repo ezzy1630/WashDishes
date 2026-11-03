@@ -11,6 +11,7 @@ from .alignment import ViewAlignment, shift_areas
 from .camera import Camera
 from .config import Config, monitoring_areas
 from .dataset import Dataset
+from .filmstrip import Filmstrips
 from .incidents import Incidents
 from .inventory import PUT_DOWN_CLIP, Inventory, area_for, in_area
 from .journal import Journal
@@ -46,6 +47,7 @@ class Runtime:
         self.proofs = Proofs(config.root, store, media)
         # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
         self.journal = Journal(config.root / "journal.db")
+        self.filmstrips = Filmstrips(store, media, self.journal)
         self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
@@ -210,6 +212,7 @@ class Runtime:
                     self.proofs.cleanup()
                     self.journal.prune(time.time(), self.store.settings()["buffer_hours"])
                     next_cleanup = time.monotonic() + 3600
+                self.filmstrips.run_once()
                 with self.lock:
                     seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
                 # Every proof is checked before it is shown; without vision there is nothing to check with.

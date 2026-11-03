@@ -166,5 +166,8 @@ def test_unnamed_dishes_gone_for_a_day_close_even_if_photographed_late(store):
     named = store.create_obligation(store.add_resident("Sam")["id"], [{"kind": "bowl", "quantity": 1}], source="vision", at=old)
     recent = store.create_obligation(None, [{"kind": "pan", "quantity": 1}], candidate=True, source="vision", at=now - timedelta(hours=3))
     store.scan_deadlines(now)
-    assert all(store.obligation(item["id"])["lifecycle"] == "dismissed" for item in (unprovable, photographed))
-    assert all(store.obligation(item["id"])["lifecycle"] == "open" for item in (named, recent))
+    assert all(store.obligation(item["id"])["lifecycle"] == "resolved" for item in (unprovable, photographed, named))
+    assert store.obligation(photographed["id"])["left_out_at"] is not None
+    assert store.obligation(unprovable["id"])["left_out_at"] is None
+    assert store.obligation(named["id"])["evidence_timeline"]["stages"][-1]["state"] == "missing"
+    assert store.obligation(recent["id"])["lifecycle"] == "open"

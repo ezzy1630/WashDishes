@@ -533,13 +533,13 @@ class Inventory:
                     self.store.note_missing(item['obligation_id'], zone.area['name'])
                 if observed_at - since > timedelta(hours=1):
                     if item.get('obligation_id'):
-                        self.store.close_unclaimed(item['obligation_id'])
+                        self.store.close_unclaimed(item['obligation_id'], at=observed_at)
                     del self.items[item['key']]
                 continue
             since = parse_stamp(item.setdefault("unseen_since", stamp(observed_at)))
             if observed_at - since < UNSEEN_GRACE:
                 continue
-            if item.get("obligation_id") and not self.store.close_unclaimed(item["obligation_id"]):
+            if item.get("obligation_id") and not self.store.close_unclaimed(item["obligation_id"], at=observed_at):
                 if self.watching_since and parse_stamp(item["last_seen_at"]) >= self.watching_since:
                     self.store.note_gone(item["obligation_id"], zone.area["name"])
                 else:
@@ -570,7 +570,7 @@ class Inventory:
                     and observed_at - parse_stamp(item['unseen_since']) >= UNSEEN_GRACE
                     and self._touched(zone, mask, item['box']) >= TOUCHED):
                 if item.get('obligation_id'):
-                    self.store.close_unclaimed(item['obligation_id'])
+                    self.store.close_unclaimed(item['obligation_id'], at=observed_at)
                 del self.items[item['key']]
         pairs, missing, extra = pair(self._items_in(zone), detections)
         for item, detection in pairs:
@@ -667,7 +667,8 @@ class Inventory:
         handler = self._handler(zone, item["box"], item['kind'])
         self.in_hand.append({"item": item, "at": observed_at, "from": zone.area, "handler": handler})
         if item.get("obligation_id"):
-            self.store.event("dish_picked_up", f"{item['kind'].title()} picked up from {zone.area['name']}", item["obligation_id"])
+            with self.store.lock, self.store.conn:
+                self.store._event(item["obligation_id"], "dish_picked_up", f"{item['kind'].title()} picked up from {zone.area['name']}", at=observed_at)
 
     def _put_down(self, zone: Zone, detection: dict, observed_at: datetime, jpeg: bytes, image: Any = None) -> None:
         handler = self._handler(zone, detection["box"], detection['kind'])
@@ -752,7 +753,7 @@ class Inventory:
         self.in_hand = [e for e in self.in_hand if observed_at - e["at"] <= MOVE_WINDOW]
         for entry in gone:
             if entry["item"].get("obligation_id"):
-                self.store.close_unclaimed(entry["item"]["obligation_id"])
+                self.store.close_unclaimed(entry["item"]["obligation_id"], at=observed_at)
 
     # Open items
 

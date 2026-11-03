@@ -27,7 +27,7 @@ UNCLAIMED_NOTE = "Gone before anyone knew whose it was"
 CANT_TELL_NOTE = "Can't tell whose it was"
 # A dish picked up and not put down again in view within this time was carried away (inventory.MOVE_WINDOW).
 CARRY_WINDOW = timedelta(minutes=30)
-# An unnamed dish the camera has not seen for this long is gone; nobody names the owner of a dish that is no longer out.
+# Camera records without a fresh matching sighting for this long stop being currently out.
 UNPROVABLE_AFTER = timedelta(hours=24)
 UNPROVABLE_NOTE = "Gone before anyone named whose it was"
 # Closed by the camera after the deadline: the dish is no longer out, but it was out late.
@@ -35,7 +35,11 @@ TAKEN_LATE_NOTE = "Taken away after its deadline and not put down again in view.
 WASHED_LATE_NOTE = "Seen going through the sink onto a clean rack after its deadline. Still late; washing itself was not verified."
 REMOVED_REVIEWED_NOTE = 'Removal confirmed by a person; washing was not observed.'
 PUT_AWAY_NOTE = 'Placed in a drying or storage area. Washing itself was not observed.'
-CAMERA_CLOSED_NOTES = (TAKEN_LATE_NOTE, WASHED_LATE_NOTE, REMOVED_REVIEWED_NOTE, PUT_AWAY_NOTE)
+LEFT_OUT_UNKNOWN_NOTE = "Left out past its observed deadline; owner unknown. No longer visible; washing was not observed."
+MISSING_NOTE = "No recent sighting; location and washing outcome unknown. No new left-out verdict."
+REMOVED_UNVERIFIED_NOTE = "Taken away, but continuous presence past the deadline was not verified. Washing was not observed."
+CAMERA_CLOSED_NOTES = (TAKEN_LATE_NOTE, WASHED_LATE_NOTE, REMOVED_REVIEWED_NOTE, PUT_AWAY_NOTE,
+                       LEFT_OUT_UNKNOWN_NOTE, MISSING_NOTE, REMOVED_UNVERIFIED_NOTE)
 # Camera naming turns on only once human-checked suggestions are measured accurate enough, over the
 # most recent checks so a drop in accuracy turns it off again. Every fifth eligible record stays a
 # human spot check, because corrections of camera-named records alone would only ever record mistakes.
@@ -118,6 +122,15 @@ class Store:
                 filename TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL, label TEXT NOT NULL, expired INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS evidence_expiry ON evidence(expired,expires_at);
+            CREATE INDEX IF NOT EXISTS evidence_obligation ON evidence(obligation_id,created_at);
+            CREATE TABLE IF NOT EXISTS arrival_visits(
+                id TEXT PRIMARY KEY, evidence_id TEXT REFERENCES evidence(id),
+                created_at TEXT NOT NULL, metadata TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS arrival_visit_members(
+                obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
+                visit_id TEXT NOT NULL REFERENCES arrival_visits(id));
+            CREATE INDEX IF NOT EXISTS arrival_members_visit ON arrival_visit_members(visit_id);
+            CREATE INDEX IF NOT EXISTS events_kind_time ON events(event,created_at);
             CREATE TABLE IF NOT EXISTS evidence_sequences(
                 obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
                 fingerprint TEXT NOT NULL, image_id TEXT REFERENCES evidence(id),
@@ -151,7 +164,7 @@ class Store:
                                  # NULL: named by a person. 'camera': named automatically. 'camera_reviewed': a person then confirmed or corrected it.
                                  ("attribution", "TEXT"),
                                  # Where the dish was in the "left unattended" photo: [x, y, w, h], for training from Review answers.
-                                 ("box", "TEXT"), ("archived_at", "TEXT")):
+                                 ("box", "TEXT"), ("archived_at", "TEXT"), ("left_out_at", "TEXT"), ("closure_kind", "TEXT")):
             if name not in columns:
                 self.conn.execute(f"ALTER TABLE obligations ADD COLUMN {name} {definition}")
         resident_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(residents)")}
@@ -290,13 +303,37 @@ class Store:
         else:
             status = "overdue" if item["timing_known"] and parse_stamp(item["due_at"]) <= now else ("pending" if item["timing_known"] else "review")
         item.update(status=status, dishes=json.loads(item["dishes"]), overdue_verified=bool(item["overdue_verified"]), timing_known=bool(item["timing_known"]),
-                    closed_by_camera=item["lifecycle"] == "resolved" and item["reason"] in CAMERA_CLOSED_NOTES,
+                    closed_by_camera=item["lifecycle"] == "resolved" and (item["closure_kind"] is not None or item["reason"] in CAMERA_CLOSED_NOTES),
                     box=json.loads(item["box"]) if item.get("box") else None)
         item["followup_at"] = item["due_at"]
         if not item["timing_known"]:
             item["due_at"] = None
-        item["evidence"] = [dict(e) | {"capture": json.loads(e["capture"]), "url": None if e["expired"] else f"/api/evidence/{e['id']}", "expired": bool(e["expired"])} for e in self.conn.execute("SELECT id,kind,created_at,expires_at,label,expired,capture FROM evidence WHERE obligation_id=? ORDER BY created_at", (item["id"],))]
+        item["evidence"] = [dict(e) | {"capture": json.loads(e["capture"]), "url": None if e["expired"] else f"/api/evidence/{e['id']}", "expired": bool(e["expired"])} for e in self.conn.execute("""SELECT id,kind,created_at,expires_at,label,expired,capture FROM evidence
+            WHERE obligation_id=? OR id IN (SELECT v.evidence_id FROM arrival_visits v
+                JOIN arrival_visit_members m ON m.visit_id=v.id WHERE m.obligation_id=?)
+            ORDER BY created_at""", (item["id"], item["id"]))]
+        visit = self.conn.execute('SELECT visit_id FROM arrival_visit_members WHERE obligation_id=?', (item['id'],)).fetchone()
+        item['arrival_visit_id'] = visit[0] if visit else None
         return item
+
+    def arrival_visit(self, visit_id: str) -> dict:
+        """Shared arrival evidence plus the members' current, existing camera guess.
+
+        Consensus is read at request time so corrections cannot leave a stale guess
+        cached in a JPEG. No new inference, naming or teaching happens here.
+        """
+        with self.lock:
+            row = self.conn.execute('SELECT * FROM arrival_visits WHERE id=?', (visit_id,)).fetchone()
+            if not row:
+                raise LookupError('Arrival visit not found.')
+            result = json.loads(row['metadata']) | {'visit_id': visit_id, 'evidence_id': row['evidence_id']}
+            members = self.conn.execute("""SELECT o.id,o.suggested_resident_id FROM obligations o
+                JOIN arrival_visit_members m ON m.obligation_id=o.id WHERE m.visit_id=? ORDER BY o.id""", (visit_id,)).fetchall()
+            guesses = {r['suggested_resident_id'] for r in members}
+            agreed = next(iter(guesses)) if len(guesses) == 1 else None
+            result['suggested_resident_id'] = agreed
+            result['suggestion_basis'] = self.suggestion_basis([r['id'] for r in members]) if agreed is not None else {}
+            return result
 
     def obligation(self, obligation_id: int, *, now: datetime | None = None) -> dict:
         with self.lock:
@@ -384,24 +421,23 @@ class Store:
                 raise ValueError("Cleanup must fall between deposit time and now.")
             cleaner = self._resident(cleaner_id)
             late = item["confidence"] == "confirmed" and item["timing_known"] and when > parse_stamp(item["due_at"])
-            self.conn.execute("UPDATE obligations SET lifecycle='resolved', resolved_at=?,cleaner_id=?,overdue_verified=?,review_pending=0,reason=? WHERE id=?", (stamp(when), cleaner_id, int(late), note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET lifecycle='resolved', closure_kind=NULL,resolved_at=?,cleaner_id=?,overdue_verified=?,review_pending=0,reason=? WHERE id=?", (stamp(when), cleaner_id, int(late), note.strip(), obligation_id))
             description = f"{self.dish_description(item['dishes'])} marked clean" + (f" by {cleaner['name']}" if cleaner else "")
         elif action in ("confirm", "reassign"):
             resident = self._resident(resident_id)
             if not resident:
                 raise ValueError("Choose the responsible housemate to confirm ownership.")
             lifecycle = ("resolved" if item["resolved_at"] else "open") if item["lifecycle"] in ("disputed", "dismissed") else item["lifecycle"]
-            camera_closed = item["lifecycle"] == "resolved" and item["reason"] in CAMERA_CLOSED_NOTES
+            camera_closed = item["closed_by_camera"]
             late = (bool(item["timing_known"] and item["resolved_at"] and parse_stamp(item["resolved_at"]) > parse_stamp(item["due_at"]))
                     if lifecycle == "resolved" and not camera_closed else item["overdue_verified"])
             # The camera photographs a dish still out after its deadline before anyone is named.
             # Keep the after-deadline sighting separately from the dirty-dish verdict.
             # Naming alone cannot trigger an accusation; the incident review gate owns that.
-            photographed_late = (lifecycle == "open" or camera_closed) and not late and item["timing_known"] and self.conn.execute(
-                "SELECT 1 FROM evidence WHERE obligation_id=? AND expired=0 AND label LIKE 'Matching dish still visible after the deadline%' AND created_at>=?",
-                (obligation_id, item["due_at"])).fetchone() is not None
+            photographed_late = ((lifecycle == "open" or camera_closed) and not late and item["timing_known"]
+                                 and self.observed_left_out_at(item) is not None)
             late = late or photographed_late
-            self.conn.execute("UPDATE obligations SET resident_id=?, confidence='confirmed',lifecycle=?,review_pending=0,overdue_verified=?,reason=?,attribution=CASE WHEN attribution IS NULL THEN NULL ELSE 'camera_reviewed' END WHERE id=?", (resident_id, lifecycle, int(late), note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET resident_id=?, confidence='confirmed',lifecycle=?,review_pending=0,overdue_verified=?,reason=?,attribution=CASE WHEN attribution IS NULL THEN NULL ELSE 'camera_reviewed' END WHERE id=?", (resident_id, lifecycle, int(late), note.strip() or (item["reason"] if camera_closed else ""), obligation_id))
             if photographed_late:
                 self._retain_review_evidence(obligation_id, now)
             # Each human decision labels the saved appearance of whoever handled the dish.
@@ -416,7 +452,7 @@ class Store:
             if item["timing_known"] or item["lifecycle"] != "open":
                 raise ValueError("Only an open backlog entry without a known deadline can start a timer.")
             due = now + timedelta(minutes=self.settings()["deadline_minutes"])
-            self.conn.execute("UPDATE obligations SET timing_known=1,due_at=?,deadline_notified=0,overdue_verified=0 WHERE id=?", (stamp(due), obligation_id))
+            self.conn.execute("UPDATE obligations SET timing_known=1,due_at=?,deadline_notified=0,overdue_verified=0,left_out_at=NULL WHERE id=?", (stamp(due), obligation_id))
             description = "Backlog cleanup grace started by a person; original deposit time remains unknown"
         elif action == "dispute":
             self.conn.execute("UPDATE obligations SET lifecycle='disputed',reason=?,review_pending=1 WHERE id=?", (note.strip() or "Ownership or cleanup needs review", obligation_id))
@@ -427,7 +463,7 @@ class Store:
             self.conn.execute("UPDATE person_samples SET resident_id=NULL,hint_resident_id=NULL WHERE obligation_id=?", (obligation_id,))
             description = "Dish event dismissed"
         elif action == "reopen":
-            self.conn.execute("UPDATE obligations SET lifecycle='open',resolved_at=NULL,cleaner_id=NULL,overdue_verified=0,review_pending=0,reason=? WHERE id=?", (note.strip(), obligation_id))
+            self.conn.execute("UPDATE obligations SET lifecycle='open',closure_kind=NULL,resolved_at=NULL,cleaner_id=NULL,overdue_verified=0,left_out_at=NULL,review_pending=0,reason=? WHERE id=?", (note.strip(), obligation_id))
             description = "Dish event reopened"
         else:
             raise ValueError("Choose resolve, confirm, reassign, dispute, dismiss, reopen, or start_timer.")
@@ -440,7 +476,7 @@ class Store:
 
     def _retain_review_evidence(self, obligation_id: int, at: datetime) -> None:
         until = stamp(at + timedelta(days=self.settings()["review_days"]))
-        self.conn.execute("UPDATE evidence SET expires_at=max(expires_at,?) WHERE obligation_id=? AND expired=0", (until, obligation_id))
+        self.conn.execute("UPDATE evidence SET expires_at=max(expires_at,?) WHERE obligation_id=? AND expired=0 AND kind!='filmstrip'", (until, obligation_id))
 
     def record_seen(self, obligation_id: int, at: datetime | None = None, *, reliable: bool = True) -> None:
         """Only the matching visible dish track can provide continuing dirty evidence."""
@@ -449,11 +485,16 @@ class Store:
             item = self.obligation(obligation_id, now=at)
             if item['archived_at']:
                 return
+            observed_late = (reliable and item["lifecycle"] == "open" and not item["review_pending"]
+                             and at >= parse_stamp(item["followup_at"])
+                             and (item['left_out_at'] is not None or not self._deadline_gap(item, at)))
             overdue = reliable and item["lifecycle"] == "open" and item["confidence"] == "confirmed" and not item["review_pending"] and item["timing_known"] and at >= parse_stamp(item["due_at"])
             decision = self.conn.execute('SELECT data FROM incident_decisions WHERE obligation_id=?', (obligation_id,)).fetchone()
             if decision and json.loads(decision[0]).get('condition') == 'clean':
-                overdue = False
-            self.conn.execute("UPDATE obligations SET last_seen_at=?,overdue_verified=max(overdue_verified,?) WHERE id=?", (stamp(at), int(overdue), obligation_id))
+                overdue = observed_late = False
+            overdue = overdue and observed_late
+            self.conn.execute("UPDATE obligations SET last_seen_at=?,overdue_verified=max(overdue_verified,?),left_out_at=coalesce(left_out_at,?) WHERE id=?",
+                              (stamp(at), int(overdue), stamp(at) if observed_late else None, obligation_id))
             if overdue and not item["overdue_verified"]:
                 self._retain_review_evidence(obligation_id, at)
 
@@ -462,8 +503,11 @@ class Store:
             item = self.obligation(obligation_id)
             if item["lifecycle"] != "open" or item['archived_at']:
                 return False
-            lifecycle = 'resolved' if item['overdue_verified'] else 'cleared'
-            self.conn.execute("UPDATE obligations SET lifecycle=?,resolved_at=?,review_pending=0,reason=? WHERE id=?", (lifecycle, stamp(at), PUT_AWAY_NOTE, obligation_id))
+            observed = self.observed_left_out_at(item)
+            early = (at or utcnow()) < parse_stamp(item['followup_at'])
+            lifecycle = 'cleared' if early and not observed else 'resolved'
+            self.conn.execute("UPDATE obligations SET lifecycle=?,closure_kind='removed',resolved_at=?,review_pending=0,reason=?,left_out_at=? WHERE id=?",
+                              (lifecycle, stamp(at), PUT_AWAY_NOTE, observed, obligation_id))
             self._event(obligation_id, "cleanup_candidate", "Put to dry or away; washing not verified", at=at)
             return True
 
@@ -479,21 +523,91 @@ class Store:
                 self._event(row["id"], "deadline_passed", "Cleanup deadline passed; current dish state may need review", at=now)
             return len(rows)
 
-    def _retire_unprovable(self, now: datetime) -> int:
-        """Close unnamed dishes that have been gone for a day.
+    def _deadline_gap(self, item: dict, at: datetime) -> bool:
+        """A timer cannot bridge a recording/identity gap, even for an unnamed dish."""
+        return self.conn.execute("""SELECT 1 FROM events WHERE
+            (obligation_id IS NULL OR obligation_id=?) AND event IN
+            ('observation_gap','dish_continuity_uncertain','dish_not_seen')
+            AND created_at>? AND created_at<=? LIMIT 1""",
+            (item['id'], item['created_at'], stamp(at))).fetchone() is not None
 
-        Naming only happens while a dish is still out (household decision, 2026-10-20: nobody cares about a dish
-        from days ago that is no longer there), so an unnamed one that is gone will never count.
-        On 2026-10-15 thirty of them buried the few that could. Appearance labels are kept (no
-        dismiss event, so nothing is learned as "not a dish"), and a person can still reopen or name one.
+    def observed_left_out_at(self, item: dict) -> str | None:
+        """Presence after the follow-up, independently of ownership or washing.
+
+        The raw deadline is also the startup inventory's observation-based follow-up.
+        Legacy recovery uses retained capture metadata (even when the JPEG has expired),
+        never the mere passing of time or a late removal timestamp.
         """
-        rows = self.conn.execute("""SELECT o.id FROM obligations o WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.resident_id IS NULL AND o.timing_known=1
-            AND o.due_at<=? AND coalesce(o.last_seen_at,o.created_at)<=?""",
-            (stamp(now), stamp(now - UNPROVABLE_AFTER))).fetchall()
+        due = item.get('followup_at') or item['due_at']
+        if not due:
+            return None
+        decision = self.conn.execute('SELECT data FROM incident_decisions WHERE obligation_id=?', (item['id'],)).fetchone()
+        if decision and json.loads(decision[0]).get('condition') == 'clean':
+            return None
+        if item.get('left_out_at'):
+            return item['left_out_at']
+        rows = self.conn.execute("""SELECT created_at FROM evidence WHERE obligation_id=? AND kind='snapshot'
+            AND created_at>=? AND (label LIKE 'Matching dish still visible after the deadline%'
+            OR json_extract(capture,'$.stage')='later') ORDER BY created_at""", (item['id'], due)).fetchall()
         for row in rows:
-            self.conn.execute("UPDATE obligations SET lifecycle='dismissed',review_pending=0,reason=? WHERE id=?", (UNPROVABLE_NOTE, row["id"]))
-            self._event(row["id"], "retired_unprovable", UNPROVABLE_NOTE, at=now)
+            at = parse_stamp(row['created_at'])
+            if not self._deadline_gap(item, at):
+                return row['created_at']
+        return None
+
+    def _close_missing(self, item: dict, now: datetime, *, observed: str | None = None, missing: bool = False) -> None:
+        # resolved means the episode ended; these reasons explicitly exclude a washing claim.
+        reason = MISSING_NOTE if missing or not observed else LEFT_OUT_UNKNOWN_NOTE if item['resident_id'] is None else TAKEN_LATE_NOTE
+        self.conn.execute("""UPDATE obligations SET lifecycle='resolved',resolved_at=?,cleaner_id=NULL,closure_kind=?,
+            review_pending=0,reason=?,left_out_at=? WHERE id=?""",
+            (stamp(now), 'missing' if missing or not observed else 'removed', reason, observed, item['id']))
+        self._event(item['id'], 'left_out_closed' if observed else 'closed_missing', reason,
+                    {'last_seen_at': item['last_seen_at'], 'left_out_at': observed}, now)
+
+    def _retire_unprovable(self, now: datetime) -> int:
+        """Stop presenting stale camera records as currently out, including archived/named backlog.
+
+        No fresh matching detection for a day is an unknown outcome, never an on-time
+        success or a new late verdict. Existing observed lateness remains historical.
+        """
+        rows = self.conn.execute("""SELECT * FROM obligations WHERE lifecycle='open' AND source IN ('vision','baseline')
+            AND coalesce(last_seen_at,created_at)<=?""", (stamp(now - UNPROVABLE_AFTER),)).fetchall()
+        for row in rows:
+            item = dict(row)
+            self._close_missing(item, now, observed=self.observed_left_out_at(item), missing=True)
         return len(rows)
+
+    def repair_left_out(self, *, since: datetime | None = None, dry_run: bool = True,
+                        now: datetime | None = None) -> dict:
+        """One-off, idempotent repair of automatic dismissals and stale open episodes.
+
+        since limits dismissal recovery by deposit date. Stale opens are always checked,
+        including older archived records: they must not remain out forever.
+        Human dismissals/disputes and genuinely early removals are never reinterpreted.
+        """
+        now = now or utcnow()
+        changes = []
+        with self.lock, self.conn:
+            rows = self.conn.execute("""SELECT * FROM obligations WHERE
+                (lifecycle='dismissed' AND reason IN (?,?) AND created_at>=?) OR
+                (lifecycle='open' AND source IN ('vision','baseline') AND coalesce(last_seen_at,created_at)<=?)
+                ORDER BY id""", (UNCLAIMED_NOTE, UNPROVABLE_NOTE, stamp(since) if since else '',
+                                  stamp(now - UNPROVABLE_AFTER))).fetchall()
+            for row in rows:
+                item = dict(row)
+                observed = self.observed_left_out_at(item)
+                if item['lifecycle'] == 'dismissed' and not observed:
+                    continue
+                category = ('restored_left_out' if item['lifecycle'] == 'dismissed'
+                            else 'stale_left_out' if observed else 'stale_missing')
+                changes.append({'id': item['id'], 'category': category, 'from': item['lifecycle'],
+                                'to': 'resolved', 'left_out_at': observed, 'last_seen_at': item['last_seen_at']})
+                if not dry_run:
+                    self._close_missing(item, now, observed=observed, missing=item['lifecycle'] == 'open')
+                    self._event(item['id'], 'repair_left_out', 'Restored automatic closure without inventing ownership or washing',
+                                changes[-1], now)
+        return {'dry_run': dry_run, 'counts': {key: sum(c['category'] == key for c in changes)
+                for key in ('restored_left_out', 'stale_left_out', 'stale_missing')}, 'changes': changes}
 
     def _close_taken(self, now: datetime) -> int:
         """Stop showing a dish as still out once the camera saw it go: carried off after its deadline,
@@ -517,9 +631,10 @@ class Store:
                 self._event(row["id"], "cleared_before_deadline", "Washed or put away before the deadline; no late dish recorded", {"moved_at": row["moved_at"]}, now)
                 continue
             # Lateness still needs the after-deadline photo; closing the record never adds it.
-            self.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=?,review_pending=0,reason=? WHERE id=?",
-                              (row["moved_at"], WASHED_LATE_NOTE if washed else TAKEN_LATE_NOTE, row["id"]))
-            self._event(row["id"], "taken_after_deadline", "No longer out; it was out past its deadline", {"moved_at": row["moved_at"]}, now)
+            observed = self.observed_left_out_at(self.obligation(row['id']))
+            self.conn.execute("UPDATE obligations SET lifecycle='resolved',closure_kind='removed',resolved_at=?,review_pending=0,reason=?,left_out_at=? WHERE id=?",
+                              (row["moved_at"], (WASHED_LATE_NOTE if washed else TAKEN_LATE_NOTE) if observed else REMOVED_UNVERIFIED_NOTE, observed, row["id"]))
+            self._event(row["id"], "taken_after_deadline", "No longer out; observed past its deadline" if observed else "No longer out; deadline continuity was unverified", {"moved_at": row["moved_at"]}, now)
         return len(rows)
 
     def _clear_removed(self, now: datetime) -> int:
@@ -558,7 +673,7 @@ class Store:
             for resident in self.residents():
                 rows = self.conn.execute("SELECT * FROM obligations WHERE archived_at IS NULL AND resident_id=? AND confidence='confirmed' AND timing_known=1 AND lifecycle IN ('open','resolved')", (resident["id"],)).fetchall()
                 # An unobserved outcome cannot be treated as an on-time success in a rate.
-                eligible = [r for r in rows if r['id'] in late_ids or (r["lifecycle"] == "resolved" and r['reason'] not in CAMERA_CLOSED_NOTES)]
+                eligible = [r for r in rows if r['id'] in late_ids or (r["lifecycle"] == "resolved" and r['closure_kind'] is None and r['reason'] not in CAMERA_CLOSED_NOTES)]
                 overdue = sum(r['id'] in late_ids for r in eligible)
                 cleaned_for_others = self.conn.execute("SELECT count(*) FROM obligations WHERE archived_at IS NULL AND cleaner_id=? AND resident_id!=? AND lifecycle='resolved' AND confidence='confirmed'", (resident["id"], resident["id"])).fetchone()[0]
                 dish_count = lambda items: sum(d["quantity"] for r in items for d in json.loads(r["dishes"]))  # noqa: E731
@@ -630,7 +745,7 @@ class Store:
         "not a dish" means a mistake. Anything else (system closures, open questions) teaches nothing.
         """
         with self.lock:
-            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at,
+            rows = self.conn.execute("""SELECT s.created_at, s.embedding, s.label, o.lifecycle, o.confidence, o.attribution, o.resolved_at, o.reason,
                 (SELECT json_extract(e.data,'$.note') FROM events e WHERE e.obligation_id=o.id AND e.event='dismiss' ORDER BY e.id DESC LIMIT 1) note
                 FROM dish_samples s LEFT JOIN obligations o ON o.id=s.obligation_id ORDER BY s.id""").fetchall()
         result = []
@@ -638,7 +753,7 @@ class Store:
             label = row["label"]
             if label is None and row["lifecycle"] is not None:
                 note = (row["note"] or "").strip()
-                if row["lifecycle"] == "dismissed":
+                if row["lifecycle"] == "dismissed" and row['reason'] not in (UNCLAIMED_NOTE, UNPROVABLE_NOTE):
                     label = 0 if note in NOT_A_DISH_NOTES else 1 if note == CANT_TELL_NOTE else None
                 elif row["confidence"] == "confirmed" and row["attribution"] != "camera":
                     label = 1
@@ -720,14 +835,18 @@ class Store:
                                   (f"Not at {location} when monitoring resumed; it may have been moved or cleaned while unobserved.", obligation_id))
                 self._event(obligation_id, "dish_not_seen", f"Not visible at {location} after an observation gap; outcome unknown")
 
-    def close_unclaimed(self, obligation_id: int) -> bool:
-        """A dish already there when watching began, now gone, with nobody named: nothing anyone can answer."""
+    def close_unclaimed(self, obligation_id: int, *, at: datetime | None = None) -> bool:
+        """Close an unnamed startup episode; preserve a dish observed out past its follow-up."""
         with self.lock, self.conn:
             item = self.obligation(obligation_id)
             if item["lifecycle"] != "open" or item["timing_known"] or item["resident_id"] is not None:
                 return False
-        self.action(obligation_id, "dismiss", note=UNCLAIMED_NOTE)
-        return True
+            observed = self.observed_left_out_at(item)
+            if observed:
+                self._close_missing(item, at or utcnow(), observed=observed)
+            else:
+                self._action_locked(obligation_id, "dismiss", note=UNCLAIMED_NOTE, now=at or utcnow())
+            return True
 
     def unclaimed(self) -> list[int]:
         with self.lock:
@@ -738,8 +857,8 @@ class Store:
         tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
         start = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.lock:
-            rows = self.conn.execute("SELECT reason FROM obligations WHERE archived_at IS NULL AND lifecycle='resolved' AND resolved_at>=? AND resolved_at<?", (stamp(start), stamp(start + timedelta(days=1)))).fetchall()
-            return sum(r['reason'] not in CAMERA_CLOSED_NOTES for r in rows)
+            rows = self.conn.execute("SELECT reason,closure_kind FROM obligations WHERE archived_at IS NULL AND lifecycle='resolved' AND resolved_at>=? AND resolved_at<?", (stamp(start), stamp(start + timedelta(days=1)))).fetchall()
+            return sum(r['closure_kind'] is None and r['reason'] not in CAMERA_CLOSED_NOTES for r in rows)
 
     def add_evidence(self, obligation_id: int, evidence_id: str, filename: str, kind: str, label: str, *, at: datetime | None = None, expires: datetime | None = None, capture: dict | None = None) -> None:
         at = at or utcnow()

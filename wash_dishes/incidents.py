@@ -47,8 +47,10 @@ def confirmed_late(item: dict, decision: dict, sequence: dict) -> bool:
 def outcome(item: dict) -> str:
     if item['lifecycle'] == 'open' and item['review_pending']:
         return 'unknown'
+    if item['lifecycle'] == 'resolved' and (item.get('closure_kind') == 'missing' or item['reason'].startswith('No recent sighting;')):
+        return 'unknown'
     if item['lifecycle'] == 'resolved':
-        return 'removed' if item['reason'] in CAMERA_CLOSED_NOTES else 'washed'
+        return 'removed' if item.get('closure_kind') == 'removed' or item['reason'] in CAMERA_CLOSED_NOTES else 'washed'
     return {'open': 'out', 'cleared': 'removed', 'dismissed': 'dismissed', 'disputed': 'disputed'}[item['lifecycle']]
 
 
@@ -234,7 +236,7 @@ class Incidents:
             current = self.store.obligation(oid)
             # Recognition alone never creates an offense. A clean item is not a dirty dish.
             if body['condition'] == 'clean' or checks.get('later') is False:
-                self.store.conn.execute('UPDATE obligations SET overdue_verified=0 WHERE id=?', (oid,))
+                self.store.conn.execute('UPDATE obligations SET overdue_verified=0,left_out_at=NULL WHERE id=?', (oid,))
             elif (body['condition'] == 'used' and checks.get('later') is True and manifest['past_deadline']
                   and current['confidence'] == 'confirmed' and current['lifecycle'] in ('open', 'resolved')
                   and not current['review_pending']):

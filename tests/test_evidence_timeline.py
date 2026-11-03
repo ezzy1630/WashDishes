@@ -78,7 +78,9 @@ def test_cleanup_candidate_is_not_camera_verified_washing_and_reopen_clears_outc
     photo(store, item, "clean", "Possible clean destination; washing quality unverified", at)
     photo(store, item, "clip", "Possible cleanup transition", at, kind="clip")
     result = stages(store, item)["outcome"]
-    assert result["state"] == "cleared"
+    # This cleanup is after the deadline but unverified: removed, never an on-time success or a late verdict.
+    assert result["state"] == "removed"
+    assert not store.obligation(item['id'])['overdue_verified']
     assert result["clips"][0]["id"] == "clip"
     store.action(item["id"], "resolve", now=NOW, resolved_at=at)
     result = stages(store, item)["outcome"]

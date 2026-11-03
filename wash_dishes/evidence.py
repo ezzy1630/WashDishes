@@ -96,8 +96,10 @@ def evidence_timeline(item: dict, names: dict[int, str], now: datetime) -> dict:
         deadline.update(at=item["due_at"], summary="Deadline passed, but no matching after-deadline photo is attached. Elapsed time is not proof.")
 
     outcome = stage("outcome", "Outcome", "No cleanup confirmed. Disappearance alone does not establish washing.", latest=True)
-    if item.get("closed_by_camera"):
-        outcome.update(state="taken_late", at=outcome["at"] or item["resolved_at"], decision_at=item["resolved_at"], summary=item["reason"])
+    if item['lifecycle'] == 'resolved' and (item.get('closure_kind') == 'missing' or item.get('reason', '').startswith('No recent sighting;')):
+        outcome.update(state="missing", at=item['resolved_at'], summary=item['reason'])
+    elif item.get("closed_by_camera"):
+        outcome.update(state="taken_late" if item.get('left_out_at') or item['overdue_verified'] else "removed", at=outcome["at"] or item["resolved_at"], decision_at=item["resolved_at"], summary=item["reason"])
     elif item["lifecycle"] == "resolved":
         outcome.update(state="human_confirmed", at=outcome["at"] or item["resolved_at"], decision_at=item["resolved_at"],
                        summary="Marked washed by a person; this is a human decision, not camera verification of washing quality.")
