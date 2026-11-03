@@ -102,21 +102,28 @@ export function imageURL(value) {
   }
 }
 import { HOUSE_API_ORIGIN, SUPABASE_URL } from "../config.js";
-/** @param {string|null} url @param {string} label @param {boolean} [wide] @param {boolean} [lazy] */
-export function photo(url, label, wide = false, lazy = false) {
+/** @param {string|null} url @param {string} label @param {boolean} [wide] @param {boolean} [lazy] @param {{width:number|null,height:number|null}} [size] */
+export function photo(url, label, wide = false, lazy = false, size) {
   const src = imageURL(url),
     box = h("div", { class: `photo ${wide ? "filmstrip" : ""}` });
   if (!src) {
     box.append(h("p", {}, `${label} isn’t available.`));
     return box;
   }
+  if (size?.width && size.height)
+    box.style.aspectRatio = `${size.width} / ${size.height}`;
   const img = h("img", {
+    width: size?.width,
+    height: size?.height,
     src,
     alt: label,
     loading: lazy ? "lazy" : "eager",
     decoding: "sync",
     referrerpolicy: "no-referrer",
   });
+  img.onload = () => {
+    box.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+  };
   img.onerror = () =>
     box.replaceChildren(h("p", {}, "Photo unavailable. Refresh to try again."));
   const zoom = button("", () => zoomPhoto(src, label), "photo-open");
@@ -276,4 +283,11 @@ export function brand(href, navigate) {
     h("span", { class: "brand-mark" }, icon("house")),
     h("span", {}, "Highest House", h("small", {}, "Dish Watch")),
   );
+}
+
+/** @param {import('./types.js').Visit} visit @param {boolean} [filmstrip] */
+export function mediaSize(visit, filmstrip = true) {
+  return filmstrip
+    ? { width: visit.filmstrip_width, height: visit.filmstrip_height }
+    : { width: visit.photo_width, height: visit.photo_height };
 }

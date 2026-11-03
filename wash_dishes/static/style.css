@@ -782,3 +782,10 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
   .league-heading { align-items: end; }
   .league-heading .field { max-width: 160px; }
 }
+
+/* League review shares Send's name chips and the site's four quiet answers. */
+.league .name-chip, .league .btn, .league summary, .league .link { min-height: 44px; }
+.league-zero { margin-bottom: 20px; }
+.league-verdict-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.league-verdict-buttons .btn { white-space: normal; }
+.league-duplicate[hidden] { display: none; }

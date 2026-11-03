@@ -1617,9 +1617,9 @@ dialog::backdrop {
   box-shadow: inset 0 0 0 1px var(--review);
   color: var(--review);
 }
-/* Arrival grids reserve Lane A’s two-column, three-row canvas before loading. */
+/* Evidence dimensions come from the API, including shorter arrival strips. */
 .photo.filmstrip {
-  aspect-ratio: 1200/1668;
+  aspect-ratio: auto;
   border-radius: 8px;
 }
 .zoom-scroll {
@@ -1665,7 +1665,7 @@ dialog::backdrop {
     grid-row: 3;
   }
   .photo.filmstrip {
-    aspect-ratio: 1200/1668;
+    aspect-ratio: auto;
   }
   .zoom-scroll {
     max-height: calc(100dvh - 220px);
@@ -1680,7 +1680,7 @@ dialog::backdrop {
 }
 .photo.filmstrip {
   box-sizing: content-box;
-  aspect-ratio: 1200/1668;
+  aspect-ratio: auto;
   padding-bottom: 0;
 }
 .photo.filmstrip img {
@@ -1700,7 +1700,7 @@ dialog::backdrop {
 }
 .arrival-photo .photo.filmstrip {
   box-sizing: border-box;
-  aspect-ratio: 1200/1668;
+  aspect-ratio: auto;
   padding: 0;
 }
 .arrival-photo .photo.filmstrip img {

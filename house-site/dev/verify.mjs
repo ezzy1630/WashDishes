@@ -96,13 +96,11 @@ async function capture(page, name, size, theme) {
     await new Promise(requestAnimationFrame);
   });
   if (name === "filmstrip-zoom") {
-    const dialog = await page
-      .locator("dialog[open]")
-      .evaluate((el) => ({
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-        closeTop: el.querySelector("button").getBoundingClientRect().top,
-      }));
+    const dialog = await page.locator("dialog[open]").evaluate((el) => ({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      closeTop: el.querySelector("button").getBoundingClientRect().top,
+    }));
     assert.equal(
       dialog.scrollHeight,
       dialog.clientHeight,
@@ -182,6 +180,23 @@ try {
         await page.locator(".page-heading p").innerText(),
         "Nov 2 – 8 · closes Mon 12 PM",
       );
+      assert.equal(
+        await page.locator(".pick > p").first().innerText(),
+        "7 points · 4 ahead",
+      );
+      assert.deepEqual(
+        await page.evaluate(async () => {
+          const { weekRange } = await import("/js/pages/league-copy.js");
+          return [
+            weekRange("2026-11-02", "2026-11-09", "America/Los_Angeles"),
+            weekRange("2026-10-26", "2026-11-02", "America/Los_Angeles"),
+            weekRange("2026-12-28", "2027-01-04", "America/Los_Angeles"),
+            weekRange("2026-03-02", "2026-03-09", "America/Los_Angeles"),
+          ];
+        }),
+        ["Nov 2 – 8", "Oct 26 – Nov 1", "Dec 28 – Jan 3", "Mar 2 – 8"],
+        "exclusive dates across month, year and DST boundaries",
+      );
       assert.equal(await page.locator(".rankings li").count(), 3);
       assert.equal(await page.locator(".rank-bar path").count(), 0);
       await page.getByText("7 pts · needs 4", { exact: true }).waitFor();
@@ -200,6 +215,11 @@ try {
             { exact: true },
           )
           .waitFor();
+        if (mode === "disabled")
+          assert.equal(
+            await page.locator(".pick > p").first().innerText(),
+            "Standings still count.",
+          );
         await capture(page, `duty-${mode}`, size, theme);
       }
       await control({ dutyMode: "carry" });
@@ -249,15 +269,36 @@ try {
         ],
       );
       assert.equal(await page.locator(".camera-chip").innerText(), "Jadon");
-      const dimensions = await page
-        .locator(".naming .filmstrip img")
-        .evaluate((img) => ({
-          width: img.naturalWidth,
-          height: img.naturalHeight,
-        }));
-      assert.ok(
-        dimensions.width === 1200 && dimensions.height === 1668,
-        "arrival evidence matches Lane A’s two-column grid",
+      async function assertImageRatios() {
+        const sizes = await page
+          .locator(".naming .photo img")
+          .evaluateAll((imgs) =>
+            imgs.map((img) => {
+              const box = img.closest(".photo").getBoundingClientRect();
+              return {
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                declaredWidth: Number(img.getAttribute("width")),
+                declaredHeight: Number(img.getAttribute("height")),
+                ratio: box.width / box.height,
+              };
+            }),
+          );
+        for (const image of sizes) {
+          assert.equal(image.declaredWidth, image.width);
+          assert.equal(image.declaredHeight, image.height);
+          assert.ok(
+            Math.abs(image.ratio - image.width / image.height) < 0.01,
+            "box reserves actual JPEG ratio",
+          );
+        }
+        return sizes;
+      }
+      const dimensions = await assertImageRatios();
+      assert.deepEqual(
+        [dimensions[0].width, dimensions[0].height],
+        [1200, 1668],
+        "production six-frame renderer",
       );
       await page
         .getByRole("button", { name: /Enlarge.*arrival photos/ })
@@ -290,10 +331,37 @@ try {
         .getByText("Marked not a dish by Daniel", { exact: true })
         .waitFor();
       await capture(page, "reviewed-visits", size, theme);
+      await page
+        .locator(".name-chips")
+        .getByRole("button", { name: "Andrew", exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: "Dinner plate", exact: true })
+        .waitFor();
+      await page
+        .getByText("Arrival not recorded — only name someone if you know", {
+          exact: true,
+        })
+        .waitFor();
+      await capture(page, "arrival-not-recorded", size, theme);
+      const short = await assertImageRatios();
+      assert.deepEqual(
+        [short[0].width, short[0].height],
+        [1200, 1177],
+        "production four-frame renderer",
+      );
       await navigation(page, "My dishes");
       await capture(page, "my-dishes", size, theme);
       await navigation(page, "Past weeks");
       await capture(page, "past-weeks", size, theme);
+      assert.equal(
+        await page.locator(".past-detail > .section-heading h2").innerText(),
+        "Nov 2 – 8",
+      );
+      assert.deepEqual(
+        await page.locator(".week-choice strong").allTextContents(),
+        ["Nov 2 – 8", "Oct 26 – Nov 1", "Oct 19 – 25"],
+      );
       await page.getByRole("button", { name: /Oct 26/ }).click();
       await page
         .getByText("Jadon would need 2 more points for a clear pick.")

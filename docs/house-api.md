@@ -37,12 +37,16 @@ Dish = {
   out_since: UTC_ISO, due_at: UTC_ISO, gone_at: UTC_ISO|null, points: integer,
   resident: Person|null, named_by: Person|null, named_at: UTC_ISO|null,
   dispute: Dispute|null, filmstrip_url: URL|null, photo_url: URL|null,
+  filmstrip_width: integer|null, filmstrip_height: integer|null,
+  photo_width: integer|null, photo_height: integer|null,
   can_name: boolean, can_dispute: boolean, can_settle: boolean
 }
 Visit = {
   id: string, dish_ids: [integer], alias_ids: [integer],
   aliases: [Dish & {duplicate_of: integer}], arrival_seen: boolean, title: string, area: string, at: UTC_ISO,
   points: integer, filmstrip_url: URL|null, photo_url: URL|null,
+  filmstrip_width: integer|null, filmstrip_height: integer|null,
+  photo_width: integer|null, photo_height: integer|null,
   resident: Person|null, named_by: Person|null, named_at: UTC_ISO|null,
   guess: {resident_id: integer, name: string, basis: string}|null,
   dispute: Dispute|null, can_name: boolean, can_dispute: boolean, can_settle: boolean
@@ -62,7 +66,21 @@ WeekResponse = {
 }
 ```
 
-End is exclusive. Standings include all active residents, descending points then
+Image dimensions are intrinsic JPEG pixels, paired with each URL on dishes,
+visits and mutation responses. Reserve `width / height` before loading, including
+short filmstrips and later photos. Unavailable/expired media has null dimensions;
+legacy unreadable JPEG headers also yield null. The API reads JPEG headers only
+(no pixel decoding) and caches up to 2048 sizes by path, modification time and
+file size for the process lifetime. Replaced files invalidate the cached size.
+
+`arrival_seen=false` means the arrival was not recorded, including singleton
+fallbacks. Show “Arrival not recorded — only name someone if you know”; a camera
+suggestion never establishes responsibility.
+
+End is exclusive. Display the last included calendar day (end minus one day),
+without subtracting from `closes_at`: the naming grace ends at that actual instant.
+
+Standings include all active residents, descending points then
 name; `dishes` sums quantities. Last eight weeks include current; open weeks have
 null `pick_name`. Unnamed dishes show potential points but contribute zero to
 standings; open disputes show zero points. `on_duty` always describes **now**, even

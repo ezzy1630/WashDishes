@@ -415,22 +415,30 @@ def _region(boxes, frames, picture):
 
 
 def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = None, approximate: bool = False, already_at: float | None = None) -> bytes:
-    width, height, margin, gap = 1200, 1668, 24, 24
+    width, height, margin, gap = 1200, 195 + ((len(frames) + 1) // 2) * 491, 24, 24
     panel_w, panel_h = 564, 423
     canvas = Image.new('RGB', (width, height), collage.PAPER)
     draw = ImageDraw.Draw(canvas)
     boxes = boxes or [item['box']]
-    title = f"{len(boxes)} dishes · arrival context" if len(boxes) > 1 else f"{collage.dish_name(item['dishes']).capitalize()} · arrival context"
+    dish = f"{len(boxes)} dishes" if len(boxes) > 1 else collage.dish_name(item['dishes']).capitalize()
+    place = collage.place(item['location']) or 'kitchen'
+    title = f"{dish} on {place if place.lower().startswith('the ') else 'the ' + place.lower()}"
     local = ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles'))
-    date = datetime.fromtimestamp(frames[0]['at'],timezone.utc).astimezone(local).strftime('%b %d, %Y')
-    subtitle = f"{date} · {collage.place(item['location'])}"
-    note = 'People shown need human review'
+    start, end = [datetime.fromtimestamp(frame['at'], timezone.utc).astimezone(local) for frame in (frames[0], frames[-1])]
+    def clock(at):
+        return at.strftime('%I:%M %p').lstrip('0')
+    first_clock = clock(start).removesuffix(start.strftime(' %p')) if start.date() == end.date() and start.strftime('%p') == end.strftime('%p') else clock(start)
+    subtitle = f"{start.strftime('%b')} {start.day} · {first_clock}–{clock(end)}"
+    if start.date() != end.date():
+        subtitle = f"{start.strftime('%b')} {start.day} · {clock(start)} – {end.strftime('%b')} {end.day} · {clock(end)}"
+    note = 'Only name someone if you know they left these dishes'
     if approximate:
         note = 'Timing uncertain; put-down not established'
     if already_at is not None:
-        clock = datetime.fromtimestamp(already_at,timezone.utc).astimezone(local).strftime('%I:%M %p').lstrip('0')
-        note = f"Already there at {clock} — arrival not recorded"
-    draw.text((margin, 22), title, font=collage._type(52, 650), fill=collage.INK)
+        already_clock = clock(datetime.fromtimestamp(already_at, timezone.utc).astimezone(local))
+        note = f"Already there at {already_clock} — arrival not recorded"
+    title, title_font = collage._fit(draw, title, range(52, 31, -2), 650, width - 2 * margin)
+    draw.text((margin, 22), title, font=title_font, fill=collage.INK)
     draw.text((margin, 80), subtitle, font=collage._type(28), fill=collage.MUTED)
     draw.text((margin, 126), note, font=collage._type(28), fill=collage.MUTED)
     region = _region(boxes, frames, frames[0]['jpeg'])

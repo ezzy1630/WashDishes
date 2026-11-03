@@ -1,5 +1,6 @@
+import { pickDetail, shiftDay, weekRange } from "./league-copy.js";
 import { mock } from "../auth.js";
-import { button, date, h, heading, icon, tag } from "../ui.js";
+import { button, h, heading, icon, tag } from "../ui.js";
 /** @typedef {import("../types.js").Week} Week */
 import { range, standings } from "./standings.js";
 /** @param {import("../types.js").ScreenContext} context */
@@ -29,7 +30,11 @@ export function pastPage(context) {
         h(
           "span",
           { class: "week-copy" },
-          h("strong", {}, date(w.start, data.week.timezone)),
+          h(
+            "strong",
+            {},
+            weekRange(w.start, shiftDay(w.start, 7), data.week.timezone),
+          ),
           h(
             "span",
             {},
@@ -77,7 +82,7 @@ export function pastPage(context) {
             ? `${data.pick.name} ${data.week.closed ? "was picked." : "is in line."}`
             : "No one picked.",
         ),
-        h("p", { class: "help" }, data.pick.reason),
+        h("p", { class: "help" }, pickDetail(data)),
         standings(data, state.me?.resident.id),
       ),
     ),

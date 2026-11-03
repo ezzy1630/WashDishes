@@ -12,7 +12,7 @@ const scratch =
 const fixtureRoot = path.join(scratch, "review3/fixtures");
 const fixtureInfo = JSON.parse(
   execFileSync(
-    "python3",
+    process.env.PYTHON || "/Volumes/Neural/WashDishes/.venv/bin/python",
     [path.join(site, "dev/fixtures.py"), "--output", fixtureRoot],
     { encoding: "utf8" },
   ),
@@ -61,7 +61,7 @@ function item(id, kind, owner = null, dispute = null) {
           : kind === "plate"
             ? "Dinner plate"
             : "Bowl by the sink",
-    location: id % 2 ? "Stove counter" : "Sink, left side",
+    location: fixture.area,
     out_since:
       id >= 200
         ? id < 300
@@ -79,6 +79,11 @@ function item(id, kind, owner = null, dispute = null) {
       id >= 200 ? null : `http://127.0.0.1:${port}/dev/photos/${fixture.strip}`,
     photo_url:
       id >= 200 ? null : `http://127.0.0.1:${port}/dev/photos/${fixture.photo}`,
+    filmstrip_width: id >= 200 ? null : fixture.width,
+    filmstrip_height: id >= 200 ? null : fixture.height,
+    photo_width: id >= 200 ? null : fixture.photo_width,
+    photo_height: id >= 200 ? null : fixture.photo_height,
+    arrival_seen: fixture.arrival_seen,
     verdict: null,
     can_name: false,
     can_dispute: false,
@@ -161,11 +166,16 @@ function visits(records, user) {
       id: `visit-${first.id}`,
       dish_ids: list.map((d) => d.id),
       title,
-      area: "Kitchen counter",
+      area: fixtureInfo[String(first.id)]?.area || first.location,
       at: first.out_since,
       points: list.reduce((n, d) => n + d.points, 0),
       filmstrip_url: first.filmstrip_url,
       photo_url: first.photo_url,
+      filmstrip_width: first.filmstrip_width,
+      filmstrip_height: first.filmstrip_height,
+      photo_width: first.photo_width,
+      photo_height: first.photo_height,
+      arrival_seen: first.arrival_seen,
       resident: v.resident,
       named_by: v.named_by,
       named_at: v.named_at,
@@ -216,7 +226,7 @@ function week(start, user) {
       ? {
           resident_id: standings[0].resident_id,
           name: standings[0].name,
-          reason: `${standings[0].points} points, with a ${lead}-point lead. Both house thresholds are met.`,
+          reason: `${standings[0].name} is the pick for next week’s kitchen duty with ${standings[0].points} points, ${lead} ahead.`,
         }
       : {
           resident_id: null,
@@ -227,7 +237,7 @@ function week(start, user) {
   return {
     week: {
       start: old ? "2026-10-26" : older ? "2026-10-19" : "2026-11-02",
-      end: old ? "2026-11-01" : older ? "2026-10-25" : "2026-11-08",
+      end: old ? "2026-11-02" : older ? "2026-10-26" : "2026-11-09",
       closes_at:
         closesAt ||
         (old

@@ -91,7 +91,8 @@ export function setupPage(main) {
       f.append(check('enabled', 'Assign kitchen duty', rules.enabled, 'When off, standings still show and kitchen duty clears.'),
         h('div', { class: 'form-grid three' }, num('Pan points', 'pan', rules.weights.pan), num('Pot points', 'pot', rules.weights.pot), num('Other dish points', 'default', rules.weights.default)),
         h('div', { class: 'form-grid' }, num('Minimum points', 'min_points', rules.min_points, 1, 10000), num('Minimum lead', 'min_lead', rules.min_lead, 0, 10000)),
-        h('p', { class: 'help' }, 'Both thresholds must be met, with no tie. Multiply points by quantity. A week closes at Monday noon in the house timezone. Closed weeks keep their rules and scores. With no clear pick, the duty person stays on.'));
+        h('p', { class: 'help' }, 'Per-dish points. Both thresholds needed; no ties.'));
+      f.append(h('p', { class: 'help' }, 'Mon–Sun; closes Mon noon. Closed scores freeze.'));
       f.finish();
       const override = form(async fd => {
         const value = fd.get('resident_id');
@@ -99,7 +100,7 @@ export function setupPage(main) {
         toast('Kitchen duty updated.'); await loadLeague();
       }, { submit: 'Set duty after house vote' });
       override.append(field('Who is on kitchen duty?', h('select', { name: 'resident_id', disabled: !rules.enabled },
-        h('option', { value: '' }, 'Nobody'), ...activeResidents().map(r => h('option', { value: r.id, selected: r.id === duty?.resident_id }, r.name))),
+        h('option', { value: '' }, 'Nobody'), ...activeResidents().sort((a, b) => a.name.localeCompare(b.name)).map(r => h('option', { value: r.id, selected: r.id === duty?.resident_id }, r.name))),
         duty ? `${duty.name} since ${new Date(duty.since).toLocaleDateString()}. ${duty.why}` : 'Nobody is on duty. A house vote can override the weekly result.'),
         h('p', { class: 'help' }, 'This sets duty now. The next qualifying closed week can replace it.'));
       override.finish();
