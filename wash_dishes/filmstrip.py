@@ -410,19 +410,21 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
         return datetime.fromtimestamp(at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M:%S %p')
     last = frames[-1]
     panels = [{'jpeg':last['jpeg'],'label':'Dish detail' if len(boxes) == 1 else 'Dish details',
-               'time':clock(last['at']) + ' · approximate','boxes':boxes}]
+               'time':clock(last['at']),'boxes':boxes,'at':last['at']}]
     # Compare the same crop before/after. An already-present window never earns
     # a before label, and duplicate pixels do not earn another panel.
     if already_at is None and not approximate and frames[0]['jpeg'] != last['jpeg']:
         panels.insert(0,{'jpeg':frames[0]['jpeg'],'label':'Earlier view · check this spot',
-                        'time':clock(frames[0]['at']) + ' · approximate','boxes':boxes,'expected':True,
+                        'time':clock(frames[0]['at']),'at':frames[0]['at'],'boxes':boxes,'expected':True,
                         'region':visual.region(boxes,last['jpeg'])})
     if already_at is None:
         for frame in visual.distinct_people(frames):
             heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
             panels.append({'jpeg':frame['jpeg'],'label':'Who was at the counter',
-                           'time':clock(frame['at']) + ' · approximate','boxes':heads,'people':True})
-    notes = []
+                           'time':clock(frame['at']),'at':frame['at'],'boxes':heads,'people':True})
+    # Tell the visit in the order it happened: before, who was there, then the dish left behind.
+    panels.sort(key=lambda panel: panel['at'])
+    notes = ['Times are approximate.']
     if already_at is not None:
         notes.append("Arrival wasn't recorded — it was already here at " + datetime.fromtimestamp(already_at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M %p') + '.')
     elif approximate:

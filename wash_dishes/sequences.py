@@ -68,8 +68,6 @@ def render_collage(manifest: dict, pictures: dict[str, bytes]) -> bytes:
         notes.append(f"Arrival wasn't recorded — it was already here at {clock}.")
     elif manifest.get('review_pending') or manifest.get('continuity_events'):
         notes.append('Check that these views show the same dish.')
-    else:
-        notes.append('Photos show separate moments; activity between them is unknown.')
     if 'using' in pictures:
         notes.append('Only name someone if you know they left these dishes')
     if manifest.get('outcome') in ('resolved','cleared'):

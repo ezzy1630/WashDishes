@@ -221,7 +221,8 @@ def test_review_rechecks_persisted_arrival_anchor(house_client, monkeypatch, tam
     if tamper == 'outside-window':
         capture['window']['after'] = capture['window']['before'] - 1
     elif tamper == 'multiple-people':
-        capture['frames'][2]['person_boxes'] *= 2
+        crowded = next(f for f in capture['frames'] if f.get('person_boxes'))
+        crowded['person_boxes'] = crowded['person_boxes'] * 2
     elif tamper == 'wrong-box':
         for frame in capture['frames']:
             frame['person_boxes'] = [[.9, .9, .01, .01]]
