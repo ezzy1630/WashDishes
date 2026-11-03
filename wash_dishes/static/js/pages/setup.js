@@ -29,7 +29,14 @@ export function setupPage(main) {
     demo ? section("demo", "Demo", "Add a made-up event to see how the app reacts.", h("div", { class: "card-body" }, demoTools())) : null);
   fill(main, h("div", { class: "page" }, h("header", { class: "page-head" }, h("div", {}, h("h1", { id: "page-title", tabindex: "-1" }, "Settings"), h("p", {}, "The camera, what it watches, and the house rules."))), h("div", { class: "settings-grid" }, nav, content)));
 
-  const spy = new IntersectionObserver(entries => { for (const e of entries) if (e.isIntersecting) for (const a of nav.children) a.classList.toggle("on", a.dataset.id === e.target.dataset.id); }, { rootMargin: "-20% 0px -70% 0px" });
+  // Async panels can move an intersecting section away without another section entering.
+  // Choose from current geometry on every notification, including leaving entries.
+  const spy = new IntersectionObserver(() => {
+    const anchor = window.innerHeight * .2;
+    const sections = [...content.querySelectorAll(".setup-sec")];
+    const active = sections.find(section => section.getBoundingClientRect().bottom > anchor) || sections.at(-1);
+    for (const a of nav.children) a.classList.toggle("on", a.dataset.id === active?.dataset.id);
+  }, { rootMargin: "-20% 0px -70% 0px" });
   for (const s of content.querySelectorAll(".setup-sec")) spy.observe(s);
 
   function section(id, title, sub, ...children) {

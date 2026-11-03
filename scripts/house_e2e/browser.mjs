@@ -337,7 +337,10 @@ async function journey() {
       for (const [route, label] of [['proof', 'send'], ['setup/learning', 'learning']]) {
         await operatorPage.goto(cfg.privateApi + '/#/' + route);
         await operatorPage.locator(route === 'proof' ? '.operator-home .home-week-overview' : '.learning-panel .card-body').waitFor();
-        if (route === 'setup/learning') await operatorPage.getByText('No learning runs yet.', {exact:true}).waitFor();
+        if (route === 'setup/learning') {
+          await operatorPage.getByText('No learning runs yet.', {exact:true}).waitFor();
+          await operatorPage.locator('.subnav a.on[data-id="learning"]').waitFor();
+        }
         await operatorPage.evaluate(() => document.fonts.ready);
         const layout = await operatorPage.evaluate(() => ({width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth}));
         assert(layout.scroll <= layout.width, `Operator ${label} ${width} ${theme} overflow`);
