@@ -122,6 +122,21 @@ def test_service_retry_is_selected_after_backoff(store, media, monkeypatch):
     assert worker.run_once(now=now+timedelta(minutes=6)) == item['id']
 
 
+def test_finished_filmstrip_does_not_block_the_dishes_behind_it(store, media, monkeypatch):
+    # A saved job has a NULL reason; it must count as finished, or the oldest one is reselected forever.
+    now = utcnow()
+    older, newer = make_item(store, now-timedelta(hours=3)), make_item(store, now-timedelta(hours=2))
+    worker = Filmstrips(store, media, None)
+    with store.conn:
+        store.conn.execute('update obligations set left_out_at=? where id in (?,?)',
+                           (stamp(now-timedelta(minutes=30)), older['id'], newer['id']))
+        store.conn.execute("insert into filmstrip_jobs(obligation_id,status,reason,attempted_at) values (?,'saved',NULL,?)",
+                           (older['id'], stamp(now-timedelta(hours=1))))
+    monkeypatch.setattr(filmstrip, 'plan', lambda *a, **kw: TIMEOUT)
+    monkeypatch.setattr(store, 'observed_left_out_at', lambda _: stamp(now))
+    assert worker.run_once(now=now) == newer['id']
+
+
 def test_recovery_and_worker_do_not_wait_on_another_footage_search(store, media):
     item = make_item(store, utcnow())
     worker = Filmstrips(store, media, None)

@@ -768,7 +768,7 @@ class Filmstrips:
         with self.store.lock:
             rows = self.store.conn.execute("""SELECT o.id FROM obligations o WHERE o.source IN ('vision','baseline')
                 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.created_at>=? AND o.due_at<=?
-                AND NOT EXISTS (SELECT 1 FROM filmstrip_jobs f WHERE f.obligation_id=o.id AND NOT ((f.status='retry' OR f.reason=?) AND f.attempted_at<=?))
+                AND NOT EXISTS (SELECT 1 FROM filmstrip_jobs f WHERE f.obligation_id=o.id AND NOT ((f.status='retry' OR f.reason IS ?) AND f.attempted_at<=?))
                 AND (o.left_out_at IS NOT NULL OR EXISTS (SELECT 1 FROM evidence e WHERE e.obligation_id=o.id
                     AND e.kind='snapshot' AND e.created_at>=o.due_at AND e.label LIKE 'Matching dish still visible after the deadline%'))
                 ORDER BY o.due_at ASC LIMIT 16""", (stamp(now - KEEP), stamp(now), TIMEOUT, stamp(now-RETRY_DELAY))).fetchall()
