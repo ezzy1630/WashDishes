@@ -14,7 +14,7 @@ function calendarDay(stamp, timezone) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 /** @param {string} day @param {number} days */
-function shiftDay(day, days) {
+export function shiftDay(day, days) {
   const d = new Date(`${day}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
@@ -55,12 +55,7 @@ export function dutyCopy(data) {
 }
 /** @param {Week} data */
 export function weekSubtitle(data) {
-  const start = new Date(`${data.week.start}T12:00:00Z`),
-    end = new Date(`${data.week.end}T12:00:00Z`);
-  const sameMonth =
-    start.getUTCFullYear() === end.getUTCFullYear() &&
-    start.getUTCMonth() === end.getUTCMonth();
-  const range = `${date(data.week.start, data.week.timezone)} – ${sameMonth ? end.getUTCDate() : date(data.week.end, data.week.timezone)}`;
+  const range = weekRange(data.week.start, data.week.end, data.week.timezone);
   if (data.week.closed) return `${range} · closed`;
   // Format the API instant; the browser never derives a close time from week dates.
   const stamp = new Date(data.week.closes_at);
@@ -77,4 +72,20 @@ export function weekSubtitle(data) {
     .format(stamp)
     .replace(",", "");
   return `${range} · closes ${closes}`;
+}
+
+/** @param {string} start @param {string} end Exclusive local date @param {string} timezone */
+export function weekRange(start, end, timezone) {
+  const last = shiftDay(end, -1);
+  const sameMonth = start.slice(0, 7) === last.slice(0, 7);
+  return `${date(start, timezone)} – ${sameMonth ? Number(last.slice(8)) : date(last, timezone)}`;
+}
+/** @param {Week} data */
+export function pickDetail(data) {
+  if (!data.rules.enabled) return "Standings still count.";
+  const rows = [...data.standings].sort((a, b) => b.points - a.points);
+  const top = rows[0];
+  if (!top?.points) return "No named points yet.";
+  const lead = top.points - (rows[1]?.points || 0);
+  return `${top.points} ${top.points === 1 ? "point" : "points"} · ${lead ? `${lead} ahead` : "tied for first"}`;
 }

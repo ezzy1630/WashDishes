@@ -5,6 +5,7 @@ import {
   h,
   heading,
   imageURL,
+  mediaSize,
   photo,
   tag,
 } from "../ui.js";
@@ -47,8 +48,9 @@ function reviewedVisits(data) {
                 photo(
                   visit.filmstrip_url || visit.photo_url,
                   `${visit.title} reviewed photos`,
+                  Boolean(visit.filmstrip_url),
                   true,
-                  true,
+                  mediaSize(visit, Boolean(visit.filmstrip_url)),
                 ),
               ),
             ),
@@ -243,12 +245,24 @@ export function namePage(context) {
           { class: "help visit-metadata" },
           `${visit.area} · ${date(visit.at, data.week.timezone, true)} · ${visit.points} potential ${visit.points === 1 ? "point" : "points"}`,
         ),
-        photo(visit.filmstrip_url, `${visit.title} arrival photos`, true),
+        photo(
+          visit.filmstrip_url,
+          `${visit.title} arrival photos`,
+          true,
+          false,
+          mediaSize(visit),
+        ),
         h(
           "div",
           { class: "later-photo" },
           h("h3", {}, "The later photo"),
-          photo(visit.photo_url, `${visit.title}, later`),
+          photo(
+            visit.photo_url,
+            `${visit.title}, later`,
+            false,
+            false,
+            mediaSize(visit, false),
+          ),
         ),
       ),
       h(
@@ -258,7 +272,9 @@ export function namePage(context) {
         h(
           "p",
           { class: "help" },
-          "Name the person who used or left them. Carrying dishes doesn’t make them yours.",
+          visit.arrival_seen
+            ? "Name the person who used or left them. Carrying dishes doesn’t make them yours."
+            : "Arrival not recorded — only name someone if you know",
         ),
         visit.guess
           ? h(

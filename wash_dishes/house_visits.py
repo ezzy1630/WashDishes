@@ -132,6 +132,7 @@ def serialize(group: dict, raw: dict[int, dict], dishes: dict[int, dict], *, gue
                              can_name=False, can_dispute=False, can_settle=False)
                         for oid, target in group['duplicate_of'].items()],
             'filmstrip_url': filmstrip_url, 'photo_url': first['photo_url'],
+            **{key: first[key] for key in ('filmstrip_width', 'filmstrip_height', 'photo_width', 'photo_height')},
             'resident': common('resident'), 'named_by': common('named_by'), 'named_at': common('named_at'),
             'guess': guess, 'dispute': common('dispute'),
             **{key: complete and all(d[key] for d in members) for key in ('can_name', 'can_dispute', 'can_settle')}}

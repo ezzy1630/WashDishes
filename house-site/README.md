@@ -29,7 +29,11 @@ npm ci --prefix /Volumes/Neural/dishwatch-scratch/houseleague/laneC/tooling
 node house-site/dev/mock.mjs
 ```
 
-Open `http://127.0.0.1:4317/?mock=1`. Pick any of the ten names; the initial password is `house-demo`. Join: `/join?mock=1#demo-invite`; reset: `/join?mock=1#demo-reset`. Links are single-use until reset. Mock sign-in is enabled only on loopback plus `?mock=1`; the mock endpoints and fixture server do not deploy. The mock creates 1200×1668 two-column, three-row arrival grids from the private Lane D captures for visits 1643 and 1662. `dev/fixtures.py` writes these only to `/Volumes/Neural/dishwatch-scratch/houseleague/laneC/review3/fixtures/` (or the selected scratch directory), never to the checkout. The fixture card dates come from the actual frame timestamps; each grid repeats the card title with an explicit Demo label. Pillow is needed only for this local fixture preparation. Its banner labels all example names, decisions, and dates as a local demo. Those photos do not substantiate the example attributions.
+Open `http://127.0.0.1:4317/?mock=1`. Pick any of the ten names; the initial password is `house-demo`. Join: `/join?mock=1#demo-invite`; reset: `/join?mock=1#demo-reset`. Links are single-use until reset. Mock sign-in is enabled only on loopback plus `?mock=1`; the mock endpoints and fixture server do not deploy. The mock creates synthetic JPEG frames and passes them through the production
+`wash_dishes/filmstrip.py` renderer. No private captures are read. It includes
+six-frame and four-frame strips, later photos and an arrival-not-recorded visit;
+each source frame is labeled synthetic. `dev/fixtures.py` writes only to scratch.
+It uses the project's Python environment (override with `PYTHON`).
 
 With the mock running in another process:
 
@@ -47,12 +51,14 @@ Mock controls: local `POST /dev/control` accepts `reset`, `offline`, `empty`, `m
 
 ## Design and remaining integration
 
-This extends `../DESIGN.md`: local Mona Sans with its OFL license, graphite dark tokens, compact 24/27px titles, quiet borders, evidence-first composition, and review blue. Light mode uses a warm neutral counterpart. Controls are at least 44px, metadata stays readable, image frames reserve aspect ratios, arrival grids reserve Lane A’s 1200:1668 aspect ratio at the full evidence-column width, zoom uses a native keyboard-dismissable dialog with scrolling, pinch gestures, and labeled zoom controls, and there is no continuous animation. Zero-point housemates collapse into one alphabetic line; threshold copy states points and required lead in words. Duty copy uses the API reason and assignment date to distinguish a weekly pick, carry-over, house-vote override, or paused league. The phone layout places the review action before the standings; the desktop layout puts it alongside. The later photo is a zoomable thumbnail after the naming controls on phones, and stays beside the workflow on desktop. Root design files and the operator's existing app are unchanged.
+This extends `../DESIGN.md`: local Mona Sans with its OFL license, graphite dark tokens, compact 24/27px titles, quiet borders, evidence-first composition, and review blue. Light mode uses a warm neutral counterpart. Controls are at least 44px, metadata stays readable, image frames reserve aspect ratios, all images reserve their API-provided intrinsic aspect ratio at the full evidence-column width, zoom uses a native keyboard-dismissable dialog with scrolling, pinch gestures, and labeled zoom controls, and there is no continuous animation. Zero-point housemates collapse into one alphabetic line; threshold copy states points and required lead in words. Current-duty copy uses the API reason and assignment date to distinguish a weekly pick, carry-over, house-vote override, or paused league. The phone layout places the review action before the standings; the desktop layout puts it alongside. The later photo is a zoomable thumbnail after the naming controls on phones, and stays beside the workflow on desktop. Root design files and the operator's existing app are unchanged.
 
 Live Supabase credentials, the tunnel/CORS connection, Lane B's real responses, and Vercel-hosted routing/security headers remain integration work for the lead. Local Auth interception proves the client protocol and session behavior; it does not prove a provisioned account or live authorization. This lane creates no remote resources and performs no deployment, push, or PR.
 
 ## Frontend modules
 
 `js/app.js` owns navigation, session lifecycle, refresh, mutation handling, and the shell. Per-screen renderers live in `js/pages/{week,name,mine,past,auth}.js`; shared standings, visit records, and duty/date copy live beside them. Screens receive a typed context from the controller and never import it, keeping module dependencies one-way. `ui.js` and `api.js` remain the shared DOM/media and HTTP boundaries.
+
+Weekly pick details show points and lead without repeating the pick heading. Week ranges and chips display Sunday as the inclusive last day, using the API’s exclusive end boundary.
 
 The displayed week close time is formatted directly from the API’s `closes_at`. The mock closes Monday at noon; verification also supplies Tuesday at 3:30 PM to reject a hard-coded or browser-computed close time.

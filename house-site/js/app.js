@@ -141,7 +141,7 @@ function shell(content) {
       ? h(
           "div",
           { class: "demo-banner" },
-          "Local demo · Example names and results; private test photos",
+          "Synthetic demo · Example names and results",
         )
       : null,
     h(

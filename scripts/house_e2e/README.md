@@ -44,8 +44,8 @@ specified residents and Ezzy on current duty. Three current-week visits contain
 pan + plate + bowl (**4**), cup (**1**), pot (**2**). A fourth belongs to a closed
 week two Mondays ago. Only synthetic, visibly labeled JPEGs are generated.
 The seed uses a one-minute deadline and the real matching-late-photo label.
-Arrival evidence uses `filmstrip` / `arrival` and real capture metadata
-`{visit_id,obligation_ids,frames}`. Andrew is the first visit's camera guess.
+Arrival evidence uses the production `wash_dishes.filmstrip.render` with six synthetic frames in its two-column grid. The cup visit explicitly has an unrecorded arrival. Evidence uses `filmstrip` / `arrival` and real capture metadata
+`{visit_id,obligation_ids,frames,window:{arrival_recorded}}`. Andrew is the first visit's camera guess.
 Data and JPEGs are read back through authenticated HTTP before Chrome starts.
 Times follow the current house week in America/Los_Angeles; the first five
 minutes of Monday are refused because a current-week overdue fixture cannot

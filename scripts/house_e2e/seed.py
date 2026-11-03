@@ -17,20 +17,22 @@ def jpeg(title: str) -> bytes:
     draw.ellipse((200, 220, 480, 430), fill="#cccccc", outline="#eeeeee", width=8)
     draw.rectangle((475, 305, 730, 335), fill="#151515")
     draw.text((50, 40), "SYNTHETIC E2E FIXTURE - NOT HOUSEHOLD EVIDENCE", fill="white", font_size=25)
+    draw.text((160, 185), "SYNTHETIC DEMO", fill="white", font_size=25)
     draw.text((50, 90), title, fill="#ffdb85", font_size=30)
     result = BytesIO()
     image.save(result, "JPEG", quality=85)
     return result.getvalue()
 
 
-def filmstrip(title: str) -> bytes:
-    strip = Image.new("RGB", (1440, 270))
-    for index in range(3):
-        frame = Image.open(BytesIO(jpeg(f"{title}: arrival frame {index + 1}"))).resize((480, 270))
-        strip.paste(frame, (480 * index, 0))
-    result = BytesIO()
-    strip.save(result, "JPEG", quality=85)
-    return result.getvalue()
+def filmstrip(title: str, when: datetime, kinds: list[str], *, arrival_seen: bool = True) -> tuple[bytes, dict]:
+    from wash_dishes.filmstrip import render
+    frames = [{'at': (when + timedelta(seconds=offset * 10)).timestamp(),
+               'jpeg': jpeg(f"{title}: arrival frame {offset + 1}"), 'person_boxes': []} for offset in range(6)]
+    boxes = [[.2 + i * .15, .5, .12, .22] for i in range(len(kinds))]
+    item = {'dishes': [{'kind': k, 'quantity': 1} for k in kinds], 'location': 'Counter', 'box': boxes[0]}
+    picture = render(item, frames, boxes=boxes, already_at=when.timestamp() if not arrival_seen else None)
+    return picture, {'frames': [{k: v for k, v in f.items() if k != 'jpeg'} for f in frames],
+                     'window': {'arrival_recorded': arrival_seen}}
 
 
 def seed(app) -> dict:
@@ -68,13 +70,11 @@ def seed(app) -> dict:
                 store.set_suggestion(oid, residents["andrew"], 0.95, {"face": 0.95})
         evidence_id = f"e2efilmstrip{index + 1}"
         filename = evidence_id + ".jpg"
-        (store.root / "media" / filename).write_bytes(filmstrip(visit_id))
-        # Lane A's arrival metadata uses the existing evidence capture field.
-        frames = [{"at": (when + timedelta(seconds=offset)).isoformat(), "index": offset,
-                   "evidence_id": evidence_id} for offset in range(3)]
+        picture, capture = filmstrip(visit_id, when, kinds, arrival_seen=index != 1)
+        (store.root / "media" / filename).write_bytes(picture)
         store.add_evidence(ids[0], evidence_id, filename, "filmstrip", "arrival", at=when,
                            expires=now + timedelta(days=30),
-                           capture={"visit_id": visit_id, "obligation_ids": ids, "frames": frames})
+                           capture=capture | {"visit_id": visit_id, "obligation_ids": ids})
         visits.append({"id": visit_id, "dish_ids": ids, "points": sum(2 if k in ("pot", "pan") else 1 for k in kinds),
                        "evidence_id": evidence_id, "closed": index == 3})
     league.override(store, residents["ezzy"])

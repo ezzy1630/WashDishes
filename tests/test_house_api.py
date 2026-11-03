@@ -613,3 +613,47 @@ def test_shared_media_uses_table_membership_even_when_anchor_is_an_alias(house_c
     response = client.post(f"/house/api/dishes/{alias['id']}/name", json={'resident_id': client.people[0]['id']})
     assert response.status_code == 200, response.text
     assert response.json()['points'] == 0 and response.json()['filmstrip_url']
+
+
+def test_media_sizes_follow_actual_jpegs_and_cache_header_reads(house_client, monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from wash_dishes import house
+
+    client = house_client
+    item = late(client)
+    store = client.app.state.store
+    for evidence_id, kind, size in [('short-strip', 'filmstrip', (1200, 1177)), ('first', 'snapshot', (640, 360)), ('later', 'snapshot', (960, 540))]:
+        output = BytesIO()
+        Image.new('RGB', size, '#333333').save(output, 'JPEG')
+        (store.root / 'media' / f'{evidence_id}.jpg').write_bytes(output.getvalue())
+        capture = {'visit_id': 'short', 'obligation_ids': [item['id']], 'window': {'arrival_recorded': False}}
+        store.add_evidence(item['id'], evidence_id, f'{evidence_id}.jpg', kind, 'arrival' if kind == 'filmstrip' else 'Matching dish still visible after the deadline' if evidence_id == 'later' else 'Dish left unattended', capture=capture)
+    house._jpeg_size.cache_clear()
+    opened = []
+    original = Image.open
+    def track(path, *args, **kwargs):
+        opened.append(path)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Image, 'open', track)
+    for _ in range(2):
+        result = client.get('/house/api/week').json()
+        for record in [result['dishes'][0], result['visits'][0]]:
+            assert (record['filmstrip_width'], record['filmstrip_height']) == (1200, 1177)
+            assert (record['photo_width'], record['photo_height']) == (960, 540)
+            assert '/house/media/later?' in record['photo_url']
+        assert result['visits'][0]['arrival_seen'] is False
+    assert len(opened) == 2  # Both URLs share a header cache across dish/visit and repeated reads.
+    output = BytesIO()
+    Image.new('RGB', (640, 480)).save(output, 'JPEG')
+    (store.root / 'media' / 'later.jpg').write_bytes(output.getvalue())
+    updated = client.get('/house/api/week').json()['visits'][0]
+    assert (updated['photo_width'], updated['photo_height']) == (640, 480)
+    assert len(opened) == 3
+    with store.conn:
+        store.conn.execute("UPDATE evidence SET expired=1 WHERE id='short-strip'")
+    expired = client.get('/house/api/week').json()['visits'][0]
+    assert expired['filmstrip_url'] is None
+    assert expired['filmstrip_width'] is None and expired['filmstrip_height'] is None

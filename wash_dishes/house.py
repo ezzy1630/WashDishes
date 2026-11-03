@@ -13,17 +13,27 @@ import threading
 import time
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import timedelta
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import house_verdicts, house_visits, league
 from .house_auth import HouseConfig, JWTVerifier, SupabaseAdmin
 from .house_schema import slug_for
 from .store import parse_stamp, stamp, utcnow
+
+
+@lru_cache(maxsize=2048)
+def _jpeg_size(path: Path, modified: int, size: int) -> tuple[int, int]:
+    # File identity invalidates replacements; Pillow reads only the JPEG header.
+    with Image.open(path) as image:
+        return image.size
 
 
 class Write(BaseModel):
@@ -197,6 +207,17 @@ class House:
                 AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids')
                     WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids, *ids])]
 
+    def image_size(self, evidence, url) -> dict:
+        if not evidence or not url:
+            return {'width': None, 'height': None}
+        try:
+            path = self.store.root / 'media' / evidence['filename']
+            info = path.stat()
+            width, height = _jpeg_size(path, info.st_mtime_ns, info.st_size)
+            return {'width': width, 'height': height}
+        except (OSError, ValueError):
+            return {'width': None, 'height': None}
+
     def dish(self, item: dict, residents: list[dict], settings: dict, *, actor: dict | None, closed: bool,
              evidence: list[dict]) -> dict:
         people = {r['id']: {'id': r['id'], 'name': r['name']} for r in residents}
@@ -209,8 +230,11 @@ class House:
                        'settled_by': people.get(item['dispute_settled_by'])}
         media = [e for e in evidence if e['obligation_id'] == item['id']]
         filmstrip = next((e for e in reversed(media) if e['kind'] == 'filmstrip' and e['label'] == 'arrival'), None)
-        photo = next((e for e in media if e['kind'] == 'snapshot' and e['label'] in ('Dish left unattended', 'Matching dish still visible after the deadline')), None)
-        photo = photo or next((e for e in media if e['kind'] == 'snapshot'), None)
+        photos = [e for e in reversed(media) if e['kind'] == 'snapshot' and not e['expired'] and parse_stamp(e['expires_at']) > utcnow()]
+        # The site's “later photo” must be the matching deadline observation when retained.
+        photo = next((e for e in photos if e['label'] == 'Matching dish still visible after the deadline'), None)
+        photo = photo or next((e for e in photos if e['label'] == 'Dish left unattended'), None)
+        photo = photo or next(iter(photos), None)
         open_dispute = item.get('dispute_state') == 'open' or item['lifecycle'] == 'disputed'
         operator = actor is None
         actor_id = actor['id'] if actor else None
@@ -219,12 +243,15 @@ class House:
             if not evidence or evidence['expired'] or parse_stamp(evidence['expires_at']) <= utcnow():
                 return None
             return f"/api/evidence/{evidence['id']}" if operator else self.signed_url(evidence)
+        strip_url, still_url = photo_url(filmstrip), photo_url(photo)
         return {'id': item['id'], 'kind': item['dishes'][0]['kind'],
                 'title': self.store.dish_description(item['dishes']), 'location': item['location'],
                 'out_since': item['created_at'], 'due_at': item['due_at'], 'gone_at': item['resolved_at'],
                 'points': 0 if open_dispute else league.points(item, settings), 'resident': owner,
                 'named_by': by, 'named_at': item.get('named_at'), 'dispute': dispute,
-                'filmstrip_url': photo_url(filmstrip), 'photo_url': photo_url(photo),
+                'filmstrip_url': strip_url, 'photo_url': still_url,
+                **{f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, strip_url).items()},
+                **{f'photo_{k}': v for k, v in self.image_size(photo, still_url).items()},
                 'can_name': not closed and not open_dispute and (operator or owner is None),
                 'can_dispute': not closed and owner is not None and not open_dispute and (operator or owner['id'] == actor_id),
                 'can_settle': not closed and open_dispute and eligible_settler}
@@ -286,6 +313,7 @@ class House:
                 url = self.signed_url(filmstrip) if actor else f"/api/evidence/{filmstrip['id']}"
             for oid in group['dish_ids']:
                 formatted[oid]['filmstrip_url'] = url
+                formatted[oid].update({f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, url).items()})
             visits.append(house_visits.serialize(group, raw, formatted, guess=guess, filmstrip_url=url))
         return visits
 
@@ -453,7 +481,7 @@ class House:
                     item['due_at'] = item['followup_at']
                     result = self.dish(item, store.residents(), league.rules(store), actor=actor,
                                        closed=False, evidence=self.evidence_for([canonical]))
-                    result['filmstrip_url'] = visit['filmstrip_url']
+                    result.update({k: visit[k] for k in ('filmstrip_url', 'filmstrip_width', 'filmstrip_height')})
                     return result if canonical == oid else result | {'id': oid, 'duplicate_of': canonical, 'points': 0,
                         'can_name': False, 'can_dispute': False, 'can_settle': False}
                 league.close_weeks(store, now=now)

@@ -1,8 +1,9 @@
-import { date, h, tag } from "../ui.js";
+import { h, tag } from "../ui.js";
+import { weekRange } from "./league-copy.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @param {Week} data */
 export function range(data) {
-  return `${date(data.week.start, data.week.timezone)} – ${date(data.week.end, data.week.timezone)}`;
+  return weekRange(data.week.start, data.week.end, data.week.timezone);
 }
 /** @param {Week} data @param {string|number|undefined} viewerId */
 export function standings(data, viewerId) {

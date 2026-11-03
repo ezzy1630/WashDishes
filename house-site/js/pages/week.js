@@ -1,5 +1,5 @@
 import { h, heading, icon } from "../ui.js";
-import { dutyCopy, weekSubtitle } from "./league-copy.js";
+import { dutyCopy, weekSubtitle, pickDetail } from "./league-copy.js";
 /** @typedef {import("../types.js").Week} Week */
 import { standings } from "./standings.js";
 /** @param {import("../types.js").ScreenContext} context */
@@ -38,7 +38,7 @@ export function weekPage(context) {
                   ? "No one picked this week."
                   : "No clear pick yet.",
           ),
-          h("p", {}, data.pick.reason),
+          h("p", {}, pickDetail(data)),
           data.rules.enabled && !data.pick.name && duty
             ? h(
                 "p",

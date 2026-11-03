@@ -1,4 +1,4 @@
-import { button, date, field, h, photo, tag } from "../ui.js";
+import { button, date, field, h, photo, tag, mediaSize } from "../ui.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
 /** @param {Visit} visit */
@@ -134,13 +134,32 @@ export function record(dish, settle, context) {
       ),
       tag(`${dish.points} ${dish.points === 1 ? "point" : "points"}`),
     ),
-    photo(dish.filmstrip_url || dish.photo_url, `${dish.title} evidence`, true),
+    photo(
+      dish.filmstrip_url || dish.photo_url,
+      `${dish.title} evidence`,
+      Boolean(dish.filmstrip_url),
+      false,
+      mediaSize(dish, Boolean(dish.filmstrip_url)),
+    ),
     dish.filmstrip_url && dish.photo_url
       ? h(
           "details",
           { class: "later-details" },
           h("summary", {}, "See the later photo"),
-          photo(dish.photo_url, `${dish.title}, later`),
+          photo(
+            dish.photo_url,
+            `${dish.title}, later`,
+            false,
+            true,
+            mediaSize(dish, false),
+          ),
+        )
+      : null,
+    !dish.arrival_seen
+      ? h(
+          "p",
+          { class: "help" },
+          "Arrival not recorded — only name someone if you know",
         )
       : null,
     h("p", { class: "help attribution" }, named),

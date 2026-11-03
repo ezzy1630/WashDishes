@@ -1,47 +1,40 @@
-"""Private local-only two-column arrival grids. Never write camera images into the repo."""
+"""Synthetic local evidence rendered by the production filmstrip renderer."""
 import argparse
 import json
-from datetime import datetime
+import sys
+from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from PIL import Image
+
+sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).resolve().parents[2] / 'scripts/house_e2e')]
+from seed import jpeg  # noqa: E402
+
+from wash_dishes.filmstrip import render  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', required=True)
-args = parser.parse_args()
-output = Path(args.output).resolve()
-if not str(output).startswith('/Volumes/Neural/'):
-    raise SystemExit('Fixture output must stay under /Volumes/Neural.')
+output = Path(parser.parse_args().output).resolve()
+if not output.is_relative_to('/Volumes/Neural/dishwatch-scratch'):
+    raise SystemExit('Fixture output must stay in scratch.')
 output.mkdir(parents=True, exist_ok=True)
-source = Path('/Volumes/Neural/dishwatch-scratch/houseleague/laneD/detail_manifest.json')
-rows = {row['id']: row for row in json.loads(source.read_text())}
 titles = {101:'Pan and pot',103:'Dinner plate',104:'Pan by the stove',105:'Pot on the counter',106:'2 pans, pot and plate',110:'Pot and bowl',112:'Object near the stove'}
-try:
-    font = ImageFont.truetype(str(Path(__file__).parents[1]/'fonts/MonaSans.woff2'), 42)
-    small = ImageFont.truetype(str(Path(__file__).parents[1]/'fonts/MonaSans.woff2'), 27)
-    font.set_variation_by_axes([100,600])
-    small.set_variation_by_axes([100,450])
-except OSError:
-    font = ImageFont.truetype('/System/Library/Fonts/Supplemental/Arial.ttf',42)
-    small = ImageFont.truetype('/System/Library/Fonts/Supplemental/Arial.ttf',27)
+kinds = {101: ['pan', 'pot'], 103: ['plate'], 104: ['pan'], 105: ['pot'], 106: ['pan', 'pan', 'pot', 'plate'], 110: ['pot', 'bowl'], 112: ['bowl']}
 result = {}
-for index, (visit_id,title) in enumerate(titles.items()):
-    row = rows[1643 if index % 2 == 0 else 1662]
-    frames = row['frames']
-    stamps = [datetime.fromisoformat(f['utc_estimated']).astimezone(ZoneInfo('America/Los_Angeles')) for f in frames]
-    # Match Lane A's renderer: 1200×1668, two 564×423 panels per row.
-    grid = Image.new('RGB',(1200,1668),'#111316')
-    draw = ImageDraw.Draw(grid)
-    draw.text((24,22),f'Demo: {title} · arrival context',font=font,fill='#e8eaed')
-    draw.text((24,80),f'{stamps[0].strftime("%b %-d, %Y")} · Kitchen counter',font=small,fill='#c7cbd0')
-    draw.text((24,126),'Example names and results; review the photos',font=small,fill='#c7cbd0')
-    for i, frame in enumerate(frames):
-        # Keep the full scene, letterboxed inside each panel, without guessed marks.
-        image=ImageOps.contain(Image.open(frame['path']).convert('RGB'),(564,423))
-        x,y=24+(i%2)*588,186+(i//2)*491
-        grid.paste(image,(x+(564-image.width)//2,y+(423-image.height)//2))
-        draw.text((x,y+435),stamps[i].strftime('%-I:%M:%S %p'),font=small,fill='#e8eaed')
-    grid.save(output/f'{visit_id}-strip.jpg',quality=86)
-    Image.open(frames[-1]['path']).convert('RGB').resize((1600,900)).save(output/f'{visit_id}-later.jpg',quality=86)
-    result[str(visit_id)]={'at':stamps[0].isoformat(),'title':title,'area':'Kitchen counter','source_visit':row['id'],'frame_times':[s.isoformat() for s in stamps],'strip':f'{visit_id}-strip.jpg','photo':f'{visit_id}-later.jpg','width':1200,'height':1668}
+for index, (visit_id, title) in enumerate(titles.items()):
+    at = datetime(2026, 11, 2, 11, 14, tzinfo=ZoneInfo('America/Los_Angeles')) + timedelta(hours=index)
+    # A short strip exercises intrinsic sizing; missing arrival is not a naming cue.
+    count = 4 if visit_id == 103 else 6
+    frames = [{'at': (at + timedelta(minutes=i)).timestamp(), 'jpeg': jpeg(f'DEMO: {title}, frame {i+1}'), 'person_boxes': []} for i in range(count)]
+    boxes = [[.2 + i * .1, .4, .15, .35] for i in range(len(kinds[visit_id]))]
+    item = {'dishes': [{'kind': kind, 'quantity': 1} for kind in kinds[visit_id]], 'box': boxes[0], 'location': 'Dining table' if visit_id == 103 else 'Counter'}
+    strip = render(item, frames, boxes=boxes, already_at=at.timestamp() if visit_id == 103 else None)
+    photo = jpeg(f'DEMO: {title}, later photo')
+    (output / f'{visit_id}-strip.jpg').write_bytes(strip)
+    (output / f'{visit_id}-later.jpg').write_bytes(photo)
+    with Image.open(BytesIO(strip)) as image:
+        width, height = image.size
+    result[str(visit_id)] = {'at':at.isoformat(), 'title':title, 'area':item['location'], 'frame_times':[datetime.fromtimestamp(f['at'],at.tzinfo).isoformat() for f in frames], 'strip':f'{visit_id}-strip.jpg', 'photo':f'{visit_id}-later.jpg', 'width':width, 'height':height, 'photo_width':960, 'photo_height':540, 'arrival_seen':visit_id != 103}
 print(json.dumps(result))

@@ -184,3 +184,29 @@ def test_partial_boxes_collapse_but_a_nested_complete_pot_does_not(store):
             'last_seen_at':stamp(start+timedelta(hours=3))} for i,(b,k) in enumerate(zip(boxes,['pan','bowl','pan','pot','pan']))]
     groups=duplicate_clusters(items)
     assert [[m['id'] for m in g] for g in groups]==[[0,1,2,3],[4]]
+
+
+def test_short_filmstrip_fits_its_frames_and_uses_housemate_copy(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from PIL import ImageDraw
+
+    start = datetime(2026, 11, 2, 11, 14, tzinfo=ZoneInfo('America/Los_Angeles')).timestamp()
+    item = {'dishes': [{'kind': 'plate', 'quantity': 1}], 'location': 'Dining table', 'box': BOX}
+    frames = [{'at': start + i * 120, 'jpeg': jpeg((80, 90, 100)), 'person_boxes': []} for i in range(4)]
+    text = []
+    original = ImageDraw.ImageDraw.text
+    def track(self, xy, value, *args, **kwargs):
+        text.append(value)
+        return original(self, xy, value, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', track)
+    picture = filmstrip.render(item, frames)
+    with Image.open(io.BytesIO(picture)) as image:
+        assert image.size == (1200, 1177)
+    assert 'Plate on the dining table' in text
+    assert 'Nov 2 · 11:14–11:20 AM' in text
+    assert not any('arrival context' in value or 'human review' in value for value in text)
+    text.clear()
+    filmstrip.render(item, frames, already_at=start)
+    assert 'Already there at 11:14 AM — arrival not recorded' in text

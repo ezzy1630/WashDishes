@@ -157,14 +157,12 @@ Corners are gently rounded and functional. Proof pictures and the Send button us
 ### Weekly kitchen duty
 
 People begins with This week: a labeled native week select, a plain pick sentence,
-current duty, and ruled resident rows with modest right-aligned points. All active
-housemates appear, including zeroes. Unnamed count links into visit review; the
+current duty, and ruled resident rows with modest right-aligned points. Zero-point housemates collapse into one alphabetical line. Unnamed count links into visit review; the
 all-time named-picture list stays below. Closed weeks say that names, disputes and
 points are frozen. Duty always describes the current assignment.
 
-Visit review uses arrival filmstrips or saved photos, a one-tap camera-guess
-confirmation when available, and a labeled housemate select. A guess remains
-explicitly provisional. Settlement buttons say It was them and Not them. Existing
+Visit review uses arrival filmstrips or saved photos, the same alphabetical one-tap name chips as Send, with an outlined camera guess and a five-second Undo before saving. A guess remains
+explicitly provisional. When arrival is missing, it says “Arrival not recorded — only name someone if you know.” Settlement buttons say It was them and Not them. Existing
 graphite tokens, native fields and 13px readable metadata (`#919aa4`) apply;
 no shadows or continuous animations. At 390px, rows stay readable, settings
 fields stack, and all actions remain inside the 16px gutters.

@@ -99,6 +99,7 @@ export function dish(value) {
     dispute: nullable(d.dispute, dispute),
     filmstrip_url: nullable(d.filmstrip_url, string),
     photo_url: nullable(d.photo_url, string),
+    ...mediaSize(d),
     can_name: boolean(d.can_name),
     can_dispute: boolean(d.can_dispute),
     can_settle: boolean(d.can_settle),
@@ -189,6 +190,8 @@ export function visit(value) {
     points: number(v.points),
     filmstrip_url: nullable(v.filmstrip_url, string),
     photo_url: nullable(v.photo_url, string),
+    ...mediaSize(v),
+    arrival_seen: boolean(v.arrival_seen),
     resident: nullable(v.resident, resident),
     named_by: nullable(v.named_by, resident),
     named_at: nullable(v.named_at, string),
@@ -213,4 +216,21 @@ function verdict(value) {
   )
     throw new Error("Invalid visit verdict");
   return { kind, by: resident(v.by), at: string(v.at) };
+}
+
+/** @param {unknown} value */
+function dimension(value) {
+  const n = number(value);
+  if (!Number.isInteger(n) || n <= 0)
+    throw new Error("Invalid image dimension");
+  return n;
+}
+/** @param {Record<string, unknown>} value */
+function mediaSize(value) {
+  return {
+    filmstrip_width: nullable(value.filmstrip_width, dimension),
+    filmstrip_height: nullable(value.filmstrip_height, dimension),
+    photo_width: nullable(value.photo_width, dimension),
+    photo_height: nullable(value.photo_height, dimension),
+  };
 }

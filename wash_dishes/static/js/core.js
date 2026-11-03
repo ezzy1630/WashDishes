@@ -204,6 +204,7 @@ export function toast(message, { error = false, action = null, timeout = 6000 } 
     h("button", { type: "button", class: "icon-btn", "aria-label": "Dismiss", onclick: () => item.remove() }, icon("close", 14)));
   root.append(item);
   setTimeout(() => item.remove(), timeout);
+  return item;
 }
 
 export function button(label, onclick, { kind = "", iconName = null, type = "button", title } = {}) {
