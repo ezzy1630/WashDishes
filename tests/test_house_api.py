@@ -439,3 +439,177 @@ def test_sign_up_does_not_block_camera_store_work(house_client, monkeypatch):
         return 'network-wait-account'
     monkeypatch.setattr(client.app.state.house.admin, 'account', account)
     assert client.post('/house/api/join', json={'token': token, 'password': 'test-password'}).status_code == 200
+
+
+def stored_visit(client, items, *, aliases=None, arrival_seen=False, evidence=True, visit_id='arrival-trip'):
+    store = client.app.state.store
+    capture = {'visit_id': visit_id, 'obligation_ids': [d['id'] for d in items],
+               'canonical_obligation_ids': [d['id'] for d in items if d['id'] not in (aliases or {})],
+               'duplicate_of': {str(k): v for k, v in (aliases or {}).items()},
+               'window': {'arrival_recorded': arrival_seen}, 'frames': []}
+    eid = visit(client, items, visit_id) if evidence else None
+    with store.conn:
+        if eid:
+            store.conn.execute('UPDATE evidence SET capture=? WHERE id=?', (json.dumps(capture), eid))
+        store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?)', (visit_id, eid, stamp(), json.dumps(capture)))
+        store.conn.executemany('INSERT OR REPLACE INTO arrival_visit_members VALUES(?,?)', [(d['id'], visit_id) for d in items])
+    return eid
+
+
+def test_arrival_aliases_count_once_and_inherit_visit_review(house_client):
+    client = house_client
+    items = [late(client) for _ in range(4)]
+    canonical = items[0]['id']
+    aliases = {d['id']: canonical for d in items[1:]}
+    stored_visit(client, items, aliases=aliases)
+    board = client.get('/house/api/week').json()
+    assert len(board['dishes']) == 1 and board['unnamed_count'] == board['unreviewed_count'] == 1
+    visit_row = board['visits'][0]
+    assert visit_row['dish_ids'] == [canonical] and visit_row['alias_ids'] == list(aliases)
+    assert visit_row['title'] == 'Pan' and visit_row['points'] == 2
+    # Legacy dish routes for aliases must reach the canonical naming unit too.
+    result = client.post(f"/house/api/dishes/{items[-1]['id']}/name", json={'resident_id': client.people[1]['id']})
+    assert result.status_code == 200, result.text
+    assert result.json()['points'] == 0 and result.json()['resident']['name'] == 'Bo'
+    board = client.get('/house/api/week').json()
+    assert board['standings'][0]['points'] == 2 and board['standings'][0]['dishes'] == 1
+    assert board['unreviewed_count'] == 0
+    assert all(a['points'] == 0 and a['resident']['name'] == 'Bo' for a in board['visits'][0]['aliases'])
+    operator(client)
+    assert client.get('/api/league/week').json()['standings'] == board['standings']
+    response = client.post('/api/league/visits/arrival-trip/verdict', json={'verdict': 'clean'})
+    assert response.status_code == 200, response.text
+    assert all(a['verdict']['verdict'] == 'clean' for a in response.json()['aliases'])
+    assert client.get('/api/league/week').json()['visits'] == []
+
+
+def test_untimed_named_observation_scores_but_pickup_without_late_photo_does_not(house_client):
+    client, store = house_client, house_client.app.state.store
+    observed, pickup = late(client, verified=False), late(client, verified=False)
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET timing_known=0 WHERE id IN (?,?)', (observed['id'], pickup['id']))
+        store.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=? WHERE id=?", (stamp(), pickup['id']))
+    store.add_evidence(observed['id'], 'late-observed', 'late.jpg', 'snapshot',
+                       'Matching dish still visible after the deadline', at=utcnow())
+    board = client.get('/house/api/week').json()
+    assert [d['id'] for d in board['dishes']] == [observed['id']]
+    assert board['visits'][0]['arrival_seen'] is False
+    result = client.post(f"/house/api/visits/dish-{observed['id']}/name", json={'resident_id': client.people[0]['id']})
+    assert result.status_code == 200, result.text
+    assert client.get('/house/api/week').json()['standings'][0]['points'] == 2
+    # Unknown original arrival must still obey the frozen deadline week.
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=? WHERE id=?', (stamp(utcnow() - timedelta(weeks=2)), observed['id']))
+    assert client.post(f"/house/api/visits/dish-{observed['id']}/name", json={'resident_id': client.people[1]['id']}).status_code == 409
+
+
+def test_table_visit_without_filmstrip_and_expired_media_keeps_membership(house_client):
+    client = house_client
+    items = [late(client), late(client, kind='bowl')]
+    stored_visit(client, items, evidence=False)
+    board = client.get('/house/api/week').json()
+    assert len(board['visits']) == 1 and board['visits'][0]['id'] == 'arrival-trip'
+    assert board['visits'][0]['filmstrip_url'] is None
+    assert client.post('/house/api/visits/arrival-trip/name', json={'resident_id': client.people[0]['id']}).status_code == 200
+    assert client.get('/house/api/week').json()['standings'][0]['points'] == 3
+
+
+def test_regenerated_visit_supersedes_old_write_routes_and_old_media(house_client):
+    client, store = house_client, house_client.app.state.store
+    items = [late(client), late(client, kind='bowl')]
+    old = visit(client, items, 'old-trip')
+    new = stored_visit(client, items, arrival_seen=True)
+    with store.conn:
+        store.conn.execute('UPDATE evidence SET created_at=? WHERE id=?', (stamp(utcnow() - timedelta(minutes=1)), old))
+        store.conn.execute('UPDATE evidence SET expired=1 WHERE id=?', (new,))
+    board = client.get('/house/api/week').json()
+    assert [v['id'] for v in board['visits']] == ['arrival-trip']
+    assert board['visits'][0]['arrival_seen'] is True
+    assert board['visits'][0]['filmstrip_url'] is None
+    assert client.post('/house/api/visits/old-trip/name', json={'resident_id': client.people[0]['id']}).status_code == 409
+    assert client.get('/house/api/week').json()['unreviewed_count'] == 1
+
+
+def test_human_duplicate_inside_a_visit_does_not_block_naming(house_client):
+    client, store = house_client, house_client.app.state.store
+    original, alias = late(client), late(client)
+    stored_visit(client, [original, alias])
+    with store.conn:
+        store.mark_duplicate(alias['id'], original['id'], client.people[0]['id'])
+    board = client.get('/house/api/week').json()
+    assert len(board['visits']) == 1 and board['visits'][0]['can_name']
+    assert board['visits'][0]['dish_ids'] == [original['id']]
+    assert board['visits'][0]['points'] == 2
+    assert client.post('/house/api/visits/arrival-trip/name', json={'resident_id': client.people[0]['id']}).status_code == 200
+    assert client.get('/house/api/week').json()['standings'][0]['points'] == 2
+
+
+def test_closed_week_keeps_canonical_membership_but_expires_shared_media(house_client):
+    client, store = house_client, house_client.app.state.store
+    items = [late(client) for _ in range(2)]
+    eid = stored_visit(client, items, aliases={items[1]['id']: items[0]['id']})
+    store.action(items[0]['id'], 'confirm', resident_id=client.people[0]['id'])
+    for item in items:
+        store.set_suggestion(item['id'], client.people[1]['id'], .9)
+    old = utcnow() - timedelta(weeks=2)
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=?,created_at=?', (stamp(old), stamp(old - timedelta(hours=3))))
+    start = league.week_bounds(now=old)['start']
+    board = client.get('/house/api/week', params={'start': start}).json()
+    assert board['week']['closed'] and len(board['dishes']) == 1
+    assert board['visits'][0]['alias_ids'] == [items[1]['id']]
+    assert board['visits'][0]['filmstrip_url']
+    assert board['standings'][0]['points'] == 2
+    assert board['visits'][0]['guess']['name'] == 'Bo'
+    with store.conn:
+        store.conn.execute('UPDATE evidence SET expired=1 WHERE id=?', (eid,))
+        store.conn.execute('DELETE FROM arrival_visit_members')
+    store.set_suggestion(items[1]['id'], client.people[2]['id'], .9)
+    frozen = client.get('/house/api/week', params={'start': start}).json()
+    assert frozen['visits'][0]['alias_ids'] == [items[1]['id']]
+    assert frozen['visits'][0]['filmstrip_url'] is None
+    assert frozen['standings'] == board['standings']
+    assert frozen['visits'][0]['guess'] == board['visits'][0]['guess']
+
+
+def test_alias_deadline_cannot_move_a_physical_dish_into_another_week(house_client):
+    client, store = house_client, house_client.app.state.store
+    original, alias = late(client), late(client)
+    stored_visit(client, [original, alias], aliases={alias['id']: original['id']})
+    old = utcnow() - timedelta(weeks=2)
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=?,created_at=? WHERE id=?',
+                           (stamp(old), stamp(old - timedelta(hours=3)), original['id']))
+    assert client.get('/house/api/week').json()['visits'] == []
+    board = client.get('/house/api/week', params={'start': league.week_bounds(now=old)['start']}).json()
+    assert len(board['dishes']) == len(board['visits']) == 1
+    assert board['visits'][0]['alias_ids'] == [alias['id']]
+
+
+def test_duplicate_chains_cannot_create_cycles(house_client):
+    client, store = house_client, house_client.app.state.store
+    first, second, third = [late(client) for _ in range(3)]
+    with store.conn:
+        store.mark_duplicate(second['id'], first['id'], None)
+        store.mark_duplicate(third['id'], second['id'], None)
+        with pytest.raises(ValueError, match='itself'):
+            store.mark_duplicate(first['id'], third['id'], None)
+    board = client.get('/house/api/week').json()
+    assert len(board['dishes']) == 1 and board['visits'][0]['alias_ids'] == [second['id'], third['id']]
+    assert client.post(f"/house/api/dishes/{third['id']}/name", json={'resident_id': client.people[0]['id']}).status_code == 200
+    assert client.get('/house/api/week').json()['standings'][0]['points'] == 2
+
+
+def test_shared_media_uses_table_membership_even_when_anchor_is_an_alias(house_client):
+    client, store = house_client, house_client.app.state.store
+    original, alias = late(client), late(client)
+    eid = stored_visit(client, [original, alias], aliases={alias['id']: original['id']})
+    with store.conn:
+        store.conn.execute("UPDATE evidence SET obligation_id=?,capture='{}' WHERE id=?", (alias['id'], eid))
+    board = client.get('/house/api/week').json()
+    url = board['visits'][0]['filmstrip_url']
+    assert url and eid in url
+    assert client.get(url).status_code == 200
+    response = client.post(f"/house/api/dishes/{alias['id']}/name", json={'resident_id': client.people[0]['id']})
+    assert response.status_code == 200, response.text
+    assert response.json()['points'] == 0 and response.json()['filmstrip_url']

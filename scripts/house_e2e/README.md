@@ -21,7 +21,11 @@ executed/pending coverage, checkout HEAD and SHA-256 hashes of harness sources.
 `*-steps.json` indexes screenshots; failed steps capture every open actor page.
 `latest-run.txt` points to the most recent directory. Logs, profiles, passwords,
 signing keys, SQLite databases and all images remain there. Do not commit them.
-All owned servers and Chrome processes stop on success or failure.
+All owned servers and Chrome processes stop on success or failure. The three
+loopback origins use HTTPS with a per-run certificate: Python/Node trust that
+certificate explicitly and Chrome pins its public key for this run. No product
+origin validation or TLS verification is disabled. `SUPABASE_SECRET_KEY` uses
+the fake Auth admin key required by the merged API.
 
 ## Dependencies
 

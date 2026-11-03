@@ -191,9 +191,11 @@ class House:
             return []
         return [dict(r) for r in self.store.conn.execute(
             f"""SELECT * FROM evidence WHERE kind IN ('snapshot','filmstrip') AND (
-                obligation_id IN ({','.join('?' for _ in ids)}) OR (kind='filmstrip' AND label='arrival'
+                obligation_id IN ({','.join('?' for _ in ids)}) OR id IN (
+                    SELECT v.evidence_id FROM arrival_visits v JOIN arrival_visit_members m ON m.visit_id=v.id
+                    WHERE m.obligation_id IN ({','.join('?' for _ in ids)})) OR (kind='filmstrip' AND label='arrival'
                 AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids')
-                    WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids])]
+                    WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids, *ids])]
 
     def dish(self, item: dict, residents: list[dict], settings: dict, *, actor: dict | None, closed: bool,
              evidence: list[dict]) -> dict:
@@ -239,7 +241,9 @@ class House:
             dishes = [self.dish(d, residents, data['rules'], actor=actor, closed=closed, evidence=evidence) for d in data['dishes']]
             raw = {d['id']: d for d in data['dishes']}
             basis = data.get('guess_basis') if closed else self.store.suggestion_basis(list(raw))
-            visits = self.visits(data['dishes'], dishes, evidence, residents, basis, actor=actor)
+            visits = self.visits(data['dishes'], dishes, evidence, residents, basis, actor=actor,
+                                 groups=data.get('visit_groups'), duplicates=data.get('duplicates'),
+                                 alias_guesses=data.get('alias_guesses', {}))
             hidden = set() if _include_hidden else {r[0] for r in self.store.conn.execute('SELECT visit_id FROM house_hidden_visits WHERE resident_id=?', (actor['id'] if actor else 0,))}
             hidden_dishes = {oid for v in visits if v['id'] in hidden for oid in v['dish_ids']}
             visits = [v for v in visits if v['id'] not in hidden]
@@ -260,32 +264,40 @@ class House:
                 'unreviewed_count': sum(v['resident'] is None for v in visits),
                 'verdicts': verdicts, 'weeks': weeks}
 
-    def visits(self, raw_dishes, dishes, evidence, residents, basis, *, actor):
+    def visits(self, raw_dishes, dishes, evidence, residents, basis, *, actor, groups=None, duplicates=None, alias_guesses=None):
         raw = {d['id']: d for d in raw_dishes}
         formatted = {d['id']: d for d in dishes}
         people = {r['id']: r for r in residents}
         visits = []
-        for group in house_visits.groups(raw_dishes, evidence):
-            guesses = {raw[oid]['suggested_resident_id'] for oid in group['dish_ids']}
+        for group in house_visits.groups(raw_dishes, evidence, visits=groups, duplicates=duplicates):
+            guess_ids = [*group['dish_ids'], *group['alias_ids']]
+            guesses = {raw[oid]['suggested_resident_id'] if oid in raw else (alias_guesses or {}).get(str(oid), (alias_guesses or {}).get(oid))
+                       for oid in guess_ids}
             guess_id = next(iter(guesses)) if len(guesses) == 1 else None
             person = people.get(guess_id)
             guess = {'resident_id': person['id'], 'name': person['name'],
                      'basis': next((basis.get(str(oid), basis.get(oid)) for oid in group['dish_ids']
                                     if basis.get(str(oid), basis.get(oid))), 'Appearance suggestion; check the arrival photos.')} if person else None
             filmstrip = group['filmstrip']
+            # Refresh retention from live evidence; never fall back to a superseded strip.
+            filmstrip = next((e for e in evidence if filmstrip and e['id'] == filmstrip['id']), None)
             url = None
             if filmstrip and not filmstrip['expired'] and parse_stamp(filmstrip['expires_at']) > utcnow():
                 url = self.signed_url(filmstrip) if actor else f"/api/evidence/{filmstrip['id']}"
+            for oid in group['dish_ids']:
+                formatted[oid]['filmstrip_url'] = url
             visits.append(house_visits.serialize(group, raw, formatted, guess=guess, filmstrip_url=url))
         return visits
 
     def visit_for_dish(self, oid: int) -> dict | None:
-        for row in self.store.conn.execute("""SELECT * FROM evidence WHERE kind='filmstrip' AND label='arrival'
-            AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids') WHERE value=?)
-            ORDER BY created_at DESC,id DESC""", (oid,)):
-            group = house_visits.metadata(dict(row))
-            if group and oid in group['dish_ids']:
-                return group
+        visits = house_visits.catalog(self.store)
+        aliases = house_visits.duplicate_map(self.store, visits)
+        canonical = aliases.get(oid, oid)
+        for group in visits:
+            if canonical in group['dish_ids']:
+                return group | {'dish_ids': [i for i in group['dish_ids'] if i not in aliases]}
+        if oid in aliases:
+            return {'id': f'dish-{canonical}', 'dish_ids': [canonical]}
         return None
 
     def change_visit(self, visit_id: str, action: str, body: dict, actor: dict | None) -> dict:
@@ -293,23 +305,43 @@ class House:
         with store.lock:
             league.close_weeks(store)
             group = self.visit_group(visit_id)
+            first = store.obligation(group['dish_ids'][0])
+            try:
+                league.assert_unfrozen(store, first)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+            week = league.week_bounds(now=parse_stamp(first['followup_at']))['start']
+            current = next((v for v in self.week(week, actor, _include_hidden=True)['visits'] if v['id'] == visit_id), None)
+            if current is None or set(current['dish_ids']) != set(group['dish_ids']):
+                raise HTTPException(409, 'Some dishes in this visit cannot be reviewed. Refresh the week.')
             with store.conn:
                 at = utcnow()
                 for oid in group['dish_ids']:
                     self.change(oid, action, body, actor, _in_visit=True, _at=at)
             first = store.obligation(group['dish_ids'][0])
-            week = league.week_bounds(now=parse_stamp(first['due_at']))['start']
+            week = league.week_bounds(now=parse_stamp(first['followup_at']))['start']
             return next(v for v in self.week(week, actor, _include_hidden=True)['visits'] if v['id'] == visit_id)
 
     def visit_group(self, visit_id: str, *, allow_member=False) -> dict:
-        for row in self.store.conn.execute("SELECT * FROM evidence WHERE kind='filmstrip' AND label='arrival' AND CAST(json_extract(capture,'$.visit_id') AS TEXT)=? ORDER BY created_at DESC,id DESC", (visit_id,)):
-            if group := house_visits.metadata(dict(row)):
-                return group
+        visits = house_visits.catalog(self.store)
+        aliases = house_visits.duplicate_map(self.store, visits)
+        for group in visits:
+            if group['id'] == visit_id:
+                members = [oid for oid in group['dish_ids'] if oid not in aliases]
+                if not members:
+                    raise HTTPException(409, 'This visit contains only duplicates. Review the original visit.')
+                return group | {'dish_ids': members}
+        if self.store.conn.execute("SELECT 1 FROM arrival_visits WHERE id=?", (visit_id,)).fetchone() or any(
+                (group := house_visits.metadata(dict(row))) and group['id'] == visit_id
+                for row in self.store.conn.execute("SELECT * FROM evidence WHERE kind='filmstrip' AND label='arrival'")):
+            raise HTTPException(409, 'That visit was superseded. Refresh the week before reviewing it.')
         if visit_id.startswith('dish-') and visit_id[5:].isdigit():
             oid = int(visit_id[5:])
             if not allow_member and self.visit_for_dish(oid):
                 raise HTTPException(409, 'This dish belongs to a visit. Refresh the week and name the visit together.')
-            return {'id': visit_id, 'dish_ids': [oid]}
+            if oid in aliases:
+                oid = aliases[oid]
+            return {'id': f'dish-{oid}', 'dish_ids': [oid]}
         raise HTTPException(404, 'That visit was not found.')
 
     def verdict(self, visit_id: str, body: Verdict, actor: dict | None) -> dict:
@@ -327,9 +359,9 @@ class House:
                     league.assert_unfrozen(store, item)
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from None
-            if not items[0]['due_at']:
+            if not items[0]['followup_at']:
                 raise HTTPException(404, 'That visit is not in the house league.')
-            week = league.week_bounds(now=parse_stamp(items[0]['due_at']))['start']
+            week = league.week_bounds(now=parse_stamp(items[0]['followup_at']))['start']
             # Ignore this user's skip while retaining their signed-media/permission contract.
             current = next((v for v in self.week(week, actor, _include_hidden=True)['visits'] if v['id'] == visit_id), None)
             if current is None or set(current['dish_ids']) != set(group['dish_ids']):
@@ -344,7 +376,7 @@ class House:
                     raise HTTPException(400, 'A visit cannot duplicate itself.')
                 targets = [store.obligation(oid) for oid in target['dish_ids']]
                 for target_item in targets:
-                    bounds = league.week_bounds(now=parse_stamp(target_item['due_at'])) if target_item['due_at'] else None
+                    bounds = league.week_bounds(now=parse_stamp(target_item['followup_at'])) if target_item['followup_at'] else None
                     if not bounds or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
                         raise HTTPException(400, 'Choose an original visit that is still in the league.')
             with store.conn:
@@ -376,11 +408,13 @@ class House:
                         (visit_id, body.verdict, actor_id, stamp(), body.of_visit_id, json.dumps(group['dish_ids']), current['title']))
                     store._event(None, 'house_visit_verdict', f"{actor['name'] if actor else 'The operator'} marked {current['title']}: {body.verdict}.",
                         {'visit_id': visit_id, 'obligation_ids': group['dish_ids'], 'verdict': body.verdict, 'by': actor_id, 'of_visit_id': body.of_visit_id})
-            return current | {'points': 0 if body.verdict != 'cant_tell' else current['points'],
+            answer = current | {'points': 0 if body.verdict != 'cant_tell' else current['points'],
                 'hidden': body.verdict == 'cant_tell', 'verdict': None if body.verdict == 'cant_tell' else {
                     'verdict': body.verdict, 'by': {'id': actor['id'], 'name': actor['name']} if actor else None,
                     'at': stamp(), 'of_visit_id': body.of_visit_id},
                 'can_name': False, 'can_dispute': False, 'can_settle': False}
+            answer['aliases'] = [alias | {'verdict': answer['verdict']} for alias in current['aliases']]
+            return answer
 
     def undo_verdict(self, visit_id: str) -> dict:
         store = self.store
@@ -413,11 +447,18 @@ class House:
             if not _in_visit:
                 group = self.visit_for_dish(oid)
                 if group:
-                    self.change_visit(group['id'], action, body, actor)
-                    return self.dish(store.obligation(oid), store.residents(), league.rules(store), actor=actor,
-                                     closed=False, evidence=self.evidence_for([oid]))
+                    visit = self.change_visit(group['id'], action, body, actor)
+                    canonical = house_visits.duplicate_map(store).get(oid, oid)
+                    item = store.obligation(canonical)
+                    item['due_at'] = item['followup_at']
+                    result = self.dish(item, store.residents(), league.rules(store), actor=actor,
+                                       closed=False, evidence=self.evidence_for([canonical]))
+                    result['filmstrip_url'] = visit['filmstrip_url']
+                    return result if canonical == oid else result | {'id': oid, 'duplicate_of': canonical, 'points': 0,
+                        'can_name': False, 'can_dispute': False, 'can_settle': False}
                 league.close_weeks(store, now=now)
             item = store.obligation(oid)
+            item['due_at'] = item['followup_at']
             try:
                 league.assert_unfrozen(store, item)
             except ValueError as exc:
@@ -476,6 +517,7 @@ class House:
                     store._event(oid, 'house_dispute_settled', 'It was them; points restored.' if upheld else 'Not them; back to unnamed.',
                                  {'actor_id': actor_id, 'decision': body['decision'], 'resident_id': item['resident_id']}, at=now)
                 updated = store.obligation(oid)
+                updated['due_at'] = updated['followup_at']
                 updated['human_named'] = item['human_named'] or bool(updated['named_at'])
                 return self.dish(updated, store.residents(), league.rules(store), actor=actor, closed=False, evidence=self.evidence_for([oid]))
 
@@ -524,13 +566,15 @@ class House:
             if not evidence or evidence['kind'] not in ('snapshot', 'filmstrip') or not evidence['obligation_id']:
                 raise HTTPException(404, 'Photo not found.')
             visible = False
-            group = house_visits.metadata(evidence)
+            group = next((g for g in house_visits.catalog(store)
+                          if g['filmstrip'] and g['filmstrip']['id'] == evidence_id), None)
+            group = group or house_visits.metadata(evidence)
             ids = group['dish_ids'] if group else [evidence['obligation_id']]
             for oid in ids:
                 item = store.obligation(oid)
-                if not item['due_at']:
+                if not item['followup_at']:
                     continue
-                start = league.week_bounds(now=parse_stamp(item['due_at']))['start']
+                start = league.week_bounds(now=parse_stamp(item['followup_at']))['start']
                 result = league.result(store, start)
                 visible = any(d['id'] == item['id'] for d in result['dishes'])
                 if result['week']['closed']:

@@ -96,7 +96,7 @@ def test_left_out_predicate_includes_gone_unknown_but_excludes_unverified_and_in
         store.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=? WHERE id=?", (stamp(now), valid[1]['id']))
         store.conn.execute("UPDATE obligations SET lifecycle='disputed' WHERE id=?", (valid[2]['id'],))
         store.conn.execute("UPDATE obligations SET archived_at=? WHERE id=?", (stamp(now), valid[3]['id']))
-    for change in ("lifecycle='dismissed'", "lifecycle='cleared'", 'timing_known=0', 'overdue_verified=0',
+    for change in ("lifecycle='dismissed'", "lifecycle='cleared'", 'overdue_verified=0',
                    "lifecycle='resolved',resolved_at=created_at"):
         item = late_record(store)
         with store.lock, store.conn:
@@ -199,3 +199,15 @@ def test_non_monday_and_future_week_are_refused(store):
         league.week_bounds('2025-11-04')
     with pytest.raises(ValueError, match='not started'):
         league.result(store, '2099-01-05')
+
+
+def test_late_photo_requires_matching_still_before_removal(store):
+    now = utcnow()
+    valid, clip, after_removal = [late_record(store, verified=False) for _ in range(3)]
+    for item, kind in ((valid, 'snapshot'), (clip, 'clip'), (after_removal, 'snapshot')):
+        store.add_evidence(item['id'], f"late-{item['id']}", 'late.jpg', kind,
+                           'Matching dish still visible after the deadline', at=now)
+    with store.conn:
+        store.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=? WHERE id=?",
+                           (stamp(now - timedelta(seconds=30)), after_removal['id']))
+    assert [d['id'] for d in league.left_out(store, now - timedelta(days=1), now)] == [valid['id']]

@@ -58,8 +58,8 @@ def seed(app) -> dict:
                                            handler_key=visit_id, track_key=f"{visit_id}-{kind}")
             oid = item["id"]
             ids.append(oid)
-            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind}"), "left unattended", at=when)
-            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind} still out"), "still_out", at=when + timedelta(minutes=2))
+            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind}"), "Dish left unattended", at=when)
+            media.save_snapshot(oid, jpeg(f"{visit_id}: {kind} still out"), "Matching dish still visible after the deadline", at=when + timedelta(minutes=2))
             store.record_seen(oid, when + timedelta(minutes=2))
             if index == 0:
                 store.set_suggestion(oid, residents["andrew"], 0.95, {"face": 0.95})
@@ -70,8 +70,9 @@ def seed(app) -> dict:
         frames = [{"at": (when + timedelta(seconds=offset)).isoformat(), "index": offset,
                    "evidence_id": evidence_id} for offset in range(3)]
         store.add_evidence(ids[0], evidence_id, filename, "filmstrip", "arrival", at=when,
-                           expires=now + timedelta(days=30),
-                           capture={"visit_id": visit_id, "obligation_ids": ids, "frames": frames})
+                           expires=now + timedelta(days=7),
+                           capture={"visit_id": visit_id, "obligation_ids": ids, "canonical_obligation_ids": ids,
+                                    "duplicate_of": {}, "window": {"arrival_recorded": True}, "frames": frames})
         visits.append({"id": visit_id, "dish_ids": ids, "points": sum(2 if k in ("pot", "pan") else 1 for k in kinds),
                        "evidence_id": evidence_id, "closed": index == 3})
     return {"residents": residents, "visits": visits, "week_start": monday.date().isoformat(),

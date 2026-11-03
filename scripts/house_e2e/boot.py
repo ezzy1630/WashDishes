@@ -70,16 +70,21 @@ def main():
     app = create_app(Config(root=root, workers=False, password=os.environ["WASHDISHES_ACCESS_KEY"]))
     fixture = seed(app)
     install_fixture_clock(Path(os.environ["HOUSE_E2E_CLOCK_FILE"]))
-    routes = []
-    for route in app.routes:
-        body = getattr(route, "body_field", None)
-        model = getattr(body, "type_", None)
-        fields = getattr(model, "model_fields", {})
-        routes.append({"path": route.path, "methods": sorted(getattr(route, "methods", [])),
-                       "body_fields": list(fields)})
+    # OpenAPI flattens included routers across supported FastAPI versions.
+    schema = app.openapi()
+    def body_fields(operations):
+        body = operations.get('post', {}).get('requestBody', {}).get('content', {}).get('application/json', {}).get('schema', {})
+        if '$ref' in body:
+            body = schema['components']['schemas'][body['$ref'].rsplit('/', 1)[-1]]
+        return list(body.get('properties', {}))
+
+    routes = [{'path': path, 'body_fields': body_fields(operations), 'methods': sorted(method.upper() for method in operations
+                if method in ('get', 'post', 'put', 'patch', 'delete', 'options', 'head'))}
+              for path, operations in schema['paths'].items()]
     fixture["routes"] = routes
     (root.parent / "fixture.json").write_text(json.dumps(fixture, indent=2))
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ["HOUSE_E2E_PORT"]), log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ["HOUSE_E2E_PORT"]), log_level="warning",
+                ssl_certfile=os.environ["HOUSE_E2E_TLS_CERT"], ssl_keyfile=os.environ["HOUSE_E2E_TLS_KEY"])
 
 
 if __name__ == "__main__":

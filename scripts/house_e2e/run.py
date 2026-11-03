@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -31,7 +33,7 @@ def port():
         return sock.getsockname()[1]
 
 
-def ready(url, process=None):
+def ready(url, process=None, *, tls=None):
     import httpx
 
     deadline = time.monotonic() + 40
@@ -39,7 +41,7 @@ def ready(url, process=None):
         if process and process.poll() is not None:
             raise RuntimeError("Jetson app exited during startup; inspect app.log")
         try:
-            if httpx.get(url, timeout=1, trust_env=False).status_code == 200:
+            if httpx.get(url, timeout=1, trust_env=False, verify=tls or True).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
@@ -53,6 +55,34 @@ def locate(option, candidates, message):
     found = next((p.resolve() for p in candidates if p.exists()), None)
     require(found, message)
     return found
+
+
+def local_tls(run):
+    """Trust only this run's ephemeral loopback certificate; keep HTTPS validation real."""
+    import base64
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'Isolated House E2E')])
+    now = datetime.now(timezone.utc)
+    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .sign(key, hashes.SHA256()))
+    cert, private = run / 'loopback-cert.pem', run / 'loopback-key.pem'
+    cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    private.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                         serialization.NoEncryption()))
+    spki = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return cert, private, base64.b64encode(hashlib.sha256(spki).digest()).decode()
 
 
 def main():
@@ -77,6 +107,8 @@ def main():
     SCRATCH.mkdir(parents=True, exist_ok=True)
     run = SCRATCH / (time.strftime("run-%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3))
     run.mkdir()
+    cert, private, tls_spki = local_tls(run)
+    tls = ssl.create_default_context(cafile=str(cert))
     report = {"checkout": str(REPO), "head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
               "harness_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.iterdir() if p.suffix in (".py", ".mjs")},
               "mode": "foundation" if args.foundation else "full", "executed": [], "pending": [], "result": "failed"}
@@ -94,19 +126,22 @@ def main():
         while len(ports) < 3:
             ports.add(port())
         site_port, auth_port, app_port = sorted(ports)
-        site_url, auth_url, app_url = [f"http://127.0.0.1:{p}" for p in (site_port, auth_port, app_port)]
+        site_url, auth_url, app_url = [f"https://127.0.0.1:{p}" for p in (site_port, auth_port, app_port)]
         auth = FakeAuth(auth_url, site_url)
         # Bind before starting threads; every server is loopback-only.
-        auth_server = uvicorn.Server(uvicorn.Config(auth.app, host="127.0.0.1", port=auth_port, log_level="error"))
+        auth_server = uvicorn.Server(uvicorn.Config(auth.app, host="127.0.0.1", port=auth_port, log_level="error", ssl_certfile=str(cert), ssl_keyfile=str(private)))
         threads.append(threading.Thread(target=auth_server.run, daemon=True))
         config_js = None
         if args.site_config:
             config_js = Path(args.site_config).read_text().replace("AUTH_URL", auth_url).replace("API_URL", app_url).replace("ANON_KEY", auth.anon_key)
         static = site_server(REPO / "house-site", sdk, auth_url, app_url, auth.anon_key, args.config_path, config_js, site_port)
+        server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_tls.load_cert_chain(cert, private)
+        static.socket = server_tls.wrap_socket(static.socket, server_side=True)
         threads.append(threading.Thread(target=static.serve_forever, daemon=True))
         for thread in threads:
             thread.start()
-        ready(auth_url + "/auth/v1/settings")
+        ready(auth_url + "/auth/v1/settings", tls=tls)
         clock_file = run / "clock-offset-seconds"
         clock_file.write_text("0")
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": str(run),
@@ -114,19 +149,20 @@ def main():
                "HOUSE_E2E_DATA": str(run / "data"), "HOUSE_E2E_PORT": str(app_port),
                "WASHDISHES_DATA_DIR": str(run / "data"), "WASHDISHES_ACCESS_KEY": secrets.token_urlsafe(24),
                "WASHDISHES_TIMEZONE": "America/Los_Angeles", "SUPABASE_URL": auth_url,
-               "SUPABASE_SERVICE_ROLE_KEY": auth.admin_key, "SUPABASE_SERVICE_KEY": auth.admin_key,
+               "SUPABASE_SECRET_KEY": auth.admin_key, "SUPABASE_SERVICE_ROLE_KEY": auth.admin_key, "SUPABASE_SERVICE_KEY": auth.admin_key,
                "SUPABASE_ANON_KEY": auth.anon_key, "HOUSE_SITE_ORIGIN": site_url, "HOUSE_PUBLIC_ORIGIN": app_url,
-               "HOUSE_MEDIA_SECRET": secrets.token_urlsafe(32)}
+               "HOUSE_MEDIA_SECRET": secrets.token_urlsafe(32), "SSL_CERT_FILE": str(cert),
+               "NODE_EXTRA_CA_CERTS": str(cert), "HOUSE_E2E_TLS_CERT": str(cert), "HOUSE_E2E_TLS_KEY": str(private)}
         # Exclude inherited proxy settings; both harness and app only contact loopback.
         env = {k: v for k, v in env.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
         with (run / "app.log").open("w") as log:
             product = subprocess.Popen([str(PYTHON), "-B", str(Path(__file__).with_name("boot.py"))], cwd=REPO, env=env, stdout=log, stderr=log)
-        ready(app_url + "/api/health", product)
+        ready(app_url + "/api/health", product, tls=tls)
         fixture = json.loads((run / "fixture.json").read_text())
         require(len(fixture["residents"]) == 10, "Seed must contain ten residents")
         require(fixture["visits"][0]["points"] == 4, "Multi-dish fixture must score four points")
         report["executed"].extend(["real app started with workers disabled", "10 residents, 3 current visits, 1 closed-week visit and synthetic JPEGs seeded"])
-        with httpx.Client(base_url=app_url, trust_env=False) as client:
+        with httpx.Client(base_url=app_url, trust_env=False, verify=tls) as client:
             login = client.post("/api/login", json={"password": env["WASHDISHES_ACCESS_KEY"]})
             require(login.status_code == 200, "Operator session login failed: " + login.text)
             csrf = login.json()["csrf_token"]
@@ -139,6 +175,14 @@ def main():
                 evidence = client.get("/api/evidence/" + visit["evidence_id"])
                 require(evidence.status_code == 200 and evidence.headers.get("content-type", "").startswith("image/"),
                         "Seeded arrival JPEG did not round-trip through the real media endpoint")
+            week = client.get('/api/league/week')
+            require(week.status_code == 200, 'Merged operator week is unavailable: ' + week.text)
+            board = week.json()
+            expected = {v['id']: v['points'] for v in fixture['visits'] if not v['closed']}
+            require({v['id']: v['points'] for v in board['visits']} == expected,
+                    'Merged arrival membership/late-evidence points disagree with the fixture')
+            require(board['unreviewed_count'] == 3 and all(r['points'] == 0 for r in board['standings']),
+                    'Unnamed synthetic visits must remain reviewable with zero named points')
             clock_file.write_text("120")
             try:
                 shifted = client.get("/api/dashboard").json()["server_time"]
@@ -148,9 +192,9 @@ def main():
             finally:
                 clock_file.write_text("0")
             operator_cookie = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
-        report["executed"].append("operator cookie login and dashboard read")
+        report["executed"].append("operator cookie login, dashboard and merged week: 3 visits with potential 4/1/2; zero named points")
         report["executed"].append("synthetic JPEGs served through authenticated media; isolated server wall clock advanced/restored")
-        with httpx.Client(base_url=auth_url, trust_env=False) as client:
+        with httpx.Client(base_url=auth_url, trust_env=False, verify=tls) as client:
             admin = {"Authorization": "Bearer " + auth.admin_key, "apikey": auth.admin_key}
             created = client.post("/auth/v1/admin/users", headers=admin,
                                   json={"email": "probe@house-e2e.invalid", "password": "first-password", "email_confirm": True})
@@ -168,7 +212,7 @@ def main():
         private_key = run / "auth-private.pem"
         private_key.write_bytes(auth.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         ui = json.loads(Path(args.ui_contract).read_text()) if args.ui_contract else {}
-        browser_config = {"run": str(run), "playwright": str(playwright), "site": site_url, "auth": auth_url, "api": app_url,
+        browser_config = {"run": str(run), "tlsSpki": tls_spki, "playwright": str(playwright), "site": site_url, "auth": auth_url, "api": app_url,
                           "anon": auth.anon_key, "fixture": fixture, "operatorCookie": operator_cookie, "csrf": csrf,
                           "privateKey": str(private_key), "clockFile": str(clock_file), "kid": auth.kid, "ui": ui}
         config = run / "browser.json"
