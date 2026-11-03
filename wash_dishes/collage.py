@@ -21,7 +21,7 @@ from .store import Store
 
 STAGES = ("before", "putting", "left", "late")
 # Part of every cached picture's name, so a new design is never hidden behind an old cached copy.
-VERSION = 3
+VERSION = 4
 
 WIDTH, MARGIN, GAP = 1600, 32, 24
 PANEL_W = (WIDTH - 2 * MARGIN - GAP) // 2
@@ -226,7 +226,7 @@ def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
     canvas, draw = _canvas(HEAD + 2 * row + GAP + MARGIN - 18, meta["dish"], name, f"{day:%a %b %-d} · {place(meta['location'])}")
     region = _crop([meta["box"], *([meta["late_box"]] if meta.get("late_box") else [])], meta.get("person_box"),
                    _aspect(pictures["putting"], PANEL_W, PANEL_H))
-    captions = {"before": "Before", "putting": "Leaving it" if meta.get("left_behind") else "Putting it down",
+    captions = {"before": "Before", "putting": "At the counter" if meta.get("method") == "visit" else "Leaving it" if meta.get("left_behind") else "Putting it down",
                 "left": "Left there", "late": f"Still there {_later(meta['late_at'] - meta['left_at'])}"}
     styles = {"before": "dashed", "putting": "corners", "left": "solid", "late": "solid"}
     for i, key in enumerate(STAGES):

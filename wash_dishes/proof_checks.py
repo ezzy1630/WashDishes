@@ -17,6 +17,7 @@ import numpy as np
 
 from .config import monitoring_areas
 from .inventory import rests_in
+from .proof_visits import single_visitor
 from .store import Store
 from .verifier import DishVerifier, context_crop
 from .vision import box_iou
@@ -68,6 +69,10 @@ class Thresholds:
     # margin avoids teaching a whole location is invalid after one rejected object.
     remembered_cosine: float = 0.97
     remembered_overlap: float = 0.50
+    # Same bounds as putdown._matches: a box that grows to include neighboring
+    # cookware cannot establish the same individual dish from colour/CLIP alone.
+    minimum_area_ratio: float = 0.30
+    maximum_area_ratio: float = 3.30
 
 
 def _image(jpeg: bytes) -> np.ndarray:
@@ -197,6 +202,11 @@ class ProofChecker:
             return {"status": "rejected", "reason": "the dish box is outside the picture", "checks": {}}
         if not found["before"]["at"] < found["putting"]["at"] <= found["left"]["at"]:
             return {"status": "rejected", "reason": "the proof pictures are out of order", "checks": {}}
+        area_ratio = late_box[2] * late_box[3] / (box[2] * box[3])
+        if not self.thresholds.minimum_area_ratio <= area_ratio <= self.thresholds.maximum_area_ratio:
+            reason = "the later dish box changed size too much to establish the same item"
+            return {"status": "rejected", "reason": reason,
+                    "checks": {"late": {"area_ratio": area_ratio}, "thresholds": vars(self.thresholds), "failures": [reason]}}
         try:
             images = [_image(found[k]["jpeg"]) for k in ("before", "left")] + [_image(late_jpeg)]
         except ValueError as error:
@@ -265,6 +275,38 @@ class ProofChecker:
                                 if any(w in f"{a.get('id', '')} {a.get('name', '')}".lower() for w in STOVE_WORDS)):
             reasons.append("a pan or pot set down off the stove was likely moved there after cooking; who cooked with it isn't shown")
 
+        visit = None
+        if found.get("method") == "visit":
+            if self.verifier.proof(left) is not True:
+                reasons.append("the visit needs the kitchen dish checker to be sure it is a dish")
+            if not any(a["role"] in ("dirty", "sink") and rests_in(box, a) for a in areas):
+                reasons.append("the visit is outside the configured dirty or sink surfaces")
+            frames = found.get("visit_frames", [])
+            visit = single_visitor(frames, box)
+            if isinstance(visit, str):
+                reasons.append(visit)
+                visit = None
+            elif (abs(frames[0]["at"] - found["before"]["at"]) > .25
+                  or abs(frames[-1]["at"] - found["left"]["at"]) > .25):
+                reasons.append("the visit observations do not bracket these proof pictures")
+                visit = None
+            if handled or any(_reach(box, d["box"]) <= self.thresholds.reach
+                              for d in self.detect(found["left"]["jpeg"], box) if d["kind"] == "person"):
+                reasons.append("the visit needs clear views before and after the person")
+            checks["visit"] = {"start": visit["start"], "end": visit["end"], "observations": len(visit["observations"])} if visit else None
+            # A deposit is not necessarily new use: refuse a possible transfer
+            # from another dirty/sink spot. No visual matcher can prove use from
+            # an occluded transfer. Clean/storage sources do not carry old blame.
+            after_detections = self.detect(found["left"]["jpeg"], box)
+            sources = [d for d in before_detections if d["kind"] != "person"
+                       and box_iou(box, d["box"]) < .3
+                       and any(a["role"] in ("dirty", "sink") and rests_in(d["box"], a) for a in areas)
+                       and not any(o["kind"] != "person" and box_iou(d["box"], o["box"]) >= .3 for o in after_detections)
+                       and visit and any(_reach(d["box"], o["person_box"]) <= self.thresholds.reach
+                                         for o in visit["observations"])]
+            checks["possible_dirty_sources"] = sources
+            if sources:
+                reasons.append("a dish disappeared from another dirty spot during this visit; use versus moving needs review")
         choices = []
         hidden_frames = 0
         for candidate in [found["putting"], *found.get("candidates", [])]:
@@ -285,7 +327,10 @@ class ProofChecker:
             # A bounding box cannot locate the shoulder precisely. At the body's edges,
             # require an actual dish detection if the person covers most of the spot.
             # A visible dish beside an outstretched arm can still pass this check.
-            if (cover >= self.thresholds.body_cover
+            observed = min(visit["observations"], key=lambda o: abs(o["at"] - candidate["at"]), default=None) if visit else None
+            visit_person = (observed is not None and abs(observed["at"] - candidate["at"]) <= .25
+                            and box_iou(observed["person_box"], people[0]) >= .4)
+            if not visit_person and (cover >= self.thresholds.body_cover
                     or (person_cover >= self.thresholds.body_cover and visible < self.thresholds.overlap)):
                 hidden_frames += 1
                 continue
@@ -304,7 +349,11 @@ class ProofChecker:
             reasons.append("a different dish is in that spot later")
         checks["failures"] = reasons
         if reasons:
-            return {"status": "rejected", "reason": reasons[0], "checks": checks}
+            # A late, wrong episode can fail the dish probe AND already contain
+            # the target in Before. Keep the rejection, but let the bounded worker
+            # trace its actual arrival before making the final dish decision.
+            reason = "dish already there in the before picture" if "dish already there in the before picture" in reasons else reasons[0]
+            return {"status": "rejected", "reason": reason, "checks": checks}
         result = {"checks": checks, "putting": putting}
         if busy:
             result.update(status="waiting", reason="someone is still at the dish; waiting for a clear later picture")

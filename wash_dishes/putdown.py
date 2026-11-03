@@ -418,11 +418,14 @@ def _jpeg_patch(jpeg: bytes, box: list[float]):
 
 def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logged: float, present_until: float,
                          *, kind: str | None = None, people: Callable[[bytes], list[dict]] | None = None,
-                         earlier_than: float | None = None, deadline: float | None = None) -> dict | str:
+                         earlier_than: float | None = None, deadline: float | None = None,
+                         allow_covered_visit: bool = False) -> dict | str:
     """Find an arrival strictly before `earlier_than`, with one shared wall-time budget.
 
     The cutoff re-anchors appearance to an earlier clear view; it does not move the
     dish's logging time or its history limit. Every alternate Putting frame obeys it.
+    Covered-visit proposals are experimental and opt-in: the real-data replay
+    added no verified proofs and increased CPU cost. Keep the strict path as default.
     """
     if earlier_than is not None and not math.isfinite(earlier_than):
         raise ValueError("The arrival cutoff must be finite.")
@@ -431,6 +434,13 @@ def find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logge
         _check_deadline(deadline)
         result = _find_putdown_journal(journal, buffer, box, logged, present_until,
                                       kind=kind, people=people, earlier_than=earlier_than, deadline=deadline)
+        if allow_covered_visit and isinstance(result, str) and result != JOURNAL_TOO_NEW and people is not None:
+            # Eating/cooking changes a dish's own appearance. A failed patch
+            # trace must not prevent checking clear views around whole visits.
+            visit = _find_visit_journal(journal, buffer, box, logged, present_until, people,
+                                        earlier_than=earlier_than, deadline=deadline)
+            if visit is not None:
+                result = visit
         _check_deadline(deadline)
         return result
     except _SearchTimeout:
@@ -777,3 +787,142 @@ def _find_putdown_journal(journal: Journal, buffer: Path, box: list[float], logg
         if isinstance(arrival, str):
             return arrival
     return "the dish's appearance changes too often to establish its arrival"
+
+
+def _visit_proposal(journal: Journal, segs: list, box: list[float], arrival: Arrival,
+                    people: Callable[[bytes], list[dict]], deadline: float) -> dict | str:
+    """Bracket an arrival by a whole single-person visit, without requiring a visible hand.
+
+    Decode only the two clear endpoints and up to three identifying views. The
+    journal supplies all intervening observations, not just convenient frames.
+    The independent checker still decides dish, source/use and later continuity.
+    """
+    from .proof_visits import nearby, single_visitor
+
+    if arrival.clear - arrival.before > 20 * 60:
+        return 'the visit exceeds the bounded proof window'
+    frames = list(journal.frames(arrival.before - 10, arrival.clear + 15))
+    before = next((f for f in reversed(frames) if f['at'] <= arrival.before and not nearby(f, box)), None)
+    left = next((f for f in frames if f['at'] >= arrival.clear and not nearby(f, box)), None)
+    if before is None or left is None:
+        return 'no clear views bracket the arrival visit'
+    evidence = [{'at': f['at'], 'detections': [d for d in f['detections'] if d['kind'] == 'person']}
+                for f in frames if before['at'] <= f['at'] <= left['at']]
+    covered_until = before['at']
+    for start, end, _ in segs:
+        if end <= covered_until:
+            continue
+        if start > covered_until + 2:
+            break
+        covered_until = end
+        if covered_until >= left['at']:
+            break
+    if covered_until < left['at']:
+        return 'the recording has a gap across the visit'
+    visit = single_visitor(evidence, box)
+    if isinstance(visit, str):
+        return visit
+    # A passer-by whose box never reaches over the spot cannot establish a deposit.
+    contacts = [o for o in visit['observations'] if _overlap(box, o['person_box']) >= .5]
+    if not contacts:
+        return 'the visitor never reached the dish spot'
+
+    def picture(at):
+        _check_deadline(deadline)
+        seg = next((s for s in segs if s[0] <= at < s[1]), None)
+        if seg is None:
+            return None
+        choices = decoded_photos(seg, t0=at - .15, t1=at + .2)
+        _check_deadline(deadline)
+        return min(choices, key=lambda p: abs(p[0] - at), default=None)
+
+    selected = {}
+    for key, frame in (('before', before), ('left', left)):
+        photo = picture(frame['at'])
+        if photo is None or abs(photo[0] - frame['at']) > .2:
+            return 'the visit endpoint could not be decoded at its observed time'
+        if nearby({'detections': people(photo[1])}, box):
+            return 'a person is within reach in the clear visit endpoint'
+        selected[key] = {'at': photo[0], 'jpeg': photo[1]}
+    candidates, attempted = [], []
+    # Large head/shoulder views teach identity better than the obscured release.
+    for observation in sorted(contacts, key=lambda o: o['person_box'][2] * o['person_box'][3], reverse=True):
+        if any(abs(observation['at'] - at) < 2 for at in attempted):
+            continue
+        if len(attempted) >= 6:
+            break
+        attempted.append(observation['at'])
+        photo = picture(observation['at'])
+        if photo is None:
+            continue
+        exact = nearby({'detections': people(photo[1])}, box)
+        if len(exact) != 1 or box_iou(exact[0]['box'], observation['person_box']) < .4:
+            continue
+        if not selected['before']['at'] < photo[0] < selected['left']['at']:
+            continue
+        candidates.append({'at': photo[0], 'jpeg': photo[1], 'person_box': exact[0]['box']})
+        if len(candidates) >= 3:
+            break
+    if not candidates:
+        return 'no exact picture confirms the continuously tracked visitor'
+    # Keep the observed endpoints; tiny codec timestamp offsets must not create
+    # an unobserved interval or move a candidate into another visit.
+    return {'method': 'visit', **selected, 'putting': candidates[0], 'candidates': candidates,
+            'putting_action': 'at the counter', 'visit_frames': evidence,
+            'arrival_window': [before['at'], left['at']]}
+
+
+
+def _find_visit_journal(journal: Journal, buffer: Path, box: list[float], logged: float, until: float,
+                        people: Callable[[bytes], list[dict]], *, earlier_than: float | None,
+                        deadline: float) -> dict | str | None:
+    """Compare clear spot views around visits when appearance rewinding failed.
+
+    At most 64 recent visits and the original shared deadline bound work. The
+    latest changed visit is decisive: ambiguity never licenses picking an older
+    visitor. Final dish, before/after, dirty-source and late checks remain mandatory.
+    """
+    from collections import deque
+
+    from .proof_visits import MAX_SAMPLE_GAP, arrival_visits
+
+    end = min(until, logged + 180, earlier_than if earlier_than is not None else float("inf"))
+    visits = deque(maxlen=64)
+    last_at = None
+
+    def observations():
+        nonlocal last_at
+        for frame in journal.frames(logged - SEARCH_HOURS * 3600, end):
+            _check_deadline(deadline)
+            if last_at is not None and frame["at"] - last_at > MAX_SAMPLE_GAP:
+                visits.clear()
+            last_at = frame["at"]
+            yield frame
+
+    for visit in arrival_visits(observations(), box):
+        visits.append(visit)
+    if last_at is None or end - last_at > MAX_SAMPLE_GAP:
+        return None
+    segs = segments(buffer)
+    ends = [s[1] for s in segs]
+
+    @lru_cache(maxsize=8)
+    def patch(at):
+        _check_deadline(deadline)
+        index = bisect_right(ends, at)
+        if index >= len(segs) or segs[index][0] > at:
+            return None
+        nearest = min(samples(segs[index], box), key=lambda p: abs(p.at - at), default=None)
+        _check_deadline(deadline)
+        return nearest.patch if nearest and abs(nearest.at - at) <= 2.5 else None
+
+    for before, start, clear in reversed(visits):
+        first, last = patch(before), patch(clear)
+        # Missing film cannot authorize tracing through that visit to blame
+        # someone earlier. The recording may contain a different arrival there.
+        if first is None or last is None:
+            return "the recording cannot bracket the latest visit at this spot"
+        if _distance(first, last) < MIN_CHANGE:
+            continue
+        return _visit_proposal(journal, segs, box, Arrival(before, start, clear, False, None), people, deadline)
+    return None

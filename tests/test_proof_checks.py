@@ -328,3 +328,20 @@ def test_corrupt_picture_is_a_reason_not_a_worker_stopping_exception(checker):
     corrupt = FOUND | {'putting': {'at': 20, 'jpeg': b'not a jpeg'}}
     assert 'no picture shows a person' in run(check, found=corrupt)
     assert isinstance(run(check, found=corrupt | {'candidates': [FOUND['putting']]}), dict)
+
+
+def test_already_present_takes_precedence_for_bounded_rewind_without_passing_bad_probe(checker):
+    check, _, verifier = checker
+    verifier.sure = False
+    found = FOUND | {'before': {'at': 10, 'jpeg': LEFT}}
+    result = check.evaluate(1, found, LATE, BOX, None)
+    assert result['status'] == 'rejected'
+    assert result['reason'] == 'dish already there in the before picture'
+    assert 'not sure enough that it is a dish to show it' in result['checks']['failures']
+    assert run(check) == 'not sure enough that it is a dish to show it'
+
+
+@pytest.mark.parametrize('late_box', [[.4, .45, .3, .3], [.4, .45, .06, .06]])
+def test_matching_colour_and_clip_cannot_validate_a_grown_stack_or_shrunken_different_item(checker, late_box):
+    check, _, _ = checker
+    assert 'changed size too much' in run(check, late_box=late_box)

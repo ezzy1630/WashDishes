@@ -7,7 +7,7 @@ import os
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -843,11 +843,12 @@ class Store:
 
     def suggest_identity(self, cues: dict[str, list[float]], *, at: datetime | None = None, context: str | None = None,
                          enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
-                         exclude_obligation: int | None = None, before: datetime | None = None) -> tuple[int | None, float | None, float | None, dict]:
+                         exclude_obligation: int | None = None, before: datetime | None = None,
+                         exclude_day: str | None = None) -> tuple[int | None, float | None, float | None, dict]:
         """Return a discriminating visual match, ranking diagnostics and its supported basis."""
         weights = self.identity_weights()
         features = self.cue_features(cues, at=at or utcnow(), context=context, enrolled_faces=enrolled_faces,
-                                    limit=limit, exclude_obligation=exclude_obligation, before=before)
+                                    limit=limit, exclude_obligation=exclude_obligation, before=before, exclude_day=exclude_day)
         ranked = sorted(((sum(weights.get(cue, 1.0) * value for cue, value in values.items()), resident, seen)
                          for resident, values, seen in features),
                         key=lambda r: r[0], reverse=True)
@@ -880,7 +881,8 @@ class Store:
 
     def cue_features(self, cues: dict[str, list[float]], *, at: datetime, context: str | None = None,
                      enrolled_faces: dict[int, list[list[float]]] | None = None, limit: int = 2000,
-                     exclude_obligation: int | None = None, before: datetime | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
+                     exclude_obligation: int | None = None, before: datetime | None = None,
+                     exclude_day: str | None = None) -> list[tuple[int, dict[str, float], dict[str, float]]]:
         """How strongly each cue points at each housemate, before weighting: (resident, features, similarities).
 
         Face and head carry across days. An outfit is strong evidence only against sightings from the
@@ -888,6 +890,12 @@ class Store:
         a head was when standing at the same area. exclude_obligation leaves one sighting's own samples
         out, so it can be scored as if new.
         """
+        day_start = day_end = None
+        if exclude_day is not None:
+            tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
+            day = date.fromisoformat(exclude_day)
+            day_start = stamp(datetime.combine(day, datetime.min.time(), tz))
+            day_end = stamp(datetime.combine(day + timedelta(days=1), datetime.min.time(), tz))
         with self.lock:
             rows = self.conn.execute("""SELECT s.resident_id who, s.cue, s.context, s.created_at, s.embedding
                 FROM person_samples s JOIN residents r ON r.id=s.resident_id JOIN obligations o ON o.id=s.obligation_id
@@ -895,8 +903,9 @@ class Store:
                 WHERE r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed') AND o.attribution IS NOT 'camera'
                 AND NOT (s.cue='face' AND coalesce(e.kind,'')='clip')
                 AND (? IS NULL OR s.obligation_id IS NOT ?) AND (? IS NULL OR s.created_at<?)
+                AND (? IS NULL OR s.created_at<? OR s.created_at>=?)
                 ORDER BY s.id DESC LIMIT ?""", (exclude_obligation, exclude_obligation, stamp(before) if before else None,
-                                               stamp(before) if before else None, limit)).fetchall()
+                                               stamp(before) if before else None, day_start, day_start, day_end, limit)).fetchall()
         samples: dict[int, list] = {}
         for row in rows:
             samples.setdefault(row["who"], []).append(row)

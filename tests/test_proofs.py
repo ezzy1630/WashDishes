@@ -152,14 +152,15 @@ def test_selected_identity_absence_withdraws_proof_but_description_failure_keeps
     assert proofs.image(item['id']).startswith(b'\xff\xd8')
 
 
-def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(store, media):
+@pytest.mark.parametrize('method,action', [('journal', 'left it behind'), ('visit', 'at the counter')])
+def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(store, media, method, action):
     proofs = Proofs(store.root, store, media)
     item = late_dish(store, media)
     now = utcnow()
     traces, identities, checked = [], [], []
     def find(*args, **kwargs):
         traces.append(args)
-        return found(*args) | {'method': 'journal', 'putting_action': 'left it behind'}
+        return found(*args) | {'method': method, 'putting_action': action, 'visit_frames': [{'at': 1, 'detections': []}]}
     def check(oid, trace, late, box, late_box):
         checked.append((trace, late))
         return {'status': 'waiting', 'reason': 'someone is still at the dish', 'checks': {'busy': True}}
@@ -175,6 +176,8 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     proofs = Proofs(store.root, store, media)
     def accept(oid, trace, late, box, late_box):
         assert trace['left']['jpeg'] == checked[0][0]['left']['jpeg']
+        assert trace['method'] == method and trace['putting_action'] == action
+        assert trace['visit_frames'] == checked[0][0]['visit_frames']
         assert late == fresh
         assert box == BOX and late_box == moved
         return {'checks': {'busy': False}}
@@ -183,7 +186,7 @@ def test_waiting_needs_new_late_photo_and_delay_then_reuses_trace_after_restart(
     assert len(proofs.items(now+timedelta(minutes=6))) == 1
     assert (proofs.dir / str(item['id']) / 'late.jpg').read_bytes() == fresh
     saved = json.loads(store.conn.execute('SELECT data FROM proofs WHERE obligation_id=?', (item['id'],)).fetchone()[0])
-    assert saved['method'] == 'journal' and saved['left_behind'] is True  # the caption survives the retry
+    assert saved['method'] == method and saved['left_behind'] == (method == 'journal')  # the caption survives the retry
 
 
 def test_newest_matching_photo_is_checked_even_if_older_one_was_clear(store, media):
@@ -228,6 +231,8 @@ def test_items_contract_and_batched_identity_basis(store, media):
     assert set(shown) == {'id', 'dish', 'location', 'put_down_at', 'late_at', 'resident_id', 'resident_name',
                           'guess_id', 'guess_name', 'image_url', 'guess_basis'}
     assert shown['guess_basis'] == 'same outfit as earlier'
+    from wash_dishes.collage import VERSION
+    assert shown['image_url'].endswith(f'.{VERSION}')
 
 
 def test_reject_validates_reason_and_not_a_dish_uses_review_dismissal(store, media):
@@ -305,22 +310,37 @@ def test_other_rejections_never_retry(store, media, reason):
     assert json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason'] == reason
 
 
-def test_already_there_stops_after_three_earlier_attempts(store, media):
-    from wash_dishes.proofs import ALREADY_THERE
+def test_already_there_uses_the_shared_budget_with_strictly_earlier_attempts(store, media, monkeypatch):
+    from wash_dishes import proofs as module
+    clock = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
     proofs = Proofs(store.root, store, media)
     late_dish(store, media)
     calls, checks = [], []
     def find(box, logged, until, *, earlier_than=None, deadline=None):
         calls.append(earlier_than)
+        clock[0] += module.TRACE_SECONDS / 4
         return found(box, logged if earlier_than is None else earlier_than, until)
     def check(*args):
         checks.append(args)
-        return ALREADY_THERE
+        return module.ALREADY_THERE
     proofs.run_once(find, check=check, identify=lambda *_: pytest.fail('Rejected proof cannot identify someone'))
-    assert len(calls) == len(checks) == 3
-    assert calls[2] < calls[1]
+    assert len(calls) == 4 and len(checks) == 3  # no unchecked result after the deadline
+    assert calls[3] < calls[2] < calls[1]
     assert proofs.items() == []
-    assert json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason'] == ALREADY_THERE
+    assert 'time budget' in json.loads(store.conn.execute('SELECT data FROM proofs').fetchone()[0])['reason']
+
+
+def test_genuine_arrival_after_three_rejected_episodes_can_still_make_a_proof(store, media):
+    from wash_dishes.proofs import ALREADY_THERE
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    calls = []
+    def find(box, logged, until, *, earlier_than=None, **kwargs):
+        calls.append(earlier_than)
+        return found(box, logged if earlier_than is None else earlier_than, until)
+    proofs.run_once(find, check=lambda *_: ALREADY_THERE if len(calls) <= 3 else {})
+    assert len(calls) == 4 and len(proofs.items()) == 1
 
 
 @pytest.mark.parametrize('candidate_only', [False, True])
@@ -469,3 +489,16 @@ def test_home_exposes_failed_search_without_promising_person_or_current_count(au
     assert out['search_status'] == 'untraced'
     assert out['search_reason'] == 'the recording has a gap while tracing the dish backwards'
     assert out['stages'] == []
+
+
+def test_search_eligibility_uses_configured_retention_instead_of_the_old_twenty_hour_cutoff(store, media):
+    item = late_dish(store, media)
+    at = utcnow()
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET created_at=?,due_at=? WHERE id=?',
+                           (stamp(at-timedelta(hours=30)), stamp(at-timedelta(hours=28)), item['id']))
+    proofs = Proofs(store.root, store, media)
+    assert proofs.candidate(at)['id'] == item['id']  # default recording retention is 50 h
+    store.set_settings({'buffer_hours': 24})
+    assert proofs.candidate(at) is None
+    assert proofs.progress(at)['checking'] == 0

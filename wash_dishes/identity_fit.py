@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from zoneinfo import ZoneInfo
 
 from .store import IDENTITY_WEIGHTS_FILE, Store, stamp
 
@@ -92,15 +93,21 @@ def _write(path, report: dict) -> None:
     os.replace(temporary, path)
 
 
-def evaluate(store: Store, *, past_only: bool = False) -> dict:
+def evaluate(store: Store, *, past_only: bool = False, leave_one_day_out: bool = False,
+             enrolled_faces: dict[int, list[list[float]]] | None = None) -> dict:
     """All human-labelled cases, including abstentions and residents absent from the gallery.
 
     Past-only holds out every capture at or after the query. This is a capture-time replay, not a
     claim that historical labels had already been entered. Only the display/check gate measures that.
     """
+    if past_only and leave_one_day_out:
+        raise ValueError("Choose capture-time or leave-one-day-out evaluation.")
+    tz = ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))
     with store.lock:
-        rows = store.conn.execute("""SELECT DISTINCT obligation_id, resident_id FROM person_samples
-            WHERE resident_id IS NOT NULL ORDER BY obligation_id""").fetchall()
+        rows = store.conn.execute("""SELECT DISTINCT s.obligation_id, s.resident_id FROM person_samples s
+            JOIN obligations o ON o.id=s.obligation_id JOIN residents r ON r.id=s.resident_id
+            WHERE s.resident_id IS NOT NULL AND r.active=1 AND o.lifecycle NOT IN ('dismissed','disputed')
+            AND o.attribution IS NOT 'camera' ORDER BY s.obligation_id""").fetchall()
     predictions = []
     for row in rows:
         capture = store.sighting_cues(row["obligation_id"])
@@ -108,11 +115,15 @@ def evaluate(store: Store, *, past_only: bool = False) -> dict:
         if capture:
             cues, context, at = capture
             guess, score_value, _, _ = store.suggest_identity(cues, at=at, context=context,
-                                                             exclude_obligation=row["obligation_id"], before=at if past_only else None)
+                                                             exclude_obligation=row["obligation_id"], before=at if past_only else None,
+                                                             exclude_day=at.astimezone(tz).date().isoformat() if leave_one_day_out else None,
+                                                             enrolled_faces=enrolled_faces)
         predictions.append({"id": row["obligation_id"], "truth": row["resident_id"], "guess": guess, "score": score_value})
     guessed = [r for r in predictions if r["guess"] is not None]
     correct = sum(r["truth"] == r["guess"] for r in guessed)
     return {"cases": len(predictions), "guesses": len(guessed), "correct": correct,
+            "coverage": len(guessed) / len(predictions) if predictions else None,
+            "protocol": "leave_one_local_day_out" if leave_one_day_out else "past_only" if past_only else "leave_one_sighting_out",
             "abstentions": len(predictions) - len(guessed), "precision": correct / len(guessed) if guessed else None, "rows": predictions}
 
 
@@ -124,6 +135,7 @@ def refit(store: Store) -> dict:
     data = cases(store)
     current = store.identity_weights()
     report = {"at": stamp(), "cases": len(data), "adopted": False}
+    report["suggestions_day_out"] = {k: v for k, v in evaluate(store, leave_one_day_out=True).items() if k != "rows"}
     report["suggestions_past_only"] = {k: v for k, v in evaluate(store, past_only=True).items() if k != "rows"}
     if data:
         # How often the top guess names the right person today, each sighting scored as if new.

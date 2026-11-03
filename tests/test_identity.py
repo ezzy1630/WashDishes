@@ -1,7 +1,20 @@
 import math
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from wash_dishes.store import utcnow
+
+
+@pytest.fixture(params=[datetime(2026, 11, 3, 7, 30, tzinfo=timezone.utc),
+                        datetime(2026, 11, 3, 8, 30, tzinfo=timezone.utc)],
+                ids=['before-local-midnight', 'after-local-midnight'])
+def pinned_midnight_clock(request, monkeypatch):
+    # Capture dates are independent of review time. Naming old footage must not
+    # change just because review crosses the kitchen's local midnight.
+    monkeypatch.setenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles')
+    monkeypatch.setattr('wash_dishes.store.utcnow', lambda: request.param)
+    return request.param
 
 
 def unit(*values):
@@ -44,11 +57,11 @@ def test_tomorrows_outfit_needs_a_lasting_cue(store):
     assert resident == alex and "head" in cues
 
 
-def test_a_face_guess_cannot_teach_an_outfit_without_a_confirmation(store):
+def test_a_face_guess_cannot_teach_an_outfit_without_a_confirmation(store, pinned_midnight_clock):
     alex = store.add_resident("Alex")["id"]
     store.add_resident("Sam")
     face = unit(0.2, 0.9, 0.1, 0.3)
-    now = utcnow()
+    now = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
     first = sighting(store, None, now - timedelta(hours=2), outfit=GREEN_SHIRT, face=face)
     resident, _, _, cues = store.suggest_identity({"outfit": GREEN_SHIRT, "face": face}, at=now - timedelta(hours=2), enrolled_faces={alex: [face]})
     assert resident == alex and cues["face"] > 0.99
@@ -76,9 +89,9 @@ def test_a_dismissed_sighting_teaches_nothing(store):
     assert store.suggest_identity({"outfit": RED_SHIRT}, at=now)[0] is None
 
 
-def test_confirming_a_person_also_updates_older_waiting_camera_suggestions(store):
+def test_confirming_a_person_also_updates_older_waiting_camera_suggestions(store, pinned_midnight_clock):
     alex = store.add_resident("Alex")["id"]
-    now = utcnow()
+    now = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
     older = store.create_obligation(None, [{"kind": "cup", "quantity": 1}], candidate=True, source="vision", at=now - timedelta(hours=2))
     store.add_person_sample(older["id"], RED_SHIRT, at=now - timedelta(hours=2), context="sink")
     first = sighting(store, None, now, outfit=RED_SHIRT)
