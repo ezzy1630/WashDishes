@@ -520,4 +520,6 @@ try {
   if (browser) await browser.close().catch(() => {});
   if (chrome.exitCode === null) chrome.kill('SIGTERM');
   await fs.writeFile(path.join(cfg.run, `${mode}-chrome.log`), chromeLog);
+  // Chrome's updater can inherit stderr after Chrome exits; do not let that pipe keep the driver alive.
+  chrome.stderr.destroy();
 }
