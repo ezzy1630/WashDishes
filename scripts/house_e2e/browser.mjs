@@ -13,6 +13,7 @@ const allowed = new Set([cfg.site, cfg.auth, cfg.api]);
 const profile = path.join(cfg.run, `chrome-${mode}`);
 await fs.mkdir(profile);
 const chrome = spawn(process.env.HOUSE_E2E_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
+  `--ignore-certificate-errors-spki-list=${cfg.tlsSpki}`,
   '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
   '--disable-background-networking', '--disable-component-update', '--disable-sync', '--metrics-recording-only',
   '--disable-default-apps', '--no-default-browser-check', 'about:blank',

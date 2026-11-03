@@ -40,7 +40,8 @@ Dish = {
   can_name: boolean, can_dispute: boolean, can_settle: boolean
 }
 Visit = {
-  id: string, dish_ids: [integer], title: string, area: string, at: UTC_ISO,
+  id: string, dish_ids: [integer], alias_ids: [integer],
+  aliases: [Dish & {duplicate_of: integer}], arrival_seen: boolean, title: string, area: string, at: UTC_ISO,
   points: integer, filmstrip_url: URL|null, photo_url: URL|null,
   resident: Person|null, named_by: Person|null, named_at: UTC_ISO|null,
   guess: {resident_id: integer, name: string, basis: string}|null,
@@ -70,9 +71,12 @@ on a historical page. Closed scores, roster, rules, guesses and pick stay frozen
 Weeks follow **deadlines**, Monday midnight to next Monday midnight in
 `notify.timezone()`, closing Monday noon after 12 hours for Sunday naming. DST uses
 calendar boundaries. `league.left_out` is the sole eligibility predicate: verified
-late flag or matching late-photo observation, known timing, open/disputed or
+late flag or matching late-photo observation, open/disputed or
 resolved after deadline; exclude dismissed, cleared, clean and unverified records.
-No finished proof picture is required. Eligibility is a review queue, not guilt:
+Startup records use their observation-based follow-up deadline even when the original
+arrival is unknown. A pickup after the deadline without a verified late observation
+still does not qualify. Matching late evidence must be a snapshot taken no later
+than removal. No finished proof picture is required. Eligibility is a review queue, not guilt:
 only a human naming/confirmation (including operator manual records) scores.
 Automatic camera names and guesses score zero and remain available for review.
 Unnamed dishes remain after removal.
@@ -85,11 +89,22 @@ reconstructed.
 
 ## Naming and disputes
 
-Arrival evidence (`kind=filmstrip`, `label=arrival`) defines visits through
+Persistent `arrival_visits` / `arrival_visit_members` define visits, including
+unavailable or expired filmstrips. Legacy arrival evidence (`kind=filmstrip`,
+`label=arrival`) supplies fallback membership through
 `capture={"visit_id":...,"obligation_ids":[...],"frames":[...]}`. Missing metadata
 means singleton `dish-<id>`. Titles combine quantities, e.g. `Pan and 2 bowls`.
 Agreeing member suggestions supply `guess`; guesses never count as names/points.
-Only eligible members appear in `dish_ids`; incomplete visits have all flags false.
+Only eligible canonical obligations appear in `dish_ids` and `dishes`; incomplete
+canonical visits have all flags false. `duplicate_of` maps aliases to canonical
+obligations (including human Same dish answers); they score zero and never become
+separate review items. `alias_ids` and audit-only `aliases` retain those source ids
+and inherit the canonical name/dispute/verdict for display. Naming and verdicts
+act on the canonical naming unit. `arrival_seen` is true only when the current
+filmstrip metadata records an arrival. Otherwise show “Already there at [at] —
+arrival not recorded”; `at`/`out_since` are first observation, not an invented
+deposit time. Media expiration removes URLs, never visit identity or deduplication.
+Regenerated membership supersedes old write routes; refresh on HTTP 409.
 Mixed legacy names/audit fields serialize as null; inspect `dishes` to resolve them.
 
 ```text

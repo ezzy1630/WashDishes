@@ -102,6 +102,7 @@ export function leaguePanel() {
         h('span', {}, `${dish.points} pt`)),
       h('div', { class: 'stack' }, image ? h('a', { href: image, target: '_blank', rel: 'noopener' },
         h('img', { class: 'league-photo', src: image, loading: 'lazy', alt: dish.filmstrip_url ? 'Arrival filmstrip' : 'Saved dish photo' })) : h('p', { class: 'tx2' }, 'No photo is kept for this dish.'),
+      !dish.arrival_seen ? h('p', { class: 'league-note' }, `Already there at ${new Date(dish.at).toLocaleString()} — arrival not recorded. The cleanup follow-up starts at first observation.`) : null,
       dish.named_at ? h('p', { class: 'league-note' }, `Named by ${dish.named_by?.name || 'the operator'} on ${new Date(dish.named_at).toLocaleString()}.`) : null,
       week.closed ? h('p', { class: 'league-note' }, 'This week is closed.') : controls));
   }

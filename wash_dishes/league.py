@@ -5,7 +5,7 @@ import json
 from datetime import date, datetime, time, timedelta
 from typing import TypedDict
 
-from . import house_verdicts
+from . import house_verdicts, house_visits
 from .notify import timezone
 from .store import Store, parse_stamp, stamp, utcnow
 
@@ -43,7 +43,7 @@ def week_times(week: dict) -> tuple[datetime, datetime]:
 def left_out(store: Store, start: datetime, end: datetime) -> list[dict]:
     """The ONE eligibility predicate for the house league (deadline week, not deposit week).
 
-    Include open/disputed and resolved-after-deadline real dishes with known timing and
+    Include open/disputed and resolved-after-deadline real dishes with an observation-based deadline and
     positive after-deadline observation: overdue_verified OR the matching late photo used
     by Store's confirm path for unnamed records. Elapsed timers/last_seen alone never
     establish lateness. Exclude dismissed, cleared-before-deadline and unverified records.
@@ -58,23 +58,27 @@ def left_out(store: Store, start: datetime, end: datetime) -> list[dict]:
         rows = store.conn.execute('''SELECT o.*, EXISTS(SELECT 1 FROM events n WHERE n.obligation_id=o.id
                 AND n.event IN ('confirm','reassign','house_named')) human_named FROM obligations o
             WHERE julianday(o.due_at)>=julianday(?) AND julianday(o.due_at)<julianday(?)
-            AND julianday(o.due_at)<=julianday(?) AND o.timing_known=1
+            AND julianday(o.due_at)<=julianday(?)
             AND o.lifecycle IN ('open','disputed','resolved')
             AND (o.resolved_at IS NULL OR julianday(o.resolved_at)>julianday(o.due_at))
             AND (o.lifecycle!='resolved' OR o.resolved_at IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM house_verdicts v WHERE v.obligation_id=o.id)
             AND (o.overdue_verified=1 OR EXISTS (
                 SELECT 1 FROM evidence e WHERE e.obligation_id=o.id
-                AND e.label LIKE 'Matching dish still visible after the deadline%'
-                AND julianday(e.created_at)>=julianday(o.due_at)))
+                AND e.kind='snapshot' AND e.label LIKE 'Matching dish still visible after the deadline%'
+                AND julianday(e.created_at)>=julianday(o.due_at)
+                AND (o.resolved_at IS NULL OR julianday(e.created_at)<=julianday(o.resolved_at))))
             AND NOT EXISTS (SELECT 1 FROM incident_decisions d WHERE d.obligation_id=o.id
                 AND (json_extract(d.data,'$.condition') IN ('clean','not_dish')
                      OR json_extract(d.data,'$.checks.later')=0))
             ORDER BY o.due_at DESC,o.id DESC''', (stamp(start), stamp(end), stamp(utcnow()))).fetchall()
-        return [dict(r) | {'dishes': json.loads(r['dishes'])} for r in rows]
+        aliases = house_visits.duplicate_map(store)
+        return [dict(r) | {'dishes': json.loads(r['dishes'])} for r in rows if r['id'] not in aliases]
 
 
 def points(dish: dict, rules: dict) -> int:
+    if dish.get('duplicate_of') is not None:
+        return 0
     return sum(rules['weights'].get(d['kind'], rules['weights']['default']) * d['quantity'] for d in dish['dishes'])
 
 
@@ -90,7 +94,7 @@ def standings(dishes: list[dict], residents: list[dict], rules: dict) -> Standin
             for r in residents if r.get('active', True)}
     for dish in dishes:
         owner = rows.get(dish.get('resident_id'))
-        if owner is None or not human_named(dish) or dish.get('confidence') != 'confirmed' or dish.get('lifecycle') in ('disputed', 'dismissed') or dish.get('dispute_state') == 'open':
+        if dish.get('duplicate_of') is not None or owner is None or not human_named(dish) or dish.get('confidence') != 'confirmed' or dish.get('lifecycle') in ('disputed', 'dismissed') or dish.get('dispute_state') == 'open':
             continue
         owner['points'] += points(dish, rules)
         owner['dishes'] += sum(d['quantity'] for d in dish['dishes'])
@@ -143,7 +147,13 @@ def _live(store: Store, week: dict) -> dict:
     settings = rules(store)
     dishes = left_out(store, *week_times(week))
     board = standings(dishes, store.residents(), settings)
+    ids = {d['id'] for d in dishes}
+    aliases = house_visits.duplicate_map(store)
+    groups = [g for g in house_visits.catalog(store) if ids.intersection(g['dish_ids'])]
     return {'week': week, 'rules': settings, 'standings': board, 'pick': pick(board, settings), 'dishes': dishes,
+            'visit_groups': groups, 'duplicates': {oid: target for oid, target in aliases.items() if target in ids},
+            'alias_guesses': {oid: store.obligation(oid)['suggested_resident_id']
+                              for oid, target in aliases.items() if target in ids},
             'verdicts': house_verdicts.history(store, *week_times(week))}
 
 
@@ -151,7 +161,7 @@ def close_weeks(store: Store, *, now: datetime | None = None) -> None:
     """Close in order, once, at local Monday noon; catch up after a stopped Jetson."""
     now = now or utcnow()
     with store.lock, store.conn:
-        earliest = store.conn.execute('SELECT min(due_at) FROM obligations WHERE timing_known=1').fetchone()[0]
+        earliest = store.conn.execute('SELECT min(due_at) FROM obligations').fetchone()[0]
         first = date.fromisoformat(week_bounds(now=now)['start']) - timedelta(weeks=7)
         if earliest:
             oldest = parse_stamp(earliest).astimezone(timezone()).date()
@@ -171,9 +181,11 @@ def close_weeks(store: Store, *, now: datetime | None = None) -> None:
                 snapshot['guess_basis'] = store.suggestion_basis(ids)
                 snapshot['evidence'] = [dict(r) for r in store.conn.execute(
                     f"""SELECT * FROM evidence WHERE kind IN ('snapshot','filmstrip') AND (
-                        obligation_id IN ({','.join('?' for _ in ids)}) OR (kind='filmstrip' AND label='arrival'
+                        obligation_id IN ({','.join('?' for _ in ids)}) OR id IN (
+                        SELECT v.evidence_id FROM arrival_visits v JOIN arrival_visit_members m ON m.visit_id=v.id
+                        WHERE m.obligation_id IN ({','.join('?' for _ in ids)})) OR (kind='filmstrip' AND label='arrival'
                         AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids')
-                            WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids])] if ids else []
+                            WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids, *ids])] if ids else []
                 snapshot['week']['closed'] = True
                 current = carry_duty(current, snapshot['pick'], settings, since=week['closes_at'])
                 snapshot['on_duty'] = current
@@ -199,9 +211,10 @@ def result(store: Store, start: str | None = None, *, now: datetime | None = Non
 
 
 def assert_unfrozen(store: Store, item: dict, *, now: datetime | None = None) -> None:
-    if not item.get('timing_known') or not item.get('due_at'):
+    due = item.get('due_at') or item.get('followup_at')
+    if not due:
         return
-    week = week_bounds(now=parse_stamp(item['due_at']))
+    week = week_bounds(now=parse_stamp(due))
     frozen = store.conn.execute('SELECT 1 FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
     # Once the league starts, operator edits also respect noon between worker ticks.
     initialized = store.conn.execute('SELECT 1 FROM league_weeks LIMIT 1').fetchone()

@@ -1284,7 +1284,14 @@ class Store:
 
     def mark_duplicate(self, obligation_id, of_id, by):
         from .house_verdicts import mark
-        mark(self, [obligation_id], 'duplicate', by, of_id)
+        from .house_visits import duplicate_map
+        self.obligation(obligation_id)
+        self.obligation(of_id)
+        aliases = duplicate_map(self)
+        target = aliases.get(of_id, of_id)
+        if target == obligation_id:
+            raise ValueError('A dish cannot duplicate itself, including through another alias.')
+        mark(self, [obligation_id], 'duplicate', by, target)
     # END LANE G MERGE ADAPTERS.
 
     def create_link(self, resident_id: int) -> str:
