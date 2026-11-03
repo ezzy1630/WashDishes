@@ -2,7 +2,7 @@
 import { fill, h, icon, api, state, emit, toast, field, form, bytes, busy, safeURL, head, ago, pct, activeResidents } from "../core.js";
 import { ROLE_COLORS, viewState } from "../live.js";
 
-const SECTIONS = [["league", "Kitchen duty"], ["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
+const SECTIONS = [["league", "Kitchen duty"], ["remembered", "Remembered non-dishes"], ["camera", "Camera"], ["areas", "Counter areas"], ["rules", "Rules"], ["alerts", "Owners and alerts"], ["detection", "Detection"], ["storage", "Storage"]];
 const ROLES = { dirty: "Counter · dishes get left here", sink: "Sink", clean: "Rack · clean dishes", storage: "Cabinet · put away" };
 const ROLE_SHORT = { dirty: "counter", sink: "sink", clean: "rack", storage: "cabinet" };
 
@@ -11,11 +11,13 @@ export function setupPage(main) {
   const sections = demo ? [...SECTIONS, ["demo", "Demo"]] : SECTIONS;
   const nav = h("nav", { class: "subnav", "aria-label": "Settings sections" }, sections.map(([id, label]) => h("a", { href: `#/setup/${id}`, "data-id": id, onclick: e => { e.preventDefault(); document.getElementById(`s-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); history.replaceState(null, "", `#/setup/${id}`); } }, label)),
     h("a", { href: "#/model", class: "subnav-out" }, "Train the detector", icon("arrowRight", 13)));
+  const rememberedBox = h("div", { class: "card-body stack" });
   const camStatus = h("div");
   const storageBox = h("div");
   const leagueBox = h('div', { class: 'card-body league-settings' }, h('p', { class: 'tx2' }, 'Loading kitchen duty rules…'));
   const content = h("div", { class: "col" },
     section('league', 'Kitchen duty', 'Weekly points for late dishes. The house can vote to switch duty off.', leagueBox),
+    section("remembered", "Remembered non-dishes", "Objects marked Not a dish or It’s clean. Near-exact matches in the same area wait for review. Up to 64 are kept; removing one allows new records again.", rememberedBox),
     section("camera", "Camera", "The kitchen camera on your local network. Its password never leaves the Jetson.", camStatus, h("div", { class: "card-body" }, cameraForm())),
     section("areas", "Counter areas", "Where dishes get left, washed and put away, drawn on today's picture.", areaEditor()),
     section("rules", "Rules", "How long a dish can sit, and how long photos and footage are kept.", h("div", { class: "card-body" }, rulesForm())),
@@ -30,6 +32,22 @@ export function setupPage(main) {
 
   function section(id, title, sub, ...children) {
     return h("section", { class: "setup-sec card", id: `s-${id}`, "data-id": id }, head(title, sub), ...children);
+  }
+
+  async function loadRemembered() {
+    try {
+      const data = await api('/api/remembered-objects');
+      if (!rememberedBox.isConnected) return;
+      fill(rememberedBox, data.items.length ? data.items.map(item => h('div', { class: 'row-actions' },
+        h('span', {}, `Record ${item.obligation_id} · ${item.area_name} · ${item.verdict === 'clean' ? 'It’s clean' : 'Not a dish'} · ${item.by} · ${ago(item.created_at)}`),
+        h('button', { type: 'button', class: 'btn quiet sm', 'aria-label': `Forget record ${item.obligation_id}`, onclick: e => busy(e.currentTarget, async () => {
+          await api(`/api/remembered-objects/${item.id}`, { method: 'DELETE' });
+          toast('Object forgotten.'); await loadRemembered();
+        }) }, 'Remove'))) : h('p', { class: 'tx2' }, 'No remembered objects yet.'));
+    } catch {
+      fill(rememberedBox, h('p', { role: 'alert' }, 'Could not load remembered objects.'),
+        h('button', { class: 'btn sm', onclick: loadRemembered }, 'Retry'));
+    }
   }
 
   function renderStatus() {
@@ -242,7 +260,7 @@ export function setupPage(main) {
       h("div", { class: "form-actions" }, error, h("button", { type: "button", class: "btn quiet", onclick: () => { areas = saved(); current = areas[0]?.id; renderList(); draw(); } }, "Reset"), h("button", { type: "button", class: "btn primary", disabled: demo, onclick: save }, "Save areas")));
   }
 
-  renderStatus(); renderStorage(); loadLeague();
+  renderStatus(); renderStorage(); loadLeague(); loadRemembered();
   const initial = location.hash.split("/")[2];
   if (initial) requestAnimationFrame(() => document.getElementById(`s-${initial}`)?.scrollIntoView({ block: "start" }));
   return { update(kind) { if (kind === "data") { renderStatus(); renderStorage(); } }, destroy() { spy.disconnect(); } };

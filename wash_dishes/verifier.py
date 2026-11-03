@@ -278,6 +278,10 @@ def store_hook(verifier: DishVerifier, store: Store, *, threshold: float | None 
                 log.warning('New dish deferred: verifier model/probe is unavailable')
                 return {'dish': None, 'score': None, 'reason': 'Verifier model/probe unavailable'}
             vector = verifier.features(image, box)
+            from .inventory import area_for
+            remembered = store.remembered_match(vector.tolist(), area_for(box, store.settings()['areas']))
+            if remembered:
+                return {'dish': None, 'score': None, 'reason': f"Remembered object #{remembered['id']} (similarity {remembered['similarity']:.6f}); awaiting review"}
             scored = verifier.score(vector)
             negative = verifier.negative(image, box) if scored and scored[1] else None
             empty = verifier.empty_spot(image, box, store.settings()['areas']) if scored and scored[1] else False

@@ -556,6 +556,15 @@ def create_app(config: Config | None = None) -> FastAPI:
         store.event("face_removed", "A housemate's local face samples were removed", data={"resident_id": resident_id})
         return {"enrolled_samples": 0}
 
+    @app.get('/api/remembered-objects', dependencies=[Depends(authenticated)])
+    def remembered_objects():
+        return {'items': store.remembered_objects()}
+
+    @app.delete('/api/remembered-objects/{exemplar_id}', dependencies=[Depends(authenticated)])
+    def forget_object(exemplar_id: int):
+        store.forget_object(exemplar_id)
+        return {'ok': True}
+
     @app.patch("/api/settings", dependencies=[Depends(authenticated)])
     def settings(body: dict):
         saved = store.set_settings(body)

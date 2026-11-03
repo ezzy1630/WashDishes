@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_SETTINGS, validate_settings
 from .evidence import evidence_timeline
+from .remembered import MAX_EXEMPLARS, SIMILARITY_THRESHOLD, similarity, unit_embedding
 
 # Legacy ranking features remain useful for fit diagnostics. Displaying a guess additionally requires
 # an absolute visual match and separation from the next resident; clothing never crosses local dates.
@@ -153,6 +154,12 @@ class Store:
                 id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, embedding TEXT NOT NULL, score REAL,
                 obligation_id INTEGER REFERENCES obligations(id), label INTEGER);
             CREATE INDEX IF NOT EXISTS dish_samples_obligation ON dish_samples(obligation_id);
+            CREATE TABLE IF NOT EXISTS remembered_objects(
+                id INTEGER PRIMARY KEY, obligation_id INTEGER NOT NULL REFERENCES obligations(id),
+                event_id INTEGER NOT NULL REFERENCES events(id), embedding TEXT NOT NULL,
+                area_id TEXT NOT NULL, area_name TEXT NOT NULL, area_role TEXT NOT NULL,
+                by TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(event_id));
             CREATE TABLE IF NOT EXISTS dish_reviews(
                 obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
                 verdict TEXT NOT NULL, of_id INTEGER REFERENCES obligations(id),
@@ -810,6 +817,8 @@ class Store:
                             'before': before, 'review_before': dict(review) if review else None, 'people_before': people})
                 event_id = self.conn.execute('SELECT last_insert_rowid()').fetchone()[0]
                 self.conn.execute('INSERT OR REPLACE INTO dish_reviews VALUES(?,?,?,?,?)', (i, verdict, of_id, by.strip(), event_id))
+                if verdict in ('not_dish', 'clean'):
+                    self._remember_corrected_object(i, event_id, by.strip())
             self._refresh_identity_suggestions()
             return [self.obligation(i) for i in ids]
 
@@ -833,6 +842,7 @@ class Store:
                               (*[data['before'][k] for k in fields], obligation_id))
             for person in data['people_before']:
                 self.conn.execute('UPDATE person_samples SET resident_id=?,hint_resident_id=? WHERE id=?', (person['resident_id'], person['hint_resident_id'], person['id']))
+            self.conn.execute('DELETE FROM remembered_objects WHERE event_id=?', (review['event_id'],))
             self.conn.execute('DELETE FROM dish_reviews WHERE obligation_id=?', (obligation_id,))
             previous = data['review_before']
             if previous:
@@ -840,6 +850,48 @@ class Store:
             self._event(obligation_id, 'dish_correction_undone', 'Dish correction undone by operator', {'by': by.strip(), 'correction_event_id': review['event_id']})
             self._refresh_identity_suggestions()
             return self.obligation(obligation_id)
+
+    def _remember_corrected_object(self, obligation_id: int, event_id: int, by: str) -> None:
+        item = self.obligation(obligation_id)
+        areas = [a for a in self.settings()['areas'] if a['name'] == item['location'] and a['role'] in ('dirty', 'sink')]
+        sample = self.conn.execute('SELECT embedding FROM dish_samples WHERE obligation_id=? ORDER BY id DESC LIMIT 1', (obligation_id,)).fetchone()
+        # Historical records may lack linked features. A correction must not invent them.
+        if len(areas) != 1 or not sample:
+            return
+        try:
+            embedding = unit_embedding(json.loads(sample['embedding']))
+        except (ValueError, TypeError):
+            return
+        area = areas[0]
+        self.conn.execute('INSERT INTO remembered_objects(obligation_id,event_id,embedding,area_id,area_name,area_role,by,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                          (obligation_id, event_id, json.dumps(embedding), area['id'], area['name'], area['role'], by, stamp()))
+        self.conn.execute('DELETE FROM remembered_objects WHERE id NOT IN (SELECT id FROM remembered_objects ORDER BY id DESC LIMIT ?)', (MAX_EXEMPLARS,))
+
+    def remembered_objects(self) -> list[dict]:
+        with self.lock:
+            return [dict(r) for r in self.conn.execute("""SELECT m.id,m.obligation_id,m.area_id,m.area_name,m.by,m.created_at,r.verdict
+                FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id
+                ORDER BY m.id DESC""")]
+
+    def forget_object(self, exemplar_id: int) -> None:
+        with self.lock, self.conn:
+            if not self.conn.execute('DELETE FROM remembered_objects WHERE id=?', (exemplar_id,)).rowcount:
+                raise LookupError('That remembered object was not found.')
+            self._event(None, 'remembered_object_removed', 'The operator removed a remembered object.', {'exemplar_id': exemplar_id, 'by': 'operator'})
+
+    def remembered_match(self, embedding: list[float], area: dict | None) -> dict | None:
+        if not area or area['role'] not in ('dirty', 'sink'):
+            return None
+        vector = unit_embedding(embedding)
+        with self.lock:
+            rows = self.conn.execute("""SELECT m.id,m.embedding FROM remembered_objects m
+                JOIN dish_reviews r ON r.event_id=m.event_id
+                WHERE m.area_id=? AND m.area_role=?""", (area['id'], area['role'])).fetchall()
+            for row in rows:
+                score = similarity(vector, json.loads(row['embedding']))
+                if score >= SIMILARITY_THRESHOLD:
+                    return {'id': row['id'], 'similarity': score}
+        return None
 
     def labeled_dish_samples(self) -> list[dict]:
         """Samples with a person's verdict: given directly in a kitchen check, or implied by a Review answer.
