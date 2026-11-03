@@ -7,7 +7,7 @@ from wash_dishes import learning, learning_jobs
 from wash_dishes.store import stamp, utcnow
 
 
-def setup(store, task='present', owner=None, at=None, suffix=''):
+def make_question(store, task='present', owner=None, at=None, suffix=''):
     people = store.residents()
     if not people:
         people = [store.add_resident(n) for n in ('A', 'B', 'C', 'D')]
@@ -25,7 +25,7 @@ def label(store, q, person, answer='yes', value=None):
 
 
 def test_two_independent_residents_operator_and_conflict(store):
-    q, people = setup(store)
+    q, people = make_question(store)
     assert label(store, q, people[0])['state'] == 'pending'
     with pytest.raises(ValueError):
         label(store, q, people[0])
@@ -42,7 +42,7 @@ def test_two_independent_residents_operator_and_conflict(store):
 
 
 def test_own_exculpation_never_confirms_itself_and_new_owner_invalidates(store):
-    q, p = setup(store)
+    q, p = make_question(store)
     with store.conn:
         store.conn.execute('UPDATE obligations SET resident_id=? WHERE id=(SELECT obligation_id FROM learning_questions WHERE id=?)', (p[0], q))
     with pytest.raises(ValueError, match='independent'):
@@ -57,7 +57,7 @@ def test_own_exculpation_never_confirms_itself_and_new_owner_invalidates(store):
 
 
 def test_identity_self_claim_not_ownership_negative_does_not_identify_someone_else(store):
-    q, p = setup(store, task='identity')
+    q, p = make_question(store, task='identity')
     claim = label(store, q, p[0], 'me')
     assert claim['state'] == 'trusted'
     assert learning.truth(store)[0]['value']['resident_id'] == p[0]
@@ -69,7 +69,7 @@ def test_identity_self_claim_not_ownership_negative_does_not_identify_someone_el
 
 
 def test_undo_preserves_audit_and_removes_export(store):
-    q, p = setup(store)
+    q, p = make_question(store)
     saved = label(store, q, p[0])
     label(store, q, p[1])
     with pytest.raises(ValueError):
@@ -82,7 +82,7 @@ def test_undo_preserves_audit_and_removes_export(store):
 
 
 def test_box_validation_and_unsure(store):
-    q, p = setup(store, task='missed')
+    q, p = make_question(store, task='missed')
     for box in ([0, 0, 2, 1], [0, 0, float('nan'), .1], [0, 0, 0, 0]):
         with pytest.raises(ValueError):
             label(store, q, p[0], 'box', {'box': box, 'kind': 'cup'})
@@ -91,11 +91,11 @@ def test_box_validation_and_unsure(store):
 
 
 def test_active_learning_excludes_every_stake_and_caps_reservations(store):
-    q, p = setup(store)
+    q, p = make_question(store)
     with store.conn:
         store.conn.execute('UPDATE learning_questions SET interested=?', (json.dumps([p[0]]),))
         for _ in range(18):
-            setup(store)
+            make_question(store)
         queue = learning.queue(store, p[0], limit=50)
     assert q not in [r['id'] for r in queue]
     assert len(queue) == learning.DAILY_CAP
@@ -210,7 +210,7 @@ def test_later_truth_can_automatically_restore_previous_model(store, monkeypatch
 
 
 def test_presence_and_kind_contradictions_are_excluded_and_surfaced(store):
-    q, p=setup(store)
+    q, p=make_question(store)
     raw=learning.question(store,q)
     with store.conn:
         other=learning.add_question(store,source='other-kind',task='kind',evidence_id=raw['evidence_id'],obligation_id=raw['obligation_id'],box=[.1,.2,.3,.4])
@@ -221,7 +221,7 @@ def test_presence_and_kind_contradictions_are_excluded_and_surfaced(store):
 
 
 def test_same_dish_question_excludes_owners_of_both_visits(store):
-    q,p=setup(store)
+    q,p=make_question(store)
     second=store.create_obligation(p[1],[{'kind':'pan','quantity':1}])
     original=learning.question(store,q)
     with store.conn:
@@ -232,7 +232,7 @@ def test_same_dish_question_excludes_owners_of_both_visits(store):
 
 def test_training_gallery_contains_no_evaluation_row(store, monkeypatch):
     from wash_dishes import identity_fit
-    q, people=setup(store,task='identity')
+    q, people=make_question(store,task='identity')
     item=learning.question(store,q)
     label(store,q,None,'me',people[0])
     train=learning.truth(store)
@@ -242,7 +242,7 @@ def test_training_gallery_contains_no_evaluation_row(store, monkeypatch):
         store.add_evidence(item['obligation_id'],'later-crop','later.jpg','snapshot','Person crop')
         store.conn.execute("INSERT INTO person_samples(obligation_id,created_at,embedding,evidence_id,cue) VALUES(?,?,?,?,'outfit')", (item['obligation_id'],stamp(), '[0,1]','later-crop'))
         # A held-out name must never enter the staged trainer database.
-        reserved, _ = setup(store,task='identity')
+        reserved, _ = make_question(store,task='identity')
     label(store,reserved,None,'me',people[1])
     held=learning.truth(store)[1:]
     held=[r|{'evidence_id':str(i)} for i in range(20) for r in held]
@@ -260,7 +260,7 @@ def test_training_gallery_contains_no_evaluation_row(store, monkeypatch):
 
 
 def test_dish_questions_never_use_the_latest_person_crop(store):
-    q, _=setup(store)
+    q, _=make_question(store)
     original=learning.question(store,q)
     oid=original['obligation_id']
     store.add_evidence(oid,'person-later','person.jpg','snapshot','Person shown in arrival visit',at=utcnow()+timedelta(seconds=10),capture={'identity_source':'arrival_visit'})

@@ -10,9 +10,10 @@ from .remembered import EMBEDDING_SIZE, similarity, unit_embedding
 
 
 @lru_cache(maxsize=4)
-def _read(path: Path, mtime: int, size: int) -> dict | None:
+def _read(data: bytes) -> dict | None:
+    # Keyed on content: an in-place rewrite can keep the same size and mtime tick.
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(data)
         weights, bias = value['weights'], value['bias']
         low, high = value['threshold'], value['retain_threshold']
         if (len(weights) != EMBEDDING_SIZE
@@ -34,8 +35,7 @@ def probe(root: Path) -> dict | None:
     """
     path = root / 'models' / 'dish-review-probe.json'
     try:
-        stat = path.stat()
-        return _read(path, stat.st_mtime_ns, stat.st_size)
+        return _read(path.read_bytes())
     except OSError:
         return None
 

@@ -35,9 +35,10 @@ def rate(capture: dict, *, has_filmstrip: bool, has_photo: bool, dish_confident:
 
 
 @lru_cache(maxsize=4)
-def _probe(path: Path, mtime: int, size: int) -> dict | None:
+def _probe(data: bytes) -> dict | None:
+    # Keyed on content: an in-place rewrite can keep the same size and mtime tick.
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(data)
         weights, bias = value['weights'], value['bias']
         threshold = value.get('proof_threshold', value['threshold'])
         if (len(weights) != EMBEDDING_SIZE or any(type(w) not in (int, float) or not math.isfinite(w) for w in weights)
@@ -53,8 +54,7 @@ def kitchen_probe(root: Path) -> dict | None:
     """Read the adopted probe without importing/loading image inference libraries."""
     path = root / 'models' / 'dish-probe-kitchen.json'
     try:
-        stat = path.stat()
-        return _probe(path, stat.st_mtime_ns, stat.st_size)
+        return _probe(path.read_bytes())
     except OSError:
         return None
 
