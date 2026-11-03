@@ -71,6 +71,7 @@ Visit = {
   dispute: Dispute|null, can_name: boolean, can_dispute: boolean, can_settle: boolean
 }
 WeekResponse = {
+  start_week: LOCAL_DATE,
   week: {start: LOCAL_DATE, end: LOCAL_DATE, closes_at: UTC_ISO,
          closed: boolean, timezone: IANA_ZONE},
   rules: {enabled: boolean, weights: {pan: integer, pot: integer, default: integer},
@@ -103,7 +104,8 @@ End is exclusive. Display the last included calendar day (end minus one day),
 without subtracting from `closes_at`: the naming grace ends at that actual instant.
 
 Standings include all active residents, descending points then
-name; `dishes` sums quantities. Last eight weeks include current; open weeks have
+name; `dishes` sums quantities. Up to eight weeks include current, bounded by
+`start_week`; open weeks have
 null `pick_name`. Unnamed dishes show potential points but contribute zero to
 standings; open disputes show zero points. `on_duty` always describes **now**, even
 on a historical page. Closed scores, roster, rules, guesses and pick stay frozen.
@@ -141,9 +143,45 @@ Unnamed dishes remain after removal.
 Defaults: pan/pot 2, other 1, times quantity; pick needs 4 points and a lead of 2,
 with no tie. A qualifying close assigns next week's duty; no pick retains duty.
 Off clears duty; reenabling does not resurrect it. An override holds until the next
-qualifying close. A minute worker and request-time catch-up close weeks. On first
-run, historical weeks freeze with then-available names/rules; old votes cannot be
-reconstructed.
+qualifying close. A minute worker and request-time catch-up close weeks.
+
+The first call to league rules or week closing durably records `start_week`: the
+Monday of that call's week in the house timezone. It lives in the singleton
+`league_start` row, separately from the replaceable rules JSON. Rules PATCH cannot
+change it. Only weeks starting on or after it can close, freeze names or pick duty.
+The first run does not close any historical weeks, even when old obligations exist;
+the start week first closes the following Monday at noon. Later downtime catches
+up only from that boundary. No heuristic migration infers a start from old results.
+
+Both house and operator week responses expose `start_week`. Their shared `weeks`
+list omits earlier weeks, so both past-week selectors use the same boundary.
+Explicit pre-start requests to week/result/share endpoints return 400 with
+“That week is before the league started (YYYY-MM-DD).” Pre-start records remain
+ordinary records, editable via the operator dashboard's record actions; legacy
+frozen rows from before the start cannot lock them. They do not appear as league
+weeks or provide signed house media.
+
+### Repair an already backfilled database
+
+Run the explicit local operator CLI against the intended existing data root
+(`WASHDISHES_DATA_DIR` contains the `live/history.db` database):
+
+```sh
+WASHDISHES_DATA_DIR=/path/to/data python -m wash_dishes league-reset-start --dry-run
+WASHDISHES_DATA_DIR=/path/to/data python -m wash_dishes league-reset-start
+```
+
+Both print JSON with `dry_run`, `previous_start_week`, `start_week`,
+`deleted_weeks`, `cleared_duty` and `changed` (whether changes are needed).
+Dry-run opens the existing database read-only, without preparing directories or
+running schema migrations, and changes nothing. The real command atomically sets
+the start to the current house week, deletes only earlier `league_weeks`, and
+clears duty when results were deleted, `why` begins with `Weekly pick`, and
+`since` falls on or before the start Monday in house time (including a preceding
+week's Monday-noon pick). House-vote overrides and newer assignments stay intact.
+Obligations, evidence, rules and old audit events stay intact. A changed reset
+records `league_start_reset` with the JSON change report. Repeating it in the same
+week is a no-op, including no additional event. No camera or remote service runs.
 
 ## Naming and disputes
 
@@ -235,7 +273,7 @@ Errors: `{"detail":"plain sentence"}`; 400 invalid input, 401 sign-in, 403 forbi
 404 absent/ineligible, 409 closed/conflicting, 429 rate limit, 503 auth unavailable.
 
 Private operator routes retain cookie + CSRF under `/api/league`: `GET week`
-(same response, local authenticated media URLs), `GET config` (`rules,on_duty`),
+(same response, local authenticated media URLs), `GET config` (`rules,on_duty,start_week`),
 `PATCH rules` (full rules), `POST duty` (`resident_id` or null), `GET accounts`
 (`[{resident_id,has_account}]`), `POST residents/{id}/join-link` (`url,expires_at`),
 and dish/visit `name` and `settle`, visit `verdict` and `undo-verdict`. No money features.

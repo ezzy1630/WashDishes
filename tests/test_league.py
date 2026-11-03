@@ -65,6 +65,7 @@ def test_empty_week_closes_and_freezes_zero_standings(store):
     store.add_resident('Alex')
     now = utcnow()
     prior = (datetime.fromisoformat(league.week_bounds(now=now)['start']) - timedelta(weeks=2)).date().isoformat()
+    league.close_weeks(store, now=league.week_times(league.week_bounds(prior))[0])
     closed = league.result(store, prior, now=now)
     assert closed['week']['closed'] and closed['standings'][0]['points'] == 0
     assert closed['pick']['resident_id'] is None
@@ -87,6 +88,47 @@ def late_record(store, *, at=None, owner=None, verified=True):
     with store.lock, store.conn:
         store.conn.execute('UPDATE obligations SET overdue_verified=? WHERE id=?', (int(verified), item['id']))
     return store.obligation(item['id'])
+
+
+def test_first_run_does_not_backfill_old_obligations_and_closes_only_start_week(store):
+    now = datetime(2026, 11, 3, 18, tzinfo=timezone.utc)
+    owner = store.add_resident('Alex')['id']
+    late_record(store, at=now - timedelta(weeks=10), owner=owner)
+    league.close_weeks(store, now=now)
+    assert not store.conn.execute('SELECT * FROM league_weeks').fetchall()
+    assert league.duty(store) is None
+    league.close_weeks(store, now=now + timedelta(weeks=1))
+    assert [r[0] for r in store.conn.execute('SELECT start FROM league_weeks')] == ['2026-11-02']
+    assert league.duty(store) is None
+
+
+def test_rules_first_touch_persists_start_across_reopen(store, monkeypatch):
+    from wash_dishes.store import Store
+    now = datetime(2026, 11, 2, 1, tzinfo=timezone.utc)  # Still Sunday in the house.
+    monkeypatch.setenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles')
+    monkeypatch.setattr(league, 'utcnow', lambda: now)
+    assert league.rules(store) == league.DEFAULT_RULES
+    reopened = Store(store.root)
+    try:
+        assert league.start_week(reopened, now=now + timedelta(weeks=1)) == '2026-10-26'
+    finally:
+        reopened.close()
+
+
+def test_pre_start_week_is_not_a_frozen_league_result_even_with_legacy_rows(store):
+    now = utcnow()
+    prior = league.week_bounds(now=now - timedelta(weeks=2))
+    resident = store.add_resident('Alex')['id']
+    item = late_record(store, at=now - timedelta(weeks=2))
+    with store.conn:
+        store.conn.execute('INSERT INTO league_weeks VALUES(?,?,?,?,?)',
+                           (prior['start'], prior['end'], prior['closes_at'], stamp(now), '{}'))
+    league.close_weeks(store, now=now)
+    assert store.action(item['id'], 'confirm', resident_id=resident)['resident_id'] == resident
+    for read in (league.snapshot, league.result):
+        with pytest.raises(ValueError, match='before the league started'):
+            read(store, prior['start'], now=now)
+    assert league.duty(store) is None
 
 
 def test_left_out_predicate_includes_gone_unknown_but_excludes_unverified_and_in_time(store):
@@ -140,6 +182,7 @@ def test_week_close_grace_freezes_scores_rules_names_pick_and_carries_duty(store
     monkeypatch.setenv('WASHDISHES_TIMEZONE', 'America/Los_Angeles')
     resident = store.add_resident('Zoe')
     sunday = datetime(2025, 11, 2, 21, tzinfo=ZoneInfo('America/Los_Angeles'))
+    league.close_weeks(store, now=sunday)
     item = late_record(store, at=sunday, owner=resident['id'])
     week = league.week_bounds('2025-10-27')
     closes = parse_stamp(week['closes_at'])
@@ -185,6 +228,7 @@ def test_override_disabled_and_reenable_do_not_resurrect_old_duty(store):
 def test_operator_names_refuse_exact_noon_between_week_closing_ticks(store):
     person = store.add_resident('Alex')
     sunday = datetime(2025, 11, 2, 21, tzinfo=ZoneInfo('America/Los_Angeles'))
+    league.close_weeks(store, now=sunday)
     item = late_record(store, at=sunday)
     closes = parse_stamp(league.week_bounds('2025-10-27')['closes_at'])
     league.result(store, '2025-10-27', now=closes - timedelta(seconds=1))
@@ -246,6 +290,7 @@ def test_legacy_closed_pick_is_projected_from_frozen_totals_without_rewriting_sn
     store.add_resident('Zoe')
     now = utcnow()
     prior = (datetime.fromisoformat(league.week_bounds(now=now)['start']) - timedelta(weeks=2)).date().isoformat()
+    league.close_weeks(store, now=league.week_times(league.week_bounds(prior))[0])
     league.result(store, prior, now=now)
     snapshot = json.loads(store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (prior,)).fetchone()[0])
     snapshot['standings'][0]['points'] = 6

@@ -4,6 +4,7 @@ import { week } from '../house-site/js/contracts.js';
 import { pickDetail } from '../house-site/js/pages/league-copy.js';
 
 const payload = pick => ({
+  start_week:'2026-11-02',
   week: {start:'2026-11-02', end:'2026-11-09', closes_at:'2026-11-09T20:00:00Z', closed:false, timezone:'America/Los_Angeles'},
   rules: {enabled:true,weights:{pan:2,pot:2,default:1},min_points:4,min_lead:2},
   // Deliberately unrelated totals: a view must render the authoritative decision, not derive it.

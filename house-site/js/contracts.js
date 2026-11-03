@@ -104,6 +104,7 @@ export function week(value) {
   const timezone = string(w.timezone);
   new Intl.DateTimeFormat("en", { timeZone: timezone });
   return {
+    start_week: string(x.start_week),
     week: {
       start: string(w.start),
       end: string(w.end),

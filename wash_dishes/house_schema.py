@@ -28,6 +28,7 @@ def migrate(conn) -> None:
             token_hash TEXT PRIMARY KEY, resident_id INTEGER NOT NULL REFERENCES residents(id),
             expires_at TEXT NOT NULL, used_at TEXT);
         CREATE TABLE IF NOT EXISTS league_rules(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS league_start(id INTEGER PRIMARY KEY CHECK(id=1), start_week TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS league_weeks(
             start TEXT PRIMARY KEY, end TEXT NOT NULL, closes_at TEXT NOT NULL,
             closed_at TEXT NOT NULL, snapshot TEXT NOT NULL);

@@ -64,6 +64,46 @@ def operator(client):
     client.headers['X-CSRF-Token'] = result.json()['csrf_token']
 
 
+def test_start_week_survives_rules_patch_and_bounds_both_week_views(house_client, monkeypatch):
+    client, store = house_client, house_client.app.state.store
+    now = utcnow()
+    monkeypatch.setattr(league, 'utcnow', lambda: now)
+    beginning = league.week_bounds(now=now)['start']
+    prior = league.week_bounds(now=now - timedelta(weeks=2))
+    item = late(client)
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=? WHERE id=?', (stamp(now - timedelta(weeks=2)), item['id']))
+        # A buggy legacy snapshot must neither appear nor lock an ordinary record.
+        store.conn.execute('INSERT INTO league_weeks VALUES(?,?,?,?,?)',
+                           (prior['start'], prior['end'], prior['closes_at'], stamp(now), '{}'))
+    operator(client)
+    for endpoint in ('/house/api/week', '/api/league/week'):
+        data = client.get(endpoint).json()
+        assert data['start_week'] == beginning
+        assert data['weeks'] == [{'start': beginning, 'closed': False, 'pick_name': None}]
+        response = client.get(endpoint, params={'start': prior['start']})
+        assert response.status_code == 400 and 'before the league started' in response.json()['detail']
+    assert client.get('/api/league/share', params={'start': prior['start']}).status_code == 400
+    for endpoint in ('/house/api', '/api/league'):
+        response = client.post(f"{endpoint}/dishes/{item['id']}/name", json={'resident_id': client.people[0]['id']})
+        assert response.status_code == 400 and 'before the league started' in response.json()['detail']
+    store.add_evidence(item['id'], 'pre-start-photo', 'before.jpg', 'snapshot', 'Old dish', at=now)
+    evidence = dict(store.conn.execute("SELECT * FROM evidence WHERE id='pre-start-photo'").fetchone())
+    url = client.app.state.house.signed_url(evidence)
+    assert client.get(urlsplit(url).path + '?' + urlsplit(url).query).status_code == 404
+    monkeypatch.setattr(league, 'utcnow', lambda: now + timedelta(weeks=1))
+    assert client.patch('/api/league/rules', json={'min_points': 10}).status_code == 200
+    assert client.get('/api/league/config').json()['start_week'] == beginning
+    assert league.start_week(store) == beginning
+    assert league.rules(store)['min_points'] == 10
+    # Validation prevents an operator PATCH from replacing the persisted boundary.
+    assert client.patch('/api/league/rules', json={'start_week': prior['start']}).status_code == 422
+    response = client.post(f"/api/obligations/{item['id']}/action", json={
+        'action': 'confirm', 'resident_id': client.people[0]['id']})
+    assert response.status_code == 200, response.text
+    assert response.json()['resident_id'] == client.people[0]['id']
+
+
 def test_auth_valid_ec_and_subject_mapping(house_client):
     client = house_client
     assert client.get('/house/api/me').json() == {'resident': {'id': client.people[0]['id'], 'name': 'Alex'}, 'house': 'Highest House'}
@@ -178,6 +218,7 @@ def test_naming_disputing_settling_permissions_and_history(house_client):
 
 def test_operator_settlement_closed_week_errors_rate_and_invalid_payloads(house_client):
     client = house_client
+    league.close_weeks(client.app.state.store, now=utcnow() - timedelta(weeks=2))
     item = late(client, owner=client.people[0]['id'])
     path = f"/house/api/dishes/{item['id']}"
     assert client.post(path + '/dispute', json={}).status_code == 200
@@ -422,6 +463,7 @@ def test_camera_automatic_name_is_reviewable_and_only_human_confirmation_scores(
 
 def test_closed_week_refuses_verdict_and_operator_undo(house_client):
     client, store = house_client, house_client.app.state.store
+    league.close_weeks(store, now=utcnow() - timedelta(weeks=2))
     item = late(client)
     path = f"/house/api/visits/dish-{item['id']}/verdict"
     assert client.post(path, json={'verdict': 'clean'}).status_code == 200
@@ -494,6 +536,7 @@ def test_arrival_aliases_count_once_and_inherit_visit_review(house_client):
 
 def test_untimed_named_observation_scores_but_pickup_without_late_photo_does_not(house_client):
     client, store = house_client, house_client.app.state.store
+    league.close_weeks(store, now=utcnow() - timedelta(weeks=2))
     observed, pickup = late(client, verified=False), late(client, verified=False)
     with store.conn:
         store.conn.execute('UPDATE obligations SET timing_known=0 WHERE id IN (?,?)', (observed['id'], pickup['id']))
@@ -555,6 +598,7 @@ def test_human_duplicate_inside_a_visit_does_not_block_naming(house_client):
 
 def test_closed_week_keeps_canonical_membership_but_expires_shared_media(house_client):
     client, store = house_client, house_client.app.state.store
+    league.close_weeks(store, now=utcnow() - timedelta(weeks=2))
     items = [late(client) for _ in range(2)]
     eid = stored_visit(client, items, aliases={items[1]['id']: items[0]['id']})
     store.action(items[0]['id'], 'confirm', resident_id=client.people[0]['id'])
@@ -583,6 +627,7 @@ def test_closed_week_keeps_canonical_membership_but_expires_shared_media(house_c
 
 def test_alias_deadline_cannot_move_a_physical_dish_into_another_week(house_client):
     client, store = house_client, house_client.app.state.store
+    league.close_weeks(store, now=utcnow() - timedelta(weeks=2))
     original, alias = late(client), late(client)
     stored_visit(client, [original, alias], aliases={alias['id']: original['id']})
     old = utcnow() - timedelta(weeks=2)

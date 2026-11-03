@@ -252,6 +252,7 @@ function week(start, user) {
               : `${points ? `${points} ${points === 1 ? "point" : "points"}` : "No named points"} · needs 4`,
   };
   return {
+    start_week: "2026-10-19",
     week: {
       start: old ? "2026-10-26" : older ? "2026-10-19" : "2026-11-02",
       end: old ? "2026-11-02" : older ? "2026-10-26" : "2026-11-09",

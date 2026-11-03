@@ -46,6 +46,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     const leaders = standings.filter(p => p.points > 0);
     fill(summary,
       h('header', { class: 'home-section-head' }, h('h1', { id: 'page-title', tabindex: '-1' }, current ? 'This week' : `Week of ${label(week.start)}`), choose),
+      h('p', { class: 'league-note' }, `League started ${label(data.start_week)}.`),
       h('div', { class: 'week-duty' }, h('p', {}, 'On kitchen ', h('strong', {}, duty?.name || 'Nobody yet')),
         h('p', {}, !rules.enabled ? 'Kitchen duty is off.' : week.closed ? 'Week closed · points frozen' : `Closes ${label(week.end)} at noon · house time`)),
       h('ol', { class: 'week-standings', 'aria-label': 'Weekly points' }, leaders.slice(0, 3).map(p => h('li', {},

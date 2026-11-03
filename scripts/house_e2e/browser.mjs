@@ -170,9 +170,11 @@ async function join(name) {
   await page.getByRole('button', { name: rx('join') }).click();
   const auth = await session(page);
   assert.equal(auth.user.email, `${name}@highest-house.ezzyrappeport.com`);
+  // Let the site's initial authenticated request finish before this independent
+  // probe: a concurrent cold JWKS fetch deliberately returns a fast 503.
+  await page.getByRole('link', { name: 'This week', exact: true }).waitFor();
   const me = await ok('/house/api/me', { token: auth.access_token });
   assert.equal(Number(me.resident?.id ?? me.resident_id ?? me.id), cfg.fixture.residents[name]);
-  await page.getByRole('link', { name: 'This week', exact: true }).waitFor();
   await screenshot(page, `join-${name}-signed-in`);
   return { page, token: auth.access_token };
 }
@@ -293,6 +295,27 @@ async function journey() {
   const andrew = await join('andrew');
   const daniel = await join('daniel');
   let state = await week(jadon);
+  assert.equal(state.start_week, cfg.fixture.closed_start, 'Persisted first-run week');
+  assert.equal(state.weeks.length, 3, 'History includes only weeks since the league started');
+  assert(state.weeks.every(w => w.start >= state.start_week), 'No pre-start week in navigation');
+  const beforeStart = new Date(state.start_week + 'T12:00:00Z');
+  beforeStart.setUTCDate(beforeStart.getUTCDate() - 7);
+  const preStart = beforeStart.toISOString().slice(0, 10);
+  await refused('/house/api/week?start=' + preStart, { token: jadon.token }, [400]);
+  await refused('/api/league/week?start=' + preStart, { operator: true }, [400]);
+  const operatorPage = await newPage();
+  await operatorPage.context().addCookies(cfg.operatorCookie.split('; ').map(cookie => {
+    const split = cookie.indexOf('=');
+    return { name: cookie.slice(0, split), value: cookie.slice(split + 1), url: cfg.privateApi, secure: true };
+  }));
+  await operatorPage.goto(cfg.privateApi + '/#/proof');
+  const weekSelector = operatorPage.getByLabel('Week of', { exact: true });
+  await weekSelector.waitFor();
+  assert.deepEqual(await weekSelector.locator('option').evaluateAll(options => options.map(o => o.value)),
+    state.weeks.map(w => w.start), 'Operator selector uses the same bounded history');
+  await operatorPage.getByText(/^League started /).waitFor();
+  await screenshot(operatorPage, 'operator-start-bounded-history');
+  await operatorPage.close();
   scores(state, 0, 0, null);
   assert.equal(state.rules.min_points, 4);
   assert.equal(state.rules.min_lead, 2);
@@ -380,6 +403,7 @@ async function journey() {
   await closedWeek.click();
   assert((await pastResponse).ok());
   await jadon.page.locator('.past-detail').getByText('Closed', { exact: true }).waitFor();
+  assert.equal(await jadon.page.locator('.week-choice').count(), 3, 'Past-weeks UI respects the start boundary');
   assert.equal(await jadon.page.locator('.past-detail button').count(), 0, 'Closed history must not offer naming');
   await screenshot(jadon.page, 'past-weeks-closed-naming-refused');
   await ok('/house/api/me', { token: andrew.token });

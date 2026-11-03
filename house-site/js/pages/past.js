@@ -1,6 +1,6 @@
 import { pickDetail, shiftDay, weekRange } from "./league-copy.js";
 import { mock } from "../auth.js";
-import { button, h, heading, icon, tag } from "../ui.js";
+import { button, date, h, heading, icon, tag } from "../ui.js";
 /** @typedef {import("../types.js").Week} Week */
 import { range, standings } from "./standings.js";
 /** @param {import("../types.js").ScreenContext} context */
@@ -56,7 +56,7 @@ export function pastPage(context) {
   return h(
     "div",
     {},
-    heading("Past weeks", "The kitchen has a little history."),
+    heading("Past weeks", `League started ${date(data.start_week, data.week.timezone)}.`),
     h(
       "div",
       { class: "past-layout" },

@@ -53,8 +53,25 @@ def main() -> None:
     repair = sub.add_parser("repair-left-out", help="Restore observed left-out dismissals and close stale camera episodes")
     repair.add_argument("--since", help="Recover auto-dismissals deposited since this local date (YYYY-MM-DD); stale opens have no date cutoff")
     repair.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing records")
+    reset = sub.add_parser("league-reset-start", help="Start the league this week and remove pre-start frozen results")
+    reset.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing the database")
     args = parser.parse_args()
     config = Config.environment(demo=getattr(args, "demo", False))
+    if args.command == "league-reset-start":
+        import json
+        import sqlite3
+
+        from .league import reset_start
+        # Require an existing database; even a dry run must not prepare directories,
+        # migrate schemas, initialize settings or create a new empty history.db.
+        database = (config.root / 'history.db').resolve()
+        mode = 'ro' if args.dry_run else 'rw'
+        conn = sqlite3.connect(database.as_uri() + '?mode=' + mode, uri=True, timeout=10)
+        try:
+            print(json.dumps(reset_start(conn, dry_run=args.dry_run), indent=2))
+        finally:
+            conn.close()
+        return
     config.prepare()
     if args.command == "serve":
         import uvicorn

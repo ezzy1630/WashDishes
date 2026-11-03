@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import date, datetime, time, timedelta
 from typing import TypedDict
 
@@ -141,9 +142,25 @@ def carry_duty(current: dict | None, chosen: dict, rules: dict, *, since: str) -
     return {k: chosen[k] for k in ('resident_id', 'name')} | {'since': since, 'why': f"Weekly pick: {chosen['reason'].rstrip('.')}."}
 
 
+def start_week(store: Store, *, now: datetime | None = None) -> str:
+    """Initialize once, independently of the replaceable rules JSON."""
+    with store.lock:
+        row = store.conn.execute('SELECT start_week FROM league_start WHERE id=1').fetchone()
+        if row:
+            return row[0]
+        # Join an existing transaction without committing its caller's pending writes.
+        pending = store.conn.in_transaction
+        store.conn.execute('INSERT OR IGNORE INTO league_start VALUES(1,?)', (week_bounds(now=now)['start'],))
+        if not pending:
+            store.conn.commit()
+        return store.conn.execute('SELECT start_week FROM league_start WHERE id=1').fetchone()[0]
+
+
 def rules(store: Store) -> dict:
-    row = store.conn.execute('SELECT data FROM league_rules WHERE id=1').fetchone()
-    return json.loads(row[0]) if row else json.loads(json.dumps(DEFAULT_RULES))
+    with store.lock:
+        start_week(store)
+        row = store.conn.execute('SELECT data FROM league_rules WHERE id=1').fetchone()
+        return json.loads(row[0]) if row else json.loads(json.dumps(DEFAULT_RULES))
 
 
 def duty(store: Store) -> dict | None:
@@ -176,12 +193,11 @@ def close_weeks(store: Store, *, now: datetime | None = None) -> None:
     """Close in order, once, at local Monday noon; catch up after a stopped Jetson."""
     now = now or utcnow()
     with store.lock, store.conn:
-        earliest = store.conn.execute('SELECT min(due_at) FROM obligations').fetchone()[0]
-        first = date.fromisoformat(week_bounds(now=now)['start']) - timedelta(weeks=7)
-        if earliest:
-            oldest = parse_stamp(earliest).astimezone(timezone()).date()
-            oldest -= timedelta(days=oldest.weekday())
-            first = min(first, oldest)
+        # The reset CLI uses another connection. Hold the write transaction from
+        # the boundary read onward so a close cannot recreate weeks it just removed.
+        if not store.conn.in_transaction:
+            store.conn.execute('BEGIN IMMEDIATE')
+        first = date.fromisoformat(start_week(store, now=now))
         settings = rules(store)
         current = duty(store)
         while True:
@@ -220,10 +236,14 @@ def snapshot(store: Store, start: str | None = None, *, now: datetime | None = N
         raise ValueError('That week has not started yet.')
     with store.lock:
         close_weeks(store, now=now)
+        beginning = start_week(store, now=now)
+        if week['start'] < beginning:
+            raise ValueError(f"That week is before the league started ({beginning}).")
         row = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
         value = json.loads(row[0]) if row else _live(store, week)
         # The duty banner always answers who is on duty now, also when browsing history.
-        return value | {'on_duty': duty(store) if rules(store)['enabled'] else None}
+        return value | {'on_duty': duty(store) if rules(store)['enabled'] else None,
+                        'start_week': beginning}
 
 
 def project(value: dict) -> dict:
@@ -245,11 +265,42 @@ def assert_unfrozen(store: Store, item: dict, *, now: datetime | None = None) ->
     if not due:
         return
     week = week_bounds(now=parse_stamp(due))
+    beginning = store.conn.execute('SELECT start_week FROM league_start WHERE id=1').fetchone()
+    if not beginning or week['start'] < beginning[0]:
+        return
     frozen = store.conn.execute('SELECT 1 FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
     # Once the league starts, operator edits also respect noon between worker ticks.
-    initialized = store.conn.execute('SELECT 1 FROM league_weeks LIMIT 1').fetchone()
-    if frozen or (initialized and parse_stamp(week['closes_at']) <= (now or utcnow())):
+    if frozen or parse_stamp(week['closes_at']) <= (now or utcnow()):
         raise ValueError('That week is closed. Its names, disputes and standings are frozen.')
+
+
+def reset_start(conn: sqlite3.Connection, *, dry_run: bool = False, now: datetime | None = None) -> dict:
+    """Explicit repair only. The CLI opens dry runs read-only, without Store migrations."""
+    now = now or utcnow()
+    week = week_bounds(now=now)
+    with conn:
+        # Serialize the read/plan/write sequence against worker closes and rule changes.
+        conn.execute('BEGIN' if dry_run else 'BEGIN IMMEDIATE')
+        table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='league_start'").fetchone()
+        row = conn.execute('SELECT start_week FROM league_start WHERE id=1').fetchone() if table else None
+        previous = row[0] if row else None
+        deleted = [r[0] for r in conn.execute('SELECT start FROM league_weeks WHERE start<? ORDER BY start', (week['start'],))]
+        row = conn.execute('SELECT data FROM league_duty WHERE id=1').fetchone()
+        current = json.loads(row[0]) if row and row[0] else None
+        cleared = current if (deleted and current and current['why'].startswith('Weekly pick')
+                              and parse_stamp(current['since']).astimezone(timezone()).date().isoformat() <= week['start']) else None
+        report = {'dry_run': dry_run, 'previous_start_week': previous, 'start_week': week['start'],
+                  'deleted_weeks': deleted, 'cleared_duty': cleared,
+                  'changed': previous != week['start'] or bool(deleted) or cleared is not None}
+        if not dry_run and report['changed']:
+            conn.execute('CREATE TABLE IF NOT EXISTS league_start(id INTEGER PRIMARY KEY CHECK(id=1), start_week TEXT NOT NULL)')
+            conn.execute('INSERT INTO league_start VALUES(1,?) ON CONFLICT(id) DO UPDATE SET start_week=excluded.start_week', (week['start'],))
+            conn.execute('DELETE FROM league_weeks WHERE start<?', (week['start'],))
+            if cleared is not None:
+                conn.execute('UPDATE league_duty SET data=? WHERE id=1', (json.dumps(None),))
+            conn.execute('INSERT INTO events(obligation_id,created_at,event,description,data) VALUES(NULL,?,?,?,?)',
+                         (stamp(now), 'league_start_reset', f"League start reset to {week['start']}.", json.dumps(report)))
+        return report
 
 
 def configure(store: Store, settings: dict, *, now: datetime | None = None) -> dict:

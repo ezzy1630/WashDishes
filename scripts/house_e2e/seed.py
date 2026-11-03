@@ -44,6 +44,9 @@ def seed(app) -> dict:
     residents = {name: store.add_resident(name.title())["id"] for name in NAMES}
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Model a league that began two weeks ago; history must never rely on backfill
+    # before the league's first run.
+    league.close_weeks(store, now=monday - timedelta(days=14))
     # Current-week times remain in the past, even on Monday morning. A short
     # fixture deadline avoids a wall-clock freeze or product test-only clock.
     store.set_settings({"deadline_minutes": 1})

@@ -319,6 +319,7 @@ class House:
             basis = data.get('guess_basis', {}) if closed else self.store.suggestion_basis(list(raw))
             hidden = set() if _include_hidden else {r[0] for r in self.store.conn.execute('SELECT visit_id FROM house_hidden_visits WHERE resident_id=?', (actor['id'] if actor else 0,))}
             first = league.week_times(league.week_bounds())[0]
+            beginning = league.start_week(self.store)
             history = {r['start']: r['pick_name'] for r in self.store.conn.execute(
                 "SELECT start,json_extract(snapshot,'$.pick.name') pick_name FROM league_weeks WHERE start>=?", ((first.date() - timedelta(weeks=7)).isoformat(),))}
         data = league.project(data)
@@ -339,8 +340,11 @@ class House:
         weeks = []
         for offset in range(8):
             start_date = (first.date() - timedelta(weeks=offset)).isoformat()
+            if start_date < beginning:
+                break
             weeks.append({'start': start_date, 'pick_name': history.get(start_date), 'closed': start_date in history})
         return {k: data[k] for k in ('week', 'rules', 'standings', 'pick', 'on_duty')} | {
+            'start_week': beginning,
             'dishes': dishes, 'visits': visits, 'unnamed_count': sum(d['resident'] is None for d in dishes),
             'unreviewed_count': sum(v['resident'] is None for v in visits),
             'verdicts': verdicts, 'weeks': weeks}
@@ -484,7 +488,7 @@ class House:
                     targets = [store.obligation(oid) for oid in target['dish_ids']]
                     for target_item in targets:
                         bounds = league.week_bounds(now=parse_stamp(target_item['followup_at'])) if target_item['followup_at'] else None
-                        if not bounds or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
+                        if not bounds or bounds['start'] < league.start_week(store) or not any(d['id'] == target_item['id'] for d in league.left_out(store, *league.week_times(bounds))):
                             raise HTTPException(400, 'Choose an original visit that is still in the league.')
                 if body.verdict == 'cant_tell':
                     store.conn.execute('INSERT OR IGNORE INTO house_hidden_visits VALUES(?,?)', (actor_id or 0, visit_id))
@@ -566,6 +570,9 @@ class House:
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
             week = league.week_bounds(now=parse_stamp(item['due_at'])) if item['due_at'] else None
+            beginning = league.start_week(store)
+            if week and week['start'] < beginning:
+                raise HTTPException(400, f"That week is before the league started ({beginning}).")
             eligible = next((d for d in league.left_out(store, *league.week_times(week)) if d['id'] == oid), None) if week else None
             if not eligible:
                 raise HTTPException(404, 'That dish is not in the house league.')
@@ -686,6 +693,8 @@ class House:
                     if not item['followup_at']:
                         continue
                     week = league.week_bounds(now=parse_stamp(item['followup_at']))
+                    if week['start'] < league.start_week(store):
+                        continue
                     frozen = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
                     if frozen:
                         snapshot = json.loads(frozen[0])
@@ -794,7 +803,8 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     def league_config():
         with house.store.lock:
             league.close_weeks(house.store)
-            return {'rules': league.rules(house.store), 'on_duty': league.duty(house.store)}
+            return {'rules': league.rules(house.store), 'on_duty': league.duty(house.store),
+                    'start_week': league.start_week(house.store)}
 
     @operator.post('/duty')
     def override(body: Override):
