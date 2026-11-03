@@ -286,6 +286,7 @@ def test_kind_change_during_transfer_does_not_split_cookware(store, media):
 
 @pytest.mark.parametrize('localized', [True, False])
 def test_occluded_sink_dish_abstention_needs_destination_handling(store, media, localized):
+    import cv2
     inventory = Inventory(store, media)
     now = utcnow()
     area = {'id': 'stove', 'name': 'Stove', 'role': 'dirty', 'box': [.1, .4, .4, .4]}
@@ -293,8 +294,10 @@ def test_occluded_sink_dish_abstention_needs_destination_handling(store, media, 
     handler = {'track': 7, 'at': now-timedelta(seconds=15), 'box': [.1, .3, .4, .5],
                'dishes': [dish] if localized else []}
     zone = Zone(area, settled_since=now, visitors={7: handler})
+    image = np.random.default_rng(4).integers(0, 255, (200, 300, 3), dtype=np.uint8)
+    zone.visit_before = cv2.imencode('.jpg', np.zeros_like(image))[1].tobytes()
     inventory.sink_visits[7] = [{'start': now-timedelta(seconds=35), 'end': now-timedelta(seconds=20)}]
-    inventory._add(zone, dish, now, b'', placed_at=None, verdict={'dish': True, 'score': .9})
+    inventory._add(zone, dish, now, b'', placed_at=None, verdict={'dish': True, 'score': .9}, image=image)
     [item] = inventory.items.values()
     assert bool(item.get('clean_return')) is localized
 
@@ -324,6 +327,7 @@ def test_human_negative_survives_track_relink_and_undo(store, media):
 
 
 def test_sink_return_with_outstretched_arm_survives_delayed_area_scan(store, media):
+    import cv2
     inventory = Inventory(store, media)
     now = utcnow()
     area = {'id': 'stove', 'name': 'Stove', 'role': 'dirty', 'box': [.25, .65, .2, .2]}
@@ -335,6 +339,7 @@ def test_sink_return_with_outstretched_arm_survives_delayed_area_scan(store, med
     zone.visitors[7] = visitor
     inventory.sink_visits[7] = [{'start': now-timedelta(seconds=25), 'end': now-timedelta(seconds=4)}]
     image = np.random.default_rng(14).integers(0, 255, (300, 500, 3), dtype=np.uint8)
+    zone.visit_before = cv2.imencode('.jpg', np.zeros_like(image))[1].tobytes()
     inventory._remember_sink_return(zone, visitor, image, now)
     zone.visitors.clear()
     inventory.verify = lambda im, box: {'dish': True, 'score': .9}
@@ -342,6 +347,29 @@ def test_sink_return_with_outstretched_arm_survives_delayed_area_scan(store, med
     inventory._open_waiting(now+timedelta(minutes=7))
     assert store.obligations(history=True) == []
     assert store.events_after(0, ('clean_return_deferred',))
+
+
+@pytest.mark.parametrize('before_available', [True, False])
+def test_stationary_dish_after_sink_visit_is_not_withheld(store, media, before_available):
+    import cv2
+    inventory = Inventory(store, media)
+    now = utcnow()
+    zone = Zone({'id': 'counter', 'name': 'Counter', 'role': 'dirty', 'box': [.1, .4, .4, .4]}, settled_since=now)
+    inventory.zones['counter'] = zone
+    dish = detection([.2, .5, .1, .1])
+    visitor = {'track': 7, 'at': now, 'box': [.1, .3, .4, .5], 'dishes': [dish]}
+    zone.visitors[7] = visitor
+    image = np.random.default_rng(14).integers(0, 255, (300, 500, 3), dtype=np.uint8)
+    visitor['frame'] = cv2.imencode('.jpg', image)[1].tobytes()
+    if before_available:
+        zone.visit_before = cv2.imencode('.jpg', image)[1].tobytes()
+    inventory.sink_visits[7] = [{'start': now-timedelta(seconds=25), 'end': now-timedelta(seconds=4)}]
+    inventory._remember_sink_return(zone, visitor, image, now)
+    inventory.verify = lambda im, box: {'dish': True, 'score': .9}
+    inventory._initialize(zone, [dish], b'', now+timedelta(seconds=30), image=image)
+    inventory._open_waiting(now+timedelta(seconds=60))
+    assert len(store.obligations(history=True)) == 1
+    assert not store.events_after(0, ('clean_return_deferred',))
 
 
 def test_later_use_of_clean_return_gets_a_fresh_clock(store, media):

@@ -234,6 +234,7 @@ class Zone:
     visit_started: datetime | None = None
     visit_before: bytes | None = None
     visit_before_at: datetime | None = None
+    visit_before_image: Any = None
     # Person track -> the latest frame showing them in this area: who handled what was put down.
     visitors: dict = field(default_factory=dict)
     handling_history: list = field(default_factory=list)
@@ -388,6 +389,7 @@ class Inventory:
                 if zone.active_at is None or zone.settled_since is not None:
                     zone.visit_started, zone.visit_before = observed_at, zone.quiet_jpeg
                     zone.visit_before_at = zone.quiet_at
+                    zone.visit_before_image = None
                 zone.active_at, zone.settled_since, zone.touched = observed_at, None, True
                 for person in present:
                     track = person.get('track_id')
@@ -911,7 +913,7 @@ class Inventory:
             # An outstretched hand need not fall inside the detector's torso box (#1643).
             others = [v for v in zone.visitors.values() if v.get('track') != visitor.get('track')
                       and observed_at-v['at'] <= timedelta(seconds=3)]
-            if reach > .05 or others:
+            if reach > .05 or others or not self._changed_since_before(zone, dish['box'], image):
                 continue
             candidate = {'box': list(dish['box']), 'kind': dish['kind'], 'at': observed_at, 'track': visitor['track']}
             self._remember(candidate, image)
@@ -925,6 +927,25 @@ class Inventory:
         item.update(first_seen_at=stamp(observed_at), placed_at=stamp(observed_at), timing_known=True, background=False)
         self.evidence.pop(item['key'], None)
 
+    @staticmethod
+    def _changed_since_before(zone: Zone, box: list[float], image: Any) -> bool:
+        """Sink proximity cannot turn an already stationary dish into a clean return."""
+        if not zone.visit_before or image is None:
+            return False
+        import cv2
+        import numpy as np
+        if zone.visit_before_image is None:
+            try:
+                # Decode once per visit, rather than once per dish/person frame.
+                zone.visit_before_image = cv2.imdecode(np.frombuffer(zone.visit_before, np.uint8), cv2.IMREAD_GRAYSCALE)
+            except cv2.error:
+                return False
+        if zone.visit_before_image is None:
+            return False
+        before = appearance(zone.visit_before_image, box)
+        current = appearance(image, box)
+        return before is not None and current is not None and float(np.abs(before-current).mean()) >= APPEARANCE_DISTANCE
+
     def _possible_sink_return(self, zone: Zone, detection: dict, observed_at: datetime, image: Any = None) -> bool:
         if detection['kind'] not in ('pan', 'pot', 'bowl', 'lid'):
             return False
@@ -933,7 +954,8 @@ class Inventory:
                and self._unchanged(c, image) for c in self.return_candidates):
             return True
         handler = self._handler(zone, detection['box'], detection['kind'])
-        if not handler or len(self._handling_dishes(handler, detection['box'], detection['kind'])) != 1:
+        if (not handler or len(self._handling_dishes(handler, detection['box'], detection['kind'])) != 1
+                or not self._changed_since_before(zone, detection['box'], image)):
             return False
         return any(sink['end']-sink['start'] >= timedelta(seconds=4)
                    and timedelta(0) <= handler['at']-sink['end'] <= ASSOCIATION_WINDOW
