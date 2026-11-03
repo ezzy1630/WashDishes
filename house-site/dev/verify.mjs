@@ -44,7 +44,8 @@ function observe(page) {
     if (
       m.type() === "error" &&
       !m.text().includes("503") &&
-      !m.text().includes("400")
+      !m.text().includes("400") &&
+      !m.text().includes("409")
     )
       issues.push(m.text());
   });
@@ -258,6 +259,14 @@ try {
         .getByRole("heading", { name: "Whose dishes are these?" })
         .waitFor();
       await capture(page, "name-visits", size, theme);
+      await page
+        .locator(".name-chips")
+        .getByRole("button", { name: "Theo", exact: true })
+        .click();
+      await page.locator('article[data-dish-id="visit-103"]').waitFor();
+      await capture(page, "naming-undo", size, theme);
+      await page.getByRole("button", { name: "Undo", exact: true }).click();
+      await page.locator('article[data-dish-id="visit-101"]').waitFor();
       const widths = await page
         .locator(".naming .arrival-photo")
         .evaluate((el) => {
@@ -278,16 +287,16 @@ try {
       assert.deepEqual(
         await page.locator(".name-chips button").allTextContents(),
         [
-          "Theo",
-          "Jules",
-          "Milo",
-          "Remy",
+          "Ari",
           "Ezzy",
           "Finn",
+          "Jules",
           "Leo",
-          "Wren",
-          "Ari",
+          "Milo",
           "Nico",
+          "Remy",
+          "Theo",
+          "Wren",
         ],
       );
       assert.equal(await page.locator(".camera-chip").innerText(), "Wren");
@@ -456,6 +465,43 @@ try {
     },
   );
   await check(
+    "Undo sends no name; a refused save restores the visit and explains failure",
+    async () => {
+      await navigation(page, "Name dishes");
+      let writes = 0;
+      await page.route("**/house/api/visits/*/name", (route) => {
+        writes++;
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            detail: "Already named — refresh before naming again.",
+          }),
+        });
+      });
+      await page
+        .locator(".name-chips")
+        .getByRole("button", { name: "Theo", exact: true })
+        .click();
+      await page.getByRole("button", { name: "Undo", exact: true }).click();
+      assert.equal(writes, 0);
+      await page.locator('article[data-dish-id="visit-101"]').waitFor();
+      await page
+        .locator(".name-chips")
+        .getByRole("button", { name: "Theo", exact: true })
+        .click();
+      await page.locator(".answer-error").waitFor();
+      assert.equal(writes, 1);
+      await page.locator('article[data-dish-id="visit-101"]').waitFor();
+      assert.match(
+        await page.locator(".answer-error").innerText(),
+        /answer not saved.*Already named/,
+      );
+      await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+      await page.unroute("**/house/api/visits/*/name");
+    },
+  );
+  await check(
     "visit guess is unconfirmed; confirm names all dishes; next visit; skip",
     async () => {
       await navigation(page, "Name dishes");
@@ -470,6 +516,7 @@ try {
         .getByRole("button", { name: "Camera thinks Wren — tap to confirm" })
         .click();
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
+      await page.locator(".answer-receipt").waitFor({ state: "hidden" });
       const after = await page.evaluate(() =>
         fetch("/house/api/week", {
           headers: { Authorization: "Bearer mock:ezzy" },
@@ -485,12 +532,20 @@ try {
       await page.getByRole("button", { name: "Can’t tell" }).click();
       await page.getByRole("heading", { name: "That’s the round." }).waitFor();
       await page
+        .locator(".answer-receipt")
+        .first()
+        .waitFor({ state: "hidden" });
+      await page
         .getByRole("button", { name: "Look at skipped visits" })
         .click();
       await page.getByRole("button", { name: "Theo", exact: true }).click();
       await page
         .getByRole("heading", { name: "You’re all caught up." })
         .waitFor();
+      await page
+        .locator(".answer-receipt")
+        .first()
+        .waitFor({ state: "hidden" });
     },
   );
   await check(
@@ -511,6 +566,10 @@ try {
       await page
         .getByRole("heading", { name: "You’re all caught up." })
         .waitFor();
+      await page
+        .locator(".answer-receipt")
+        .first()
+        .waitFor({ state: "hidden" });
       await page.getByText("Reviewed this week (7)", { exact: true }).click();
       await page
         .getByText("Marked not a dish by Ezzy", { exact: true })
@@ -542,6 +601,10 @@ try {
         .getByRole("button", { name: "Can’t tell", exact: true })
         .click();
       await page.getByRole("heading", { name: "That’s the round." }).waitFor();
+      await page
+        .locator(".answer-receipt")
+        .first()
+        .waitFor({ state: "hidden" });
       data = await page.evaluate(() =>
         fetch("/house/api/week", {
           headers: { Authorization: "Bearer mock:ezzy" },
@@ -635,7 +698,9 @@ try {
       );
       await page.getByRole("button", { name: "Send dispute" }).click();
       await page
-        .getByText("Waiting for another housemate to settle it.")
+        .getByText(
+          "These points don’t count while you wait for a third housemate to settle it.",
+        )
         .waitFor();
       await page.getByRole("button", { name: "Not them", exact: true }).click();
       await page.getByRole("heading", { name: "All settled here." }).waitFor();
@@ -652,7 +717,7 @@ try {
       await page.getByRole("button", { name: "Sign out", exact: true }).click();
       await page.goto(`${origin}/join?mock=1`);
       await page
-        .getByRole("heading", { name: "This link needs a token" })
+        .getByRole("heading", { name: "This house link is incomplete" })
         .waitFor();
       await page.goto(`${origin}/join?mock=1#expired`);
       await page.getByLabel("New password").fill("new-house-password");
@@ -701,6 +766,10 @@ try {
       await page
         .getByRole("heading", { name: "You’re all caught up." })
         .waitFor();
+      await page
+        .locator(".answer-receipt")
+        .first()
+        .waitFor({ state: "hidden" });
       await navigation(page, "My dishes");
       await page
         .getByRole("heading", { name: "Nothing named as yours." })

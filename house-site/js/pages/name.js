@@ -207,6 +207,7 @@ export function namePage(context) {
     (v) =>
       !v.resident &&
       v.can_name &&
+      !state.pending.has(v.id) &&
       (!v.verdict || v.verdict.kind === "cant_tell"),
   );
   const remaining = unreviewed.filter(
@@ -216,7 +217,7 @@ export function namePage(context) {
     visit = remaining[0];
   const intro = data.week.closed
     ? "Week closed. Unnamed visits don’t count."
-    : `${data.clear_count} clear ${data.clear_count === 1 ? "one" : "ones"} to name. Unnamed visits simply don’t count.`;
+    : "A visit is one kitchen trip. Only name someone you know left these dishes.";
   const weakLink =
     !data.week.closed && data.weak_count
       ? h(
@@ -244,12 +245,30 @@ export function namePage(context) {
       heading("Name the dishes", intro),
       weakLink,
       empty(
-        state.skipped.size ? "That’s the round." : "You’re all caught up.",
-        state.skipped.size
-          ? "The visits you couldn’t tell stay unnamed. That’s better than a guess."
-          : data.weak_count
-            ? "The remaining visits have weak evidence. Leave them unnamed or reveal them above."
-            : "There’s nothing waiting for you to review right now.",
+        state.pending.size
+          ? "All visits answered."
+          : state.skipped.size
+            ? "That’s the round."
+            : "You’re all caught up.",
+        state.pending.size
+          ? "Your answers will save in a moment. You can still undo them above."
+          : state.skipped.size
+            ? "The visits you couldn’t tell stay unnamed. That’s better than a guess."
+            : data.weak_count
+              ? "The remaining visits have weak evidence. Leave them unnamed or reveal them above."
+              : "There’s nothing waiting for you to review right now.",
+      ),
+      h(
+        "a",
+        {
+          class: "primary",
+          href: context.href("/"),
+          onclick: (/** @type {MouseEvent} */ e) => {
+            e.preventDefault();
+            context.navigate("/");
+          },
+        },
+        "Back to this week",
       ),
       state.skipped.size
         ? button(
@@ -337,21 +356,30 @@ export function namePage(context) {
                     visit,
                     "name",
                     { resident_id: visit.guess?.resident_id },
-                    "Confirmed. On to the next visit.",
+                    `Named as ${visit.guess?.name}.`,
                   ),
                 "guess-choice",
               ),
-              h("p", { class: "help" }, visit.guess.basis),
               h(
                 "p",
                 { class: "help" },
-                "A guess only counts once someone confirms it.",
+                "Suggestion only. No points until you name someone.",
+              ),
+              h(
+                "details",
+                { class: "guess-basis" },
+                h("summary", {}, "Why this suggestion?"),
+                h("p", { class: "help" }, visit.guess.basis),
               ),
             )
           : null,
         h(
           "div",
-          { class: "name-chips" },
+          {
+            class: "name-chips",
+            role: "group",
+            "aria-label": "Name the person responsible",
+          },
           people.map((p) =>
             button(
               p.name,
@@ -360,7 +388,7 @@ export function namePage(context) {
                   visit,
                   "name",
                   { resident_id: p.resident_id },
-                  "Named. On to the next visit.",
+                  `Named as ${p.name}.`,
                 ),
               `chip ${String(p.resident_id) === String(visit.guess?.resident_id) ? "camera-chip" : ""}`,
             ),

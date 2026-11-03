@@ -127,7 +127,7 @@ export function standings(data, viewerId) {
             `A pick needs ${data.rules.min_points} points and a ${data.rules.min_lead}-point lead.`,
             h("span", { class: "help" }, " Ties mean no pick."),
           ),
-          top
+          top?.points
             ? h(
                 "div",
                 { class: "gates" },
@@ -146,7 +146,7 @@ export function standings(data, viewerId) {
                 ),
               )
             : null,
-          pick.state !== "pick" && threshold > 0 && top
+          pick.state !== "pick" && threshold > 0 && top?.points
             ? h(
                 "p",
                 { class: "threshold-explanation" },

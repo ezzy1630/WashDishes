@@ -45,6 +45,11 @@ export function record(dish, settle, context) {
             ),
           "secondary",
         ),
+        h(
+          "p",
+          { class: "help settlement-help" },
+          "“It was them” restores their points. “Not them” leaves the visit unnamed.",
+        ),
       ),
     );
   else if (dish.can_dispute && dispute?.state !== "open")
@@ -80,6 +85,11 @@ export function record(dish, settle, context) {
               },
             },
             field("What happened?", note),
+            h(
+              "p",
+              { class: "help" },
+              "Your points for this visit pause while a third housemate checks it. You and the person who named you can’t settle it.",
+            ),
             error,
             h(
               "div",
@@ -132,7 +142,10 @@ export function record(dish, settle, context) {
           `${dish.area} · ${date(dish.at, data.week.timezone, true)}`,
         ),
       ),
-      tag(`${dish.points} ${dish.points === 1 ? "point" : "points"}`),
+      tag(
+        `${dish.points} ${dish.points === 1 ? "point" : "points"}${dispute?.state === "open" ? " · paused" : ""}`,
+        dispute?.state === "open" ? "review" : "",
+      ),
     ),
     photo(
       dish.filmstrip_url || dish.photo_url,
@@ -190,7 +203,7 @@ export function record(dish, settle, context) {
               ? h(
                   "p",
                   { class: "help" },
-                  "Waiting for another housemate to settle it.",
+                  "These points don’t count while you wait for a third housemate to settle it.",
                 )
               : null,
         )

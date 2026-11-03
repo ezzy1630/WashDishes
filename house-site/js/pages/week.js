@@ -1,6 +1,11 @@
 import { learningPrompt } from "./help.js";
 import { h, heading, icon } from "../ui.js";
-import { dutyCopy, weekSubtitle, pickDetail } from "./league-copy.js";
+import {
+  dutyCopy,
+  weekSubtitle,
+  pickDetail,
+  personalCopy,
+} from "./league-copy.js";
 /** @typedef {import("../types.js").Week} Week */
 import { standings } from "./standings.js";
 /** @param {import("../types.js").ScreenContext} context */
@@ -9,11 +14,30 @@ export function weekPage(context) {
   const data = /** @type {Week} */ (state.data),
     duty = data.on_duty;
   const copy = dutyCopy(data);
+  const personal = personalCopy(data, state.me?.resident.id);
   return h(
     "div",
     {},
     heading("This week", weekSubtitle(data)),
     learningPrompt(context),
+    h(
+      "section",
+      { class: "personal-status", "aria-label": "Your week" },
+      h("div", {}, h("h2", {}, personal.title), h("p", {}, personal.detail)),
+      h(
+        "a",
+        {
+          class: "personal-link",
+          href: href("/mine"),
+          onclick: (/** @type {MouseEvent} */ e) => {
+            e.preventDefault();
+            navigate("/mine");
+          },
+        },
+        "Check my dishes",
+        icon("arrow"),
+      ),
+    ),
     h(
       "div",
       { class: "week-layout" },
@@ -72,12 +96,14 @@ export function weekPage(context) {
               {},
               data.week.closed
                 ? "Week closed"
-                : `${data.clear_count} clear ${data.clear_count === 1 ? "one" : "ones"} to name`,
+                : data.clear_count
+                  ? `${data.clear_count} clear ${data.clear_count === 1 ? "one" : "ones"} to name`
+                  : "You’re caught up",
             ),
             h("p", {}, "Unnamed visits simply don’t count."),
             h(
               "span",
-              { class: "cta-action" },
+              { class: "cta-action primary" },
               !data.week.closed && data.clear_count
                 ? "Review the visits"
                 : "See reviewed visits",
@@ -118,7 +144,7 @@ export function weekPage(context) {
           h(
             "p",
             {},
-            "On duty? Help name the dishes. Any housemate can say “That wasn’t me.” Another person settles it.",
+            "Wrong name? Only the named person can dispute it in My dishes. Points pause until a third housemate settles it. The namer and named person sit it out.",
           ),
         ),
       ),

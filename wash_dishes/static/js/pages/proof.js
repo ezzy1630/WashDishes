@@ -16,10 +16,11 @@ export function proofPage(main) {
   const list = h('div', { class: 'send-list home-proofs', 'aria-busy': 'true' }, h('p', { class: 'tx2' }, 'Loading proof pictures…'));
   const errorBox = h('div', { class: 'form-error', role: 'alert' });
   const proofs = h('div', { class: 'home-proof-block' }, list);
-  const sendGrid = h('div', { class: 'home-send-grid' }, league.sharing);
-  fill(main, h('div', { class: 'page operator-home' }, mode, warning, league.summary, league.queue,
-    h('section', { class: 'home-ready', 'aria-label': 'Ready to send' }, h('h2', {}, 'Ready to send'), errorBox,
-      sendGrid),
+  const sendGrid = h('div', { class: 'home-send-grid' });
+  const ready = h('section', { class: 'home-ready', 'aria-label': 'Ready to send', hidden: true }, h('h2', {}, 'More pictures to share'), errorBox, sendGrid);
+  fill(main, h('div', { class: 'page operator-home' }, mode, warning,
+    h('div', { class: 'home-week-overview' }, league.summary, league.sharing), league.queue,
+    ready,
     league.history, health));
 
   async function loadProofs() {
@@ -29,6 +30,7 @@ export function proofPage(main) {
       if (alive) { errorBox.textContent = ''; renderProofs(); }
     } catch (e) {
       if (!alive) return;
+      ready.hidden = false;
       list.removeAttribute('aria-busy');
       fill(errorBox, h('p', {}, `Could not refresh proof pictures. ${e.message}`),
         h('button', { class: 'btn', type: 'button', onclick: loadProofs }, 'Try again'));
@@ -68,18 +70,18 @@ export function proofPage(main) {
   function renderProofs() {
     const items = data.items.filter(p => !removing.has(p.id));
     const sig = JSON.stringify([items, data.people]);
+    ready.hidden = items.length === 0;
     if (sig === shown) return;
     shown = sig; list.removeAttribute('aria-busy');
     if (items.length) sendGrid.append(proofs);
     else proofs.remove();
-    sendGrid.classList.toggle('has-proofs', items.length > 0);
     fill(list, items.map(card));
   }
 
   function card(p, index) {
     const send = sendButton(p.image_url, `${p.resident_name || 'dish'}-${p.dish}-${p.id}.jpg`.replace(/[^\w.-]+/g, '-'));
     const img = h('img', { src: p.image_url, alt: `${cap(p.dish)} left out at ${p.location || 'the kitchen'}: before, use, left there and later.`,
-      ...PICTURE, loading: index ? 'lazy' : 'eager', decoding: 'async' });
+      width: p.width || PICTURE.width, height: p.height || PICTURE.height, loading: index ? 'lazy' : 'eager', decoding: 'async' });
     img.addEventListener('load', send.preload, { once: true });
     const who = h('div', { class: 'send-who' });
     const showNames = (all = false) => fill(who,

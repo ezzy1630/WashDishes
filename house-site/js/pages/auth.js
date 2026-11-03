@@ -1,5 +1,5 @@
 import { brand, empty, field, fill, h, heading, icon } from "../ui.js";
-import { redeem } from "../api.js";
+import { HouseError, redeem } from "../api.js";
 import {
   configured,
   mock,
@@ -86,7 +86,7 @@ export function createAuthScreens(context) {
         h("div", { class: "auth-symbol", "aria-hidden": "true" }, icon("dish")),
         heading(
           "Good house. Shared kitchen.",
-          "Sign in to see how this week is stacking up.",
+          "Who’s on kitchen? Sign in to see your week and name the dishes you know.",
         ),
         form,
         connect,
@@ -181,6 +181,12 @@ export function createAuthScreens(context) {
                   : "Couldn’t use that link. Try again.";
               submit.disabled = false;
               submit.replaceChildren("Set password & come in", icon("arrow"));
+              if (e instanceof HouseError && [400, 410].includes(e.status)) {
+                submit.disabled = true;
+                submit.textContent = "Ask Ezzy for a fresh link";
+                password.value = "";
+                confirm.value = "";
+              }
             }
           }
         },
@@ -209,12 +215,12 @@ export function createAuthScreens(context) {
         { id: "main", class: "auth" },
         heading(
           "Your place in the house.",
-          "Set a password, or choose a new one. Same house, fresh start.",
+          "Choose a password to join the house or reset your sign-in.",
         ),
         token
           ? form
           : empty(
-              "This link needs a token",
+              "This house link is incomplete",
               "Open the complete house link Ezzy sent you, or ask for a fresh one.",
             ),
         h(

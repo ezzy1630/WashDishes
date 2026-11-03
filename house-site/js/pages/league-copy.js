@@ -84,3 +84,26 @@ export function weekRange(start, end, timezone) {
 export function pickDetail(data) {
   return data.pick.reason;
 }
+/** @param {Week} data @param {string|number|undefined} viewerId */
+export function personalCopy(data, viewerId) {
+  const points =
+    data.standings.find((p) => String(p.resident_id) === String(viewerId))
+      ?.points ?? 0;
+  const picked =
+    data.pick.state === "pick" &&
+    String(data.pick.resident_id) === String(viewerId);
+  const onDuty =
+    data.rules.enabled &&
+    String(data.on_duty?.resident_id) === String(viewerId);
+  return {
+    title: picked
+      ? "You’re in line for next week"
+      : onDuty
+        ? "You’re on kitchen this week"
+        : points
+          ? "You’re not the pick right now"
+          : "No points named to you",
+    detail: `${points} ${points === 1 ? "point" : "points"} this week. ${!data.rules.enabled ? "Kitchen duty is paused." : picked ? "The week is still open. Check your dishes or help name the rest." : onDuty ? "Help name the remaining visits to find the next pick." : "Only visits named by a housemate count."}`,
+    points,
+  };
+}

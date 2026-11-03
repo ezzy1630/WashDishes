@@ -852,3 +852,26 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .operator-home .weak-evidence-link[hidden] { display: none; }
 .operator-home .weak-evidence-link:hover { color: var(--tx); }
 .visit-review > .league-note { margin: 0 0 16px; }
+
+/* Send opens with the result and its share action, then one decision to make. */
+.home-week-overview { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--ln2); align-items: start; }
+.home-week-overview .week-summary { border: 0; padding-bottom: 0; }
+.home-week-overview .week-share { background: var(--s1); border-radius: 14px; padding: 20px; }
+.home-week-overview .week-share p { font-size: 13px; }
+.week-standings a { display: inline-flex; align-items: center; min-height: 44px; }
+.operator-home .home-ready[hidden] { display: none; }
+.operator-home .visit-controls .name-chips { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.operator-home .name-chip { min-width: 0; justify-content: center; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .home-week-overview { grid-template-columns: minmax(0,1fr); gap: 20px; padding-bottom: 20px; }
+  .home-week-overview .week-share { padding: 16px; gap: 8px; }
+  .home-week-overview .week-share .send-bar { margin-top: 4px; }
+}
+.operator-home .send-photo { aspect-ratio: auto; }
+.operator-home .send-photo img { height: auto; }
+.top .nav a { min-height: 44px; }
+.top .icon-btn { width: 44px; height: 44px; }
+.menu a, .menu button { min-height: 44px; }
+.top .brand { min-width: 44px; min-height: 44px; justify-content: center; }
+.top .find { min-height: 44px; }
+.top .find kbd { color: var(--tx2); }

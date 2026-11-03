@@ -1,3 +1,4 @@
+import { pendingAnswers } from "./answers.js";
 import { HouseError, act, getMe, getWeek } from "./api.js";
 import { accessToken, mock, onSignedOut, signOut } from "./auth.js";
 import { createAuthScreens } from "./pages/auth.js";
@@ -20,9 +21,33 @@ const state = {
   selected: "",
   skipped: new Set(),
   showWeak: false,
+  pending: new Set(),
   working: false,
   loading: false,
 };
+let answerError = "";
+const answers = pendingAnswers({
+  send: async (entry) => {
+    const updated = await act(entry.visit.id, entry.action, entry.body);
+    if (updated.verdict?.kind === "cant_tell")
+      state.skipped.add(entry.visit.id);
+  },
+  changed: () => {
+    state.pending = new Set(answers.entries.keys());
+    const editing =
+      document.activeElement?.matches("input,textarea,select") ||
+      document.querySelector("dialog[open]");
+    if (!editing) render();
+  },
+  saved: async (entry) => {
+    announce(`${entry.visit.title}: saved.`);
+    await refresh();
+  },
+  failed: (entry, error) => {
+    answerError = `${entry.visit.title}: answer not saved. ${error instanceof Error ? error.message : "Try again."}`;
+    announce(answerError);
+  },
+});
 let epoch = 0,
   refreshing = false,
   refreshAgain = false;
@@ -43,6 +68,7 @@ function page() {
 }
 /** @param {string} path */
 function navigate(path) {
+  void answers.flush();
   history.pushState({}, "", href(path));
   state.skipped.clear();
   state.showWeak = false;
@@ -73,6 +99,7 @@ function footer() {
         "Sign out",
         async () => {
           try {
+            await answers.flush();
             await signOut();
             clearSession();
           } catch (error) {
@@ -87,6 +114,9 @@ function footer() {
   );
 }
 function clearSession() {
+  answers.cancel();
+  state.pending.clear();
+  answerError = "";
   epoch++;
   state.me = null;
   state.data = null;
@@ -170,6 +200,61 @@ function shell(content) {
       "main",
       { id: "main", class: `main page-${current}` },
       state.offline ? offlineBanner() : null,
+      answerError
+        ? h(
+            "div",
+            { class: "answer-error", role: "alert" },
+            h("p", {}, answerError),
+            button(
+              "Dismiss",
+              () => {
+                answerError = "";
+                render();
+              },
+              "quiet",
+            ),
+          )
+        : null,
+      answers.entries.size
+        ? h(
+            "div",
+            {
+              class: "answer-receipts",
+              "aria-label": "Answers waiting to save",
+            },
+            [...answers.entries.values()].map((entry) =>
+              h(
+                "div",
+                { class: "answer-receipt", role: "status" },
+                h(
+                  "p",
+                  {},
+                  h("strong", {}, entry.visit.title),
+                  h(
+                    "span",
+                    {},
+                    entry.saving
+                      ? "Saving answer…"
+                      : `${entry.message} Saving in a moment.`,
+                  ),
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "secondary",
+                    disabled: entry.saving,
+                    onclick: () => {
+                      answers.undo(entry.visit.id);
+                      focusHeading();
+                    },
+                  },
+                  entry.saving ? "Saving…" : "Undo",
+                ),
+              ),
+            ),
+          )
+        : null,
       content,
     ),
     footer(),
@@ -266,6 +351,13 @@ async function mutate(dish, action, body, message) {
     announce("Reconnect to the kitchen before changing a dish.");
     return;
   }
+  if (action === "name" || action === "verdict") {
+    answerError = "";
+    answers.add(dish, action, body, message);
+    window.scrollTo(0, 0);
+    focusHeading();
+    return;
+  }
   state.working = true;
   epoch++;
   const scope = [...document.querySelectorAll("[data-dish-id]")].find(
@@ -291,7 +383,7 @@ async function mutate(dish, action, body, message) {
     state.working = false;
     await refresh();
     render();
-    if (action === "name" || action === "verdict") focusHeading();
+    focusHeading();
   } catch (e) {
     if (e instanceof HouseError && e.status === 401) {
       await signOut().catch(() => {});
@@ -337,7 +429,11 @@ window.addEventListener("popstate", () => {
 window.addEventListener("focus", () => {
   if (state.me && !document.hidden) void refresh();
 });
+window.addEventListener("pagehide", () => {
+  void answers.flush();
+});
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden) void answers.flush();
   if (!document.hidden && state.me) void refresh();
 });
 setInterval(() => {

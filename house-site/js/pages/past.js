@@ -56,7 +56,10 @@ export function pastPage(context) {
   return h(
     "div",
     {},
-    heading("Past weeks", `League started ${date(data.start_week, data.week.timezone)}.`),
+    heading(
+      "Past weeks",
+      `League started ${date(data.start_week, data.week.timezone)}.`,
+    ),
     h(
       "div",
       { class: "past-layout" },
@@ -83,6 +86,13 @@ export function pastPage(context) {
             : "No one picked.",
         ),
         h("p", { class: "help" }, pickDetail(data)),
+        h(
+          "p",
+          { class: "help past-freeze" },
+          data.week.closed
+            ? "Final result. Names and points are frozen."
+            : "Still in progress. Only named visits count.",
+        ),
         standings(data, state.me?.resident.id),
       ),
     ),

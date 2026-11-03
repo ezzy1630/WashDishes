@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { writeFile, mkdir } from "node:fs/promises";
+import { SUPABASE_URL } from "../config.js";
 const scratch =
   process.env.DISHWATCH_SCRATCH ||
   "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
@@ -66,7 +67,7 @@ await page.route(`${origin}/`, async (r) => {
         .headers()
         [
           "content-security-policy"
-        ].replaceAll("https://your-project.supabase.co", authOrigin),
+        ].replaceAll(SUPABASE_URL, authOrigin),
     },
   });
 });
