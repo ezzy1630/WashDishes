@@ -121,11 +121,23 @@ export function photo(url, label, wide = false, lazy = false) {
     box.replaceChildren(h("p", {}, "Photo unavailable. Refresh to try again."));
   const zoom = button("", () => zoomPhoto(src, label), "photo-open");
   zoom.setAttribute("aria-label", `Enlarge ${label.toLowerCase()}`);
-  zoom.append(
-    img,
-    h("span", { class: "zoom-hint" }, icon("expand"), "Tap to zoom"),
-  );
+  zoom.append(img);
+  if (!wide)
+    zoom.append(
+      h("span", { class: "zoom-hint" }, icon("expand"), "Tap to zoom"),
+    );
   box.append(zoom);
+  if (wide)
+    return h(
+      "div",
+      { class: "arrival-photo" },
+      box,
+      h(
+        "p",
+        { class: "help photo-instruction" },
+        "Arrival frames · Tap to enlarge",
+      ),
+    );
   return box;
 }
 /** @param {string} src @param {string} label */
@@ -133,6 +145,82 @@ function zoomPhoto(src, label) {
   const dialog = document.querySelector("dialog");
   if (!dialog) return;
   const returnTo = document.activeElement;
+  const image = h("img", {
+    src,
+    alt: label,
+    referrerpolicy: "no-referrer",
+    width: 1600,
+  });
+  const viewport = h(
+    "div",
+    {
+      class: "zoom-scroll",
+      tabindex: 0,
+      "aria-label": "Photo. Scroll to move across frames; pinch to zoom.",
+    },
+    image,
+  );
+  let width = 1600;
+  function resize(
+    /** @type {number} */ next,
+    /** @type {number} */ center = viewport.clientWidth / 2,
+  ) {
+    const prior = width;
+    width = Math.max(320, Math.min(4800, next));
+    image.width = Math.round(width);
+    viewport.scrollLeft =
+      ((viewport.scrollLeft + center) * width) / prior - center;
+  }
+  const tools = h(
+    "div",
+    { class: "zoom-tools" },
+    h(
+      "p",
+      { class: "help" },
+      "Scroll across the frames. Pinch or use the zoom buttons.",
+    ),
+    button("−", () => resize(width / 1.5), "secondary"),
+    button("+", () => resize(width * 1.5), "secondary"),
+    button("Fit", () => resize(viewport.clientWidth), "secondary"),
+  );
+  tools.querySelectorAll("button")[0].setAttribute("aria-label", "Zoom out");
+  tools.querySelectorAll("button")[1].setAttribute("aria-label", "Zoom in");
+  /** @type {{distance:number,width:number}|null} */
+  let pinch = null;
+  const distance = (/** @type {TouchList} */ touches) =>
+    Math.hypot(
+      touches[0].clientX - touches[1].clientX,
+      touches[0].clientY - touches[1].clientY,
+    );
+  viewport.addEventListener(
+    "touchstart",
+    (event) => {
+      if (event.touches.length === 2) {
+        event.preventDefault();
+        pinch = { distance: distance(event.touches), width };
+      }
+    },
+    { passive: false },
+  );
+  viewport.addEventListener(
+    "touchmove",
+    (event) => {
+      if (pinch && event.touches.length === 2) {
+        event.preventDefault();
+        const center =
+          (event.touches[0].clientX + event.touches[1].clientX) / 2 -
+          viewport.getBoundingClientRect().left;
+        resize(
+          (pinch.width * distance(event.touches)) / pinch.distance,
+          center,
+        );
+      }
+    },
+    { passive: false },
+  );
+  viewport.addEventListener("touchend", () => {
+    pinch = null;
+  });
   dialog.replaceChildren(
     h(
       "header",
@@ -140,11 +228,8 @@ function zoomPhoto(src, label) {
       h("h2", {}, label),
       button("Close", () => dialog.close(), "secondary"),
     ),
-    h(
-      "div",
-      { class: "zoom-scroll" },
-      h("img", { src, alt: label, referrerpolicy: "no-referrer" }),
-    ),
+    tools,
+    viewport,
   );
   dialog.onclose = () => {
     dialog.replaceChildren();
@@ -160,5 +245,35 @@ export function fill(el, ...children) {
       .flat()
       .filter((child) => child != null && child !== false)
       .map((child) => (child instanceof Node ? child : String(child))),
+  );
+}
+
+/** @param {string} title @param {string} [intro] */
+export function heading(title, intro = "") {
+  return h(
+    "header",
+    { class: "page-heading" },
+    h("h1", { tabindex: "-1" }, title),
+    intro ? h("p", {}, intro) : null,
+  );
+}
+/** @param {string} text @param {string} [className] */
+export function tag(text, className = "") {
+  return h("span", { class: `tag ${className}` }, text);
+}
+/** @param {(path:string)=>string} href @param {(path:string)=>void} navigate */
+export function brand(href, navigate) {
+  return h(
+    "a",
+    {
+      class: "brand",
+      href: href("/"),
+      onclick: (/** @type {MouseEvent} */ e) => {
+        e.preventDefault();
+        navigate("/");
+      },
+    },
+    h("span", { class: "brand-mark" }, icon("house")),
+    h("span", {}, "Highest House", h("small", {}, "Dish Watch")),
   );
 }

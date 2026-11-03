@@ -593,11 +593,7 @@ textarea::placeholder {
 .first-place .rank-bar rect {
   fill: var(--first);
 }
-.threshold-line {
-  stroke: var(--secondary);
-  stroke-width: 0.4;
-  stroke-dasharray: 1 1;
-}
+
 .thresholds {
   margin-top: 22px;
 }
@@ -656,22 +652,7 @@ textarea::placeholder {
   padding-bottom: 24px;
   border-bottom: 1px solid var(--line);
 }
-.cta-art {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  color: var(--secondary);
-  margin: 0 0 28px;
-  padding-top: 10px;
-}
-.cta-art svg {
-  width: 44px;
-  height: 44px;
-  margin-left: -10px;
-}
-.cta-art svg:first-child {
-  margin-left: 0;
-}
+
 .name-cta h2 {
   font-size: 22px;
   max-width: 17ch;
@@ -1008,8 +989,7 @@ dialog::backdrop {
   max-height: calc(100dvh - 140px);
 }
 .zoom-scroll img {
-  width: 100%;
-  min-width: 720px;
+  max-width: none;
   height: auto;
 }
 .photo-dialog:focus {
@@ -1171,23 +1151,7 @@ dialog::backdrop {
     position: relative;
     padding-right: 64px;
   }
-  .cta-art {
-    position: absolute;
-    right: 0;
-    top: 0;
-    flex-direction: column;
-    padding-top: 0;
-    margin: 0;
-  }
-  .cta-art svg {
-    width: 32px;
-    height: 32px;
-    margin-left: 0;
-    margin-top: -8px;
-  }
-  .cta-art svg:first-child {
-    margin-top: 0;
-  }
+
   .name-cta h2 {
     font-size: 19px;
     max-width: 20ch;
@@ -1364,9 +1328,7 @@ dialog::backdrop {
     padding-top: 20px;
     border-top: 1px solid var(--line);
   }
-  .week-layout .cta-art {
-    top: 20px;
-  }
+
   .week-layout .standings {
     order: 4;
   }
@@ -1593,4 +1555,170 @@ dialog::backdrop {
   aspect-ratio: 4/3;
   border-radius: 5px;
   background: var(--control);
+}
+/* Keep text and counters inside the actual row, including its glyph bounds. */
+.rankings li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) max-content;
+  padding-right: 4px;
+}
+.rank-person,
+.standings,
+.past-detail,
+.week-main,
+.name-panel,
+.evidence,
+.week-copy {
+  min-width: 0;
+}
+.points {
+  min-width: 32px;
+  flex: none;
+}
+.rank-name {
+  flex-wrap: wrap;
+}
+.rank-name > span:first-child {
+  overflow-wrap: anywhere;
+}
+.zero-standings {
+  margin-top: 16px;
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.zero-standings strong {
+  font-weight: 550;
+  color: var(--text);
+}
+.gates {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.gate-label {
+  display: grid;
+  gap: 5px;
+}
+.gate-label strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.name-cta {
+  padding-right: 0;
+}
+.site-footer {
+  justify-content: flex-end;
+}
+.footer-account {
+  justify-content: flex-end;
+}
+.chip.camera-chip {
+  border-color: var(--review);
+  box-shadow: inset 0 0 0 1px var(--review);
+  color: var(--review);
+}
+/* Six arrival frames keep their wide shape; the enlarged view pans at full size. */
+.photo.filmstrip {
+  aspect-ratio: 1600/280;
+  border-radius: 8px;
+}
+.zoom-scroll {
+  overflow: auto;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+  min-height: 180px;
+}
+.zoom-scroll img {
+  min-width: 0;
+  max-width: none;
+  height: auto;
+}
+.zoom-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.zoom-tools .help {
+  flex: 1;
+  min-width: 150px;
+}
+.zoom-tools button {
+  min-width: 44px;
+}
+.zoom-scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+@media (max-width: 760px) {
+  .footer-account {
+    justify-content: space-between;
+  }
+  .rankings li {
+    gap: 12px;
+  }
+  .name-cta {
+    padding-right: 0;
+  }
+  .naming .evidence > .photo {
+    grid-row: 3;
+  }
+  .photo.filmstrip {
+    aspect-ratio: 1600/280;
+  }
+  .zoom-scroll {
+    max-height: calc(100dvh - 220px);
+    min-height: 200px;
+  }
+  .zoom-header {
+    margin-bottom: 12px;
+  }
+  .zoom-tools .help {
+    font-size: 11px;
+  }
+}
+.photo.filmstrip {
+  box-sizing: content-box;
+  aspect-ratio: 1600/240;
+  padding-bottom: 24px;
+}
+.photo.filmstrip img {
+  height: calc(100% - 24px);
+}
+.photo.filmstrip .zoom-hint {
+  top: auto;
+  bottom: 0;
+  right: 0;
+  height: 24px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--secondary);
+}
+.arrival-photo {
+  min-width: 0;
+}
+.arrival-photo .photo.filmstrip {
+  box-sizing: border-box;
+  aspect-ratio: 1600/240;
+  padding: 0;
+}
+.arrival-photo .photo.filmstrip img {
+  height: 100%;
+}
+.photo-instruction {
+  margin-top: 8px;
+  text-align: right;
+}
+.naming .evidence > .arrival-photo {
+  grid-row: 3;
+}
+@media (max-width: 760px) {
+  .naming .evidence > .arrival-photo {
+    grid-row: 3;
+  }
+}
+.reviewed-visit .arrival-photo {
+  max-width: 440px;
+  margin-top: 12px;
 }

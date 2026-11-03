@@ -1,0 +1,79 @@
+import { date } from "../ui.js";
+/** @typedef {import('../types.js').Week} Week */
+/** @param {string} stamp @param {string} timezone */
+function calendarDay(stamp, timezone) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(stamp)) return stamp;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: timezone,
+  }).formatToParts(new Date(stamp));
+  const part = (/** @type {string} */ kind) =>
+    parts.find((p) => p.type === kind)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+/** @param {string} day @param {number} days */
+function shiftDay(day, days) {
+  const d = new Date(`${day}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+/** @param {Week} data */
+export function dutyCopy(data) {
+  if (!data.rules.enabled)
+    return {
+      title: "Kitchen duty is paused",
+      explanation: "The weekly pick is switched off.",
+    };
+  const duty = data.on_duty;
+  if (!duty)
+    return {
+      title: "Nobody’s on kitchen yet",
+      explanation: "The house hasn’t picked anyone yet.",
+    };
+  const title = `${duty.name}’s on kitchen this week`;
+  const assigned = calendarDay(duty.since, data.week.timezone),
+    since = date(assigned, data.week.timezone);
+  const why = duty.why.toLowerCase();
+  if (/house vote|operator|override|manual/.test(why))
+    return {
+      title,
+      explanation: `${/house vote/.test(why) ? "Chosen by the house" : "Set by the house operator"}. On kitchen since ${since}.`,
+    };
+  if (/pick|most.*(?:points|dishes)/.test(why)) {
+    // A weekly pick begins at the previous week's close, as recorded by the API.
+    const origin = date(shiftDay(assigned, -7), data.week.timezone);
+    const carry = assigned < data.week.start;
+    return {
+      title,
+      explanation: `Most dish points the week of ${origin}.${carry ? ` Nobody else has been a clear pick since, so ${duty.name} stays on.` : ""}`,
+    };
+  }
+  // Preserve an unfamiliar operator-provided reason instead of inventing its meaning.
+  return { title, explanation: `${duty.why} On kitchen since ${since}.` };
+}
+/** @param {Week} data */
+export function weekSubtitle(data) {
+  const start = new Date(`${data.week.start}T12:00:00Z`),
+    end = new Date(`${data.week.end}T12:00:00Z`);
+  const sameMonth =
+    start.getUTCFullYear() === end.getUTCFullYear() &&
+    start.getUTCMonth() === end.getUTCMonth();
+  const range = `${date(data.week.start, data.week.timezone)} – ${sameMonth ? end.getUTCDate() : date(data.week.end, data.week.timezone)}`;
+  if (data.week.closed) return `${range} · closed`;
+  const stamp = new Date(data.week.closes_at);
+  const minute = new Intl.DateTimeFormat("en-US", {
+    minute: "numeric",
+    timeZone: data.week.timezone,
+  }).format(stamp);
+  const closes = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    ...(Number(minute) ? { minute: "2-digit" } : {}),
+    timeZone: data.week.timezone,
+  })
+    .format(stamp)
+    .replace(",", "");
+  return `${range} · closes ${closes}`;
+}

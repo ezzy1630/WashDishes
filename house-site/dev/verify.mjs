@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
+import { inspectLayout } from "./layout.mjs";
 const scratch =
   process.env.DISHWATCH_SCRATCH ||
   "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
@@ -22,7 +23,8 @@ const browser = await chromium.launch({
 });
 const issues = [],
   checks = [],
-  shots = [];
+  shots = [],
+  layouts = [];
 const control = async (body) => {
   const r = await fetch(`${origin}/dev/control`, {
     method: "POST",
@@ -93,14 +95,17 @@ async function capture(page, name, size, theme) {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
   });
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
+  const layout = await inspectLayout(page);
+  assert.ok(
+    layout.scrollWidth <= layout.clientWidth,
+    `${name} ${size} ${theme}: document width ${JSON.stringify(layout)}`,
   );
-  assert.equal(
-    overflow,
-    false,
-    `${name} ${size} ${theme}: horizontal overflow`,
+  assert.deepEqual(
+    layout.violations,
+    [],
+    `${name} ${size} ${theme}: content overflows its card`,
   );
+  layouts.push({ screen: name, size, theme, ...layout });
   const small = await page
     .locator("button:not(:disabled), nav a, input, select, textarea, summary")
     .evaluateAll((nodes) =>
@@ -128,7 +133,7 @@ async function capture(page, name, size, theme) {
     `${name} accessibility`,
   );
   const filename = `${scratch}/screenshots/${name}-${size}-${theme}.png`;
-  await page.screenshot({ path: filename, fullPage: true });
+  await page.screenshot({ path: filename, fullPage: name !== "filmstrip-zoom" });
   shots.push(filename);
 }
 try {
@@ -142,6 +147,8 @@ try {
           viewport: { width, height },
           colorScheme: theme,
           reducedMotion: "reduce",
+          isMobile: width < 600,
+          hasTouch: width < 600,
         }),
         page = await context.newPage();
       observe(page);
@@ -153,11 +160,89 @@ try {
       await capture(page, "join", size, theme);
       await signedIn(page);
       await capture(page, "this-week", size, theme);
+      assert.equal(
+        await page.locator(".page-heading p").innerText(),
+        "Nov 2 – 8 · closes Mon 12 AM",
+      );
+      assert.equal(await page.locator(".rankings li").count(), 3);
+      assert.equal(await page.locator(".rank-bar path").count(), 0);
+      await page.getByText("7 pts · needs 4", { exact: true }).waitFor();
+      await page.getByText("Leads by 4 · needs 2", { exact: true }).waitFor();
+      for (const mode of ["pick", "override", "disabled"]) {
+        await control({ dutyMode: mode });
+        await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+        await page
+          .locator(".duty")
+          .getByText(
+            mode === "pick"
+              ? "Most dish points the week of Oct 26."
+              : mode === "override"
+                ? "Chosen by the house. On kitchen since Nov 2."
+                : "The weekly pick is switched off.",
+            { exact: true },
+          )
+          .waitFor();
+        await capture(page, `duty-${mode}`, size, theme);
+      }
+      await control({ dutyMode: "carry" });
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page
+        .getByText(
+          "Most dish points the week of Oct 19. Nobody else has been a clear pick since, so Ezzy stays on.",
+          { exact: true },
+        )
+        .waitFor();
+
       await navigation(page, "Name dishes");
       await page
         .getByRole("heading", { name: "Whose dishes are these?" })
         .waitFor();
       await capture(page, "name-visits", size, theme);
+      assert.deepEqual(
+        await page.locator(".name-chips button").allTextContents(),
+        [
+          "Andrew",
+          "Calder",
+          "Daniel",
+          "Elliot",
+          "Ezzy",
+          "Henry",
+          "Jacob",
+          "Jadon",
+          "Pedro",
+          "Sutton",
+        ],
+      );
+      assert.equal(await page.locator(".camera-chip").innerText(), "Jadon");
+      const dimensions = await page
+        .locator(".naming .filmstrip img")
+        .evaluate((img) => ({
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+        }));
+      assert.ok(
+        dimensions.width <= 1600 && dimensions.width / dimensions.height >= 5,
+        "six-frame strip has a wide aspect",
+      );
+      await page
+        .getByRole("button", { name: /Enlarge.*arrival photos/ })
+        .click();
+      await page.locator("dialog[open]").waitFor();
+      assert.equal(
+        await page
+          .locator(".zoom-scroll img")
+          .evaluate((img) => Math.round(img.getBoundingClientRect().width)),
+        1600,
+      );
+      await page.locator(".zoom-scroll").evaluate((el) => {
+        el.scrollLeft = 600;
+      });
+      assert.ok(
+        await page.locator(".zoom-scroll").evaluate((el) => el.scrollLeft > 0),
+      );
+      await capture(page, "filmstrip-zoom", size, theme);
+      await page.keyboard.press("Escape");
+
       await page
         .getByRole("button", { name: "Same as another", exact: true })
         .click();
@@ -197,6 +282,8 @@ try {
   await control({ reset: true });
   const context = await browser.newContext({
       viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
     }),
     page = await context.newPage();
   observe(page);
@@ -332,6 +419,50 @@ try {
       assert.equal(data.standings.find((s) => s.name === "Ezzy").points, 2);
       await control({ reset: true });
       await page.reload();
+      await navigation(page, "My dishes");
+    },
+  );
+  await check(
+    "phone pinch and zoom controls resize and pan the real wide strip",
+    async () => {
+      await navigation(page, "Name dishes");
+      await page
+        .getByRole("button", { name: /Enlarge.*arrival photos/ })
+        .click();
+      const viewport = page.locator(".zoom-scroll"),
+        img = page.locator(".zoom-scroll img");
+      await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+      assert.equal(await img.evaluate((el) => el.width), 2400);
+      await page.keyboard.press("Escape");
+      await page
+        .getByRole("button", { name: /Enlarge.*arrival photos/ })
+        .click();
+      const rect = await viewport.boundingBox(),
+        cdp = await context.newCDPSession(page),
+        y = rect.y + 50;
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [
+          { x: rect.x + 50, y },
+          { x: rect.x + 140, y },
+        ],
+      });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [
+          { x: rect.x + 20, y },
+          { x: rect.x + 200, y },
+        ],
+      });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+      assert.ok(
+        (await img.evaluate((el) => el.width)) > 1600,
+        "two-finger pinch enlarges the image",
+      );
+      await page.keyboard.press("Escape");
       await navigation(page, "My dishes");
     },
   );
@@ -495,7 +626,7 @@ try {
   await writeFile(
     `${scratch}/verification.json`,
     JSON.stringify(
-      { shots, checks, browser: await browser.version(), issues },
+      { shots, layouts, checks, browser: await browser.version(), issues },
       null,
       2,
     ),

@@ -1,12 +1,22 @@
 // Local-only API + static server. Never deploy this directory or private photos.
 import http from "node:http";
+import { execFileSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 const site = fileURLToPath(new URL("../", import.meta.url));
 const port = Number(process.env.PORT || 4317);
-const fixtureRoot =
-  "/Volumes/Neural/dishwatch-scratch/v2/laneJ/final-gate-output";
+const scratch =
+  process.env.DISHWATCH_SCRATCH ||
+  "/Volumes/Neural/dishwatch-scratch/houseleague/laneC";
+const fixtureRoot = path.join(scratch, "review2/fixtures");
+const fixtureInfo = JSON.parse(
+  execFileSync(
+    "python3",
+    [path.join(site, "dev/fixtures.py"), "--output", fixtureRoot],
+    { encoding: "utf8" },
+  ),
+);
 const slugs = [
   "ezzy",
   "jadon",
@@ -25,7 +35,8 @@ const residents = slugs.map((slug, i) => ({
   name: slug[0].toUpperCase() + slug.slice(1),
 }));
 const at = "2026-11-03T01:00:00-08:00";
-let offline = false,
+let dutyMode = "carry",
+  offline = false,
   malformed = false,
   delay = 0;
 let dishes = [];
@@ -37,7 +48,7 @@ const lookup = (id) => {
   return r ? { id: r.id, name: r.name } : null;
 };
 function item(id, kind, owner = null, dispute = null) {
-  const fixture = id % 2 ? "871" : "873";
+  const fixture = fixtureInfo[String(id)] || fixtureInfo["101"];
   return {
     id,
     kind,
@@ -50,16 +61,23 @@ function item(id, kind, owner = null, dispute = null) {
             ? "Dinner plate"
             : "Bowl by the sink",
     location: id % 2 ? "Stove counter" : "Sink, left side",
-    out_since: "2026-11-02T19:12:00-08:00",
-    due_at: "2026-11-02T21:12:00-08:00",
+    out_since:
+      id >= 200
+        ? id < 300
+          ? "2026-10-27T14:17:22-08:00"
+          : "2026-10-20T14:17:22-07:00"
+        : fixture.at,
+    due_at: new Date(Date.parse(fixture.at) + 2 * 3600000).toISOString(),
     gone_at: null,
     points: ["pan", "pot"].includes(kind) ? 2 : 1,
     resident: lookup(owner),
     named_by: owner ? lookup(6) : null,
     named_at: owner ? at : null,
     dispute,
-    filmstrip_url: `http://127.0.0.1:${port}/dev/photos/${fixture}/collage.jpg`,
-    photo_url: `http://127.0.0.1:${port}/dev/photos/${fixture}/late.jpg`,
+    filmstrip_url:
+      id >= 200 ? null : `http://127.0.0.1:${port}/dev/photos/${fixture.strip}`,
+    photo_url:
+      id >= 200 ? null : `http://127.0.0.1:${port}/dev/photos/${fixture.photo}`,
     verdict: null,
     can_name: false,
     can_dispute: false,
@@ -94,6 +112,7 @@ function reset() {
       verdict: { kind: "not_dish", by: lookup(9), at },
     },
   ];
+  dutyMode = "carry";
   offline = false;
   malformed = false;
   delay = 0;
@@ -140,7 +159,7 @@ function visits(records, user) {
       id: `visit-${first.id}`,
       dish_ids: list.map((d) => d.id),
       title,
-      area: first.location,
+      area: "Kitchen counter",
       at: first.out_since,
       points: list.reduce((n, d) => n + d.points, 0),
       filmstrip_url: first.filmstrip_url,
@@ -214,19 +233,33 @@ function week(start, user) {
       timezone: "America/Los_Angeles",
     },
     rules: {
-      enabled: true,
+      enabled: dutyMode !== "disabled",
       weights: { pan: 2, pot: 2, default: 1 },
       min_points: 4,
       min_lead: 2,
     },
     standings,
-    pick,
-    on_duty: {
-      resident_id: 1,
-      name: "Ezzy",
-      since: "2026-10-26",
-      why: "Picked last week. The following week was too close, so Ezzy stays on.",
-    },
+    pick:
+      dutyMode === "disabled"
+        ? {
+            resident_id: null,
+            name: null,
+            reason: "The weekly pick is switched off.",
+          }
+        : pick,
+    on_duty:
+      dutyMode === "disabled"
+        ? null
+        : {
+            resident_id: 1,
+            name: "Ezzy",
+            since:
+              dutyMode === "carry" ? "2026-10-26" : "2026-11-02T00:00:00-08:00",
+            why:
+              dutyMode === "override"
+                ? "Set by the operator after a house vote."
+                : "Ezzy is the pick for next week's kitchen duty with 5 points, 3 ahead.",
+          },
     dishes: records.map((d) => permissions(d, user)),
     visits: visits(records, user),
     unnamed_count: records.filter(
@@ -280,6 +313,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/dev/control" && req.method === "POST") {
       const b = await body(req);
       if (b.reset) reset();
+      if (["pick", "carry", "override", "disabled"].includes(b.dutyMode))
+        dutyMode = b.dutyMode;
       if ("offline" in b) offline = !!b.offline;
       if ("malformed" in b) malformed = !!b.malformed;
       if ("delay" in b) delay = Number(b.delay);
@@ -439,10 +474,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const photo = pathname.match(
-      /^\/dev\/photos\/(871|873)\/(collage|late)\.jpg$/,
+      /^\/dev\/photos\/(101|103|104|105|106|110|112)-(strip|later)\.jpg$/,
     );
     let filename;
-    if (photo) filename = path.join(fixtureRoot, photo[1], `${photo[2]}.jpg`);
+    if (photo) filename = path.join(fixtureRoot, `${photo[1]}-${photo[2]}.jpg`);
     else {
       const requested = path.resolve(site, `.${decodeURIComponent(pathname)}`);
       if (
