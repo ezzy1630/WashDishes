@@ -499,3 +499,22 @@ def test_search_eligibility_uses_configured_retention_instead_of_the_old_twenty_
     store.set_settings({'buffer_hours': 24})
     assert proofs.candidate(at) is None
     assert proofs.progress(at)['checking'] == 0
+
+
+def test_house_review_exclusions_remove_shareable_proofs_until_undone(authenticated):
+    from wash_dishes import ledger
+    client = authenticated
+    runtime = client.app.state.runtime
+    item = late_dish(runtime.store, runtime.media)
+    person = runtime.store.add_resident('Sam')
+    runtime.proofs.run_once(found)
+    runtime.store.action(item['id'], 'confirm', resident_id=person['id'])
+    assert ledger.tally(runtime.store)[0]['count'] == 1
+    visit = next(v for v in client.get('/api/league/week').json()['visits'] if item['id'] in v['dish_ids'])
+    for verdict in ('clean', 'not_dish'):
+        assert client.post(f"/api/league/visits/{visit['id']}/verdict", json={'verdict': verdict}).status_code == 200
+        assert client.get('/api/proofs?ready_only=true').json()['items'] == []
+        assert ledger.tally(runtime.store)[0]['count'] == 0
+        assert client.get(f"/api/proofs/{item['id']}/image").status_code == 404
+        assert client.post(f"/api/league/visits/{visit['id']}/undo-verdict").status_code == 200
+        assert len(client.get('/api/proofs?ready_only=true').json()['items']) == 1

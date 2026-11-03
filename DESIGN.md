@@ -98,14 +98,14 @@ spacing:
 
 Dish Watch uses a restrained graphite interface with real camera evidence as its dominant visual material. Mona Sans, compact controls, thin borders and quiet metadata support short kitchen-review sessions. The interface keeps uncertain observations visibly distinct from confirmed responsibility.
 
-This record covers Send (the home page), People, and the older incident feed and case/review page, with shared controls from the static app. Send and People are designed for an iPhone first: the proof picture is the page, and one pale Send button is the only loud control. It records the built palette rather than the slightly lighter range in the direction brief. Surface composition remains in `.impeccable/surfaces/wash-dishes-static-index-html.md`; product rules remain in `PRODUCT.md`.
+This record covers Send (the home page), People, and the older incident feed and case/review page, with shared controls from the static app. Send and People are designed for an iPhone first: weekly duty and visit review lead, with pale actions reserved for sharing results. It records the built palette rather than the slightly lighter range in the direction brief. Surface composition remains in `.impeccable/surfaces/wash-dishes-static-index-html.md`; product rules remain in `PRODUCT.md`.
 
 **Key Characteristics:**
 
 - Real full-scene evidence before attribution.
 - Graphite layers, restrained borders and compact native controls.
 - Readable muted metadata and explicit unknown states.
-- One finished picture and one Send action; naming and corrections are quiet and below it.
+- One visit at a time, honest naming and quick alternative answers; finished results stay shareable.
 
 ## Colors
 
@@ -140,7 +140,7 @@ The hierarchy is compact: a page headline, medium incident titles, smaller revie
 
 ## Layout
 
-Send is up to 1240px: a headline that counts the dishes ("2 dishes left out") with one line on what is still coming, then proof cards in a grid of columns at least 520px wide (one column on a phone, two on a laptop). Each card stacks the picture, Send, "Who put it down?" and the quiet corrections; cards are 48px apart. People is up to 720px: a ruled list of people with named proofs, then one muted line naming everyone else. A person's page reuses the Send grid with their pictures, then an Earlier list for entries whose photos have expired. Mobile gutters are 16px. The older Photos and record pages keep their earlier layouts on secondary routes.
+The operator home is up to 1080px, with 16px mobile gutters. A compact, ruled weekly summary precedes To review. One visit is expanded by default; on a phone its filmstrip spans the full content width with naming and four answers underneath. At widths above 760px, evidence and controls sit side by side. Advancing or undoing returns to the review heading below the sticky navigation. Ready to send follows, with weekly sharing and finished collages in two desktop columns, stacked on mobile. Week’s record keeps the complete review history in a disclosure; quiet camera health closes the page, with faults promoted above the weekly summary. People remains a 720px ruled all-time list; individual proof history retains the 1240px proof grid. The older Photos and record pages keep their earlier layouts on secondary routes.
 
 ## Elevation & Depth
 
@@ -150,27 +150,21 @@ Controls have short background and border transitions (120ms); the reduced-motio
 
 ## Shapes
 
-Corners are gently rounded and functional. Proof pictures and the Send button use the send radius; name chips are full pills (chip radius). Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete records use a four-stage grid of retained camera photos with explicit missing-photo cells, a plain reason, and an Inspect photos & video link. They have no Send action or name chips. Complete collages and incomplete sequences have separate counts; unavailable tracking is never described as a clean kitchen.
+Corners are gently rounded and functional. Proof pictures and the Send button use the send radius; name chips are full pills (chip radius). Shared cards use the card radius; incident cards use the smaller incident radius; the review panel uses the panel radius. Native review fields use the field radius and full collages use the media radius. Photographs remain rectangular. Chat exports use one consistent crop across four source frames; untouched full scenes remain available in the record. Incomplete evidence stays reachable in records and Live; it does not occupy the home. Unavailable tracking is never described as a clean kitchen.
 
 ## Components
 
 ### Weekly kitchen duty
 
-People begins with This week: a labeled native week select, a plain pick sentence,
-current duty, and ruled resident rows with modest right-aligned points. Zero-point housemates collapse into one alphabetical line. Unnamed count links into visit review; the
-all-time named-picture list stays below. Closed weeks say that names, disputes and
-points are frozen. Duty always describes the current assignment.
+Send begins with This week: a native week select, current duty, compact top-three standings, any additional scorers, a zero-points line and the next pick/threshold sentence. Open weeks remain provisional. Closed weeks say that points are frozen. Duty in the dashboard describes the current assignment; a shared closed result retains that week’s duty outcome.
 
-Visit review uses arrival filmstrips or saved photos, the same alphabetical one-tap name chips as Send, with an outlined camera guess and a five-second Undo before saving. A guess remains
-explicitly provisional. When arrival is missing, it says “Arrival not recorded — only name someone if you know.” Settlement buttons say It was them and Not them. Existing
-graphite tokens, native fields and 13px readable metadata (`#919aa4`) apply;
-no shadows or continuous animations. At 390px, rows stay readable, settings
-fields stack, and all actions remain inside the 16px gutters.
-Review explains that nearby presence is insufficient. Not a dish, It's clean,
-Same dish as another (with an original-visit select), and Can't tell sit below
-naming. Can't tell explains its private hide/no-label behavior. Reviewed answers
-show the answerer's name and time, with operator Undo answer on open weeks.
+Visit review uses arrival filmstrips or a saved-photo fallback. Name chips remain alphabetical and at least 44px tall; the camera suggestion is outlined and its reason is a complete sentence. A guess never scores by itself. The question is “Who used or left these dishes?” Missing arrivals say “Arrival not recorded. Only name someone if you know.” Settlement buttons say It was them and Not them. Not a dish, It's clean, Same as another (with a labeled original-visit select), and Can't tell are a two-column grid of 44px minimum targets. Can't tell explains its private hide/no-label behavior.
 
+Each answer advances immediately with a five-second inline Undo receipt; several quick answers can be pending independently. Sharing pauses until they save. Errors restore the affected visit and name the failed save. Week’s record retains named visits, disputes, excluded visits, actor/time and operator Undo answer for open weeks. Full-size photos and each dish’s record remain one tap away. A caught-up state never claims that the kitchen is clean.
+
+The weekly share image is a 1080px JPEG, drawn server-side with the collage typography and graphite palette. Its height follows content. It shows the week, standings, next-duty outcome/reason, thresholds, the house site URL and a visible provisional label on open weeks. The image preview loads on request; iOS file sharing preloads the JPEG so the tap can open the share sheet. Unsupported browsers download it. Demo/snapshot exports are marked.
+
+The home uses readable metadata (`#919aa4`), 24px page title, 19px section headings, 16px visit headings, 13–14px controls/notes and existing graphite surfaces. No shadows or continuous animations. Only the app’s existing dark theme ships.
 Setup adds Kitchen duty with enabled, pan/pot/other weights, minimum points/lead
 and a separate house-vote duty form. Housemates shows account status and Make
 sign-in link inline, then a read-only copy field with seven-day/single-use wording.
@@ -189,7 +183,7 @@ Native selects, date-time inputs and textareas pair with visible labels. Review 
 
 ### Navigation
 
-The sticky header exposes Send, People and Live, which fit an iPhone's width; search is hidden there. The menu holds Settings, Housemates (adding people, face samples, personal links), Log dishes by hand and Sign out. Photos, Detection checks and Archive are reachable from search and old links only. Send and People fetch only their own small data; the full history loads when another page or search needs it.
+The sticky header exposes Send, People and Live, which fit an iPhone's width; search is hidden there. The menu holds Settings, Housemates (adding people, face samples, personal links), Log dishes by hand and Sign out. Photos, Detection checks and Archive are reachable from search and old links only. Send and People fetch their own data and compact operator status once a minute; the full dashboard/history loads when another page or search needs it.
 
 ### Evidence and correction
 

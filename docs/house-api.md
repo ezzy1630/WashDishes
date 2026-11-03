@@ -190,3 +190,17 @@ Private operator routes retain cookie + CSRF under `/api/league`: `GET week`
 `PATCH rules` (full rules), `POST duty` (`resident_id` or null), `GET accounts`
 (`[{resident_id,has_account}]`), `POST residents/{id}/join-link` (`url,expires_at`),
 and dish/visit `name` and `settle`, visit `verdict` and `undo-verdict`. No money features.
+
+Operator home additions (never exposed under `/house/`):
+
+- `GET /api/league/share?start=YYYY-MM-DD` returns an authenticated, no-store,
+  1080px-wide JPEG attachment from the league result. Open weeks are provisional;
+  closed weeks use their frozen duty assignment, including no-pick carryovers.
+  Demo and snapshot images are marked. No household photos are included.
+- `GET /api/operator-status` returns only mode, server time, camera status,
+  detection enabled, last analysed time (nullable) and approximate saved footage
+  hours (nullable on read failure). Recording gaps do not count as footage.
+- `GET /api/proofs?ready_only=true` returns `{items,people}` without building
+  incomplete sequences or loading search progress. The default contract remains
+  available to existing consumers. House review exclusions also suppress proofs
+  and named-proof totals until the exclusion is undone.

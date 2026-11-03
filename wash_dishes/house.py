@@ -700,6 +700,22 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     def operator_week(start: str | None = None):
         return house.week(start, None)
 
+    @operator.get('/share')
+    def share_week(start: str | None = None):
+        from .week_image import render
+        with house.store.lock:
+            data = league.result(house.store, start)
+            if data['week']['closed']:
+                # History's duty banner answers who is on duty now. A shared closed result
+                # must instead retain the duty assignment made by that week's close.
+                snapshot = house.store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',
+                                                     (data['week']['start'],)).fetchone()
+                data['on_duty'] = json.loads(snapshot[0])['on_duty']
+        return Response(render(data, demo=app.state.config.demo or app.state.config.snapshot),
+                        media_type='image/jpeg', headers={
+                            'Content-Disposition': f'attachment; filename="highest-house-{data["week"]["start"]}.jpg"',
+                            'Cache-Control': 'no-store'})
+
     @operator.patch('/rules')
     def configure(body: Rules):
         return league.configure(house.store, body.model_dump())

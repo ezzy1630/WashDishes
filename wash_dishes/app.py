@@ -327,11 +327,13 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     # ---- Send (home) and People: proof pictures, and who has been named on them.
     @app.get("/api/proofs", dependencies=[Depends(authenticated)])
-    def proofs():
+    def proofs(ready_only: bool = False):
         # The home page reads only this, so it stays small and fast whatever else the dashboard holds.
         learning = store.learning()
         # The picture is drawn by ledger.picture, so its address (which carries the design version) comes from there too.
         items = [p | {"image_url": ledger.image_url(p["id"], p["resident_id"])} for p in runtime.proofs.items()]
+        if ready_only:
+            return {"items": items, "people": ledger.tally(store)}
         out = runtime.proofs.out_items()
         for item in out:
             item["stages"] = []
@@ -351,6 +353,23 @@ def create_app(config: Config | None = None) -> FastAPI:
         return {"items": items, "out": out, "kitchen": kitchen, "deadline_minutes": settings["deadline_minutes"],
                 **runtime.proofs.progress(), "people": ledger.tally(store),
                 "guesses": {"checked": learning["suggestions_checked"], "correct": learning["suggestions_correct"]}}
+
+    @app.get('/api/operator-status', dependencies=[Depends(authenticated)])
+    def operator_status():
+        from .filmstrip import footage_segments
+        settings = store.settings()
+        with runtime.live_lock:
+            analyzed_at = runtime.live.get('analyzed_at') if runtime.live else None
+        # Recorder intervals are approximate; gaps must not count as saved footage.
+        try:
+            intervals = footage_segments(media.buffer)
+            seconds = sum(min(10, max(0, end - start)) for start, end, _ in intervals)
+        except OSError:
+            seconds = None
+        return {'mode': 'snapshot' if config.snapshot else 'demo' if config.demo else 'live',
+                'server_time': stamp(), 'camera': runtime.camera_status(),
+                'vision_enabled': settings['vision_enabled'], 'analyzed_at': analyzed_at,
+                'footage_hours': seconds / 3600 if seconds is not None else None}
 
     @app.get("/api/proofs/{obligation_id}/image", dependencies=[Depends(authenticated)])
     def proof_image(obligation_id: int):
