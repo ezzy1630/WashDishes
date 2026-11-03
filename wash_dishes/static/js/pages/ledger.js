@@ -4,6 +4,7 @@ import { api, avatar, cap, fill, h, icon } from '../core.js';
 import { time } from '../photo-ui.js';
 import { sendButton } from '../share.js';
 import { PICTURE, placeholderCard } from './proof.js';
+import { leaguePanel } from '../league.js';
 
 export function ledgerPage(main, route) {
   return route.sub ? record(main, Number(route.sub)) : everyone(main);
@@ -13,9 +14,12 @@ function everyone(main) {
   let alive = true;
   const list = h('ol', { class: 'tally', 'aria-busy': 'true' }, Array.from({ length: 4 }, () => h('li', { class: 'tally-row placeholder', 'aria-hidden': 'true' })));
   const note = h('div', { class: 'tally-note' });
+  const league = leaguePanel();
   fill(main, h('div', { class: 'page people-page' },
     h('header', { class: 'send-head' }, h('h1', { id: 'page-title', tabindex: '-1' }, 'People'),
-      h('p', { class: 'send-sub' }, 'Dishes left out, from the pictures you named.')), list, note));
+      h('p', { class: 'send-sub' }, 'Weekly points and the house’s kitchen duty.')), league.el,
+    h('section', { class: 'league-alltime' }, h('h2', {}, 'All-time named pictures'),
+      h('p', { class: 'send-sub' }, 'Every proof picture you named, including dishes later washed.'), list, note)));
   api('/api/people').then(({ people }) => {
     if (!alive) return;
     list.removeAttribute('aria-busy');
@@ -29,7 +33,7 @@ function everyone(main) {
     fill(note, named.length ? null : h('p', {}, 'Nobody has been named yet. On Send, tap who put each dish down.'),
       rest.length ? h('p', {}, `${named.length ? 'No named pictures yet' : 'Everyone'}: ${rest.map(p => cap(p.name)).join(', ')}.`) : null);
   }, e => { if (alive) { list.removeAttribute('aria-busy'); fill(list, h('li', { class: 'send-empty' }, `Could not load people. ${e.message}`)); } });
-  return { update() {}, destroy() { alive = false; } };
+  return { update() {}, destroy() { alive = false; league.destroy(); } };
 }
 
 function record(main, id) {

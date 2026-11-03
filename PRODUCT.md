@@ -34,7 +34,32 @@ A camera over the counters with detection running on a Jetson Orin Nano in the k
 
 ## Capabilities and Constraints
 
+- The house league uses Monday–Sunday deadline weeks in the house timezone, with
+  Monday noon closing after a 12-hour naming grace. Verified late dishes score
+  pan/pot 2, other 1, times quantity (editable). A unique leader must reach both
+  minimum points 4 and lead 2 (editable) to get next week's kitchen duty. A
+  no-pick close retains the current duty person. Switching duty off clears it;
+  the operator can set duty after a house vote. Closed scores, names, rules and
+  picks are immutable snapshots, including dishes later taken away unnamed.
+- Naming is per visit, using arrival-filmstrip membership with singleton fallback.
+  Any signed-in housemate may name an unnamed visit; camera guesses never count
+  until confirmed. Only the named person disputes, pausing points. Another
+  housemate, excluding the disputer and namer, or the operator settles. Visit
+  changes and their events are atomic. Closed-week naming/disputes are refused.
+- The review queue includes an unreviewed-visit count. Not a dish, It's clean and
+  Same dish as another exclude a visit for everyone, attributed to the answerer
+  and reversible by the operator. Can't tell hides it only for that resident and
+  creates no label. Camera-assigned names also score zero until a person confirms
+  responsibility; an eligible overdue observation alone is never a penalty.
+- An optional public house site reads a narrow Jetson API with Supabase JWT
+  sign-in and signed, expiring still images. It has no live video or money feature.
+  Housemates provides one-time sign-in/password-reset links; no email is sent.
+  Supabase owns credentials; resident mappings, dish history and media stay local.
+
 - Statuses: pending, overdue (past deadline), review, disputed, resolved (washing confirmed or removed with washing unknown), cleared (taken away before the deadline), dismissed. Each detected dish in a dirty or sink area gets its own photo record, including startup inventory. Startup records retain unknown original departure and ownership; their two-hour follow-up starts at observation. Continued localized handling before the follow-up restarts that clock from the next unattended view. A fresh matching detection is required for the later photo, including while the surrounding area is busy. Earlier genuine captures are retained or recovered where available; missing history stays explicit. Rack or storage arrivals close the dirty episode without claiming washing. Missing-after-gap records are not currently-out dishes.
+- Unknown ownership never erases an observed left-out dish. When an unnamed dish disappears after a matching, continuously observed deadline/follow-up crossing, its episode becomes resolved, with washing unknown and `left_out_at` retained. Startup inventory uses its existing observation-based two-hour follow-up; original deposit time stays unknown. Startup dishes removed before that follow-up retain their existing automatic dismissal. Auto-closures never teach the kitchen probe "not a dish".
+- Camera episodes without a fresh sighting for 24 hours close as missing/unknown, including named, startup and archived records. This does not invent washing, an on-time success or a new late verdict. Earlier supported lateness remains historical. A resolved episode can therefore mean missing with an unknown outcome; it is not necessarily confirmed washing.
+- Arrival review names a **visit**, once for all its member dishes. A continuous person visit at the same or adjacent spots can share one six-frame filmstrip; an empty interval, a recording gap, a different person or ambiguous person continuity splits visits. The strip marks every member dish, includes head/torso context and actual frame times, and remains separate from the precision-tuned four-photo Send proof. If the actual spot change cannot be recovered, the strip says “Already there at [time] — arrival not recorded”; a nearby visitor is not substituted. Coexisting overlapping duplicate records share one physical-dish slot and retain their alias ids for audit; they count once. The strip never confirms responsibility or washing. The visit carries the existing camera suggestion only when all members agree; corrections refresh that consensus without new identity inference. Filmstrips expire after seven days.
 - A passed deadline without continuous observation is "unverified" and excluded from overdue statistics. Disputed and dismissed items are excluded from named statistics.
 - Area roles: dirty (counters/landing areas), sink, clean (racks), storage (cabinets).
 - Analysis rate depends on detector load on the Jetson; smooth video comes from a go2rtc relay as fragmented MP4. Frame-by-frame JPEG fallback exists.

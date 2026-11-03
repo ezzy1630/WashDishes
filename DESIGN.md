@@ -154,6 +154,27 @@ Corners are gently rounded and functional. Proof pictures and the Send button us
 
 ## Components
 
+### Weekly kitchen duty
+
+People begins with This week: a labeled native week select, a plain pick sentence,
+current duty, and ruled resident rows with modest right-aligned points. Zero-point housemates collapse into one alphabetical line. Unnamed count links into visit review; the
+all-time named-picture list stays below. Closed weeks say that names, disputes and
+points are frozen. Duty always describes the current assignment.
+
+Visit review uses arrival filmstrips or saved photos, the same alphabetical one-tap name chips as Send, with an outlined camera guess and a five-second Undo before saving. A guess remains
+explicitly provisional. When arrival is missing, it says “Arrival not recorded — only name someone if you know.” Settlement buttons say It was them and Not them. Existing
+graphite tokens, native fields and 13px readable metadata (`#919aa4`) apply;
+no shadows or continuous animations. At 390px, rows stay readable, settings
+fields stack, and all actions remain inside the 16px gutters.
+Review explains that nearby presence is insufficient. Not a dish, It's clean,
+Same dish as another (with an original-visit select), and Can't tell sit below
+naming. Can't tell explains its private hide/no-label behavior. Reviewed answers
+show the answerer's name and time, with operator Undo answer on open weeks.
+
+Setup adds Kitchen duty with enabled, pan/pot/other weights, minimum points/lead
+and a separate house-vote duty form. Housemates shows account status and Make
+sign-in link inline, then a read-only copy field with seven-day/single-use wording.
+
 ### Buttons
 
 Compact, sentence-case actions. Standard and primary buttons are (34px) high with horizontal padding of (13px), medium weight and the button radius. Standard buttons use control-colored fills and outlined borders; hover raises the fill and strengthens the border. Primary saves use the pale action color. Quiet buttons have transparent resting backgrounds. Disabled actions reduce opacity to (0.45). A visible keyboard outline remains available.
@@ -194,3 +215,14 @@ The normal photo page opens with no review form. Something wrong? exposes one co
 - **Don't** add card shadows or continuous decorative animation to these recorded surfaces.
 
 Proof picture (2026-10-22): a 1600 px JPEG under 600 KB, made to be read as a small image in a group chat. Dark canvas (#101214), white title at 56–84 px ("Sam left this pan out", or "Pan left out"; a long name is shortened, never the part saying what was left), date and place at 44 px, then a 2×2 grid of 4:3 photos with 50 px bold captions and 46 px muted times below each: Before, Putting it down (or Leaving it), Left there, and Still there N hours later in the proof-mark yellow. All four photos share one crop around the dish (always inside) and the head and shoulders of whoever put it down. The dish is marked in proof-mark yellow over a black outline, at least 64 px: dashed in Before, corner brackets while it is being put down, solid after. Setup notes such as "(visible portion)" are dropped from place names. Cached pictures carry the design version in their file name.
+
+
+Arrival review (2026-11-03): a visit gets one JPEG, 1200 px wide and below 600 KB, with six chronological panels in a 2 columns and 3 rows. One contextual crop includes every member dish and nearby people's heads and torsos; yellow corner marks locate all dishes in every panel. The header names the dish, date and area; a time sits under each photo. Metadata frames follow the displayed row-major order. Occluded spot views are useful context here. A missing arrival says “Already there at [time] — arrival not recorded” on the image itself; the nearest visitor is never substituted for the placer. This is human review material, independent of the strict Send picture and its thresholds.
+
+The shared image is one ordinary `evidence` row (`kind='filmstrip'`, `label='arrival'`, seven-day expiry). `arrival_visits` stores its visit id, evidence id and metadata; `arrival_visit_members` links each obligation to that visit. Every member's formatted `evidence` includes that same row, and `arrival_visit_id` links to `Store.arrival_visit()`. That method returns current consensus `suggested_resident_id` and the existing per-member `suggestion_basis`; no consensus means no guess. Metadata contains `visit_id`, `obligation_ids`, `canonical_obligation_ids`, `duplicate_of`, `dish_boxes`, `window`, and `frames: [{at, person_boxes}]`. Coexisting overlapping whole/rim/sliver records share a physical-dish slot; retain all aliases and count only canonical ids after the usual dirty/owner review. Brief overlap from a transfer and separate non-overlapping spots do not deduplicate. The visited person must remain continuous for separate physical dishes to share a naming unit. `window.arrival_recorded=false` and `first_visible_at` explicitly mark already-present dishes. Consumers using SQL join members → visits → evidence; select only `expired=0 AND expires_at>now`. Filmstrip generation never names a person or changes a late verdict. A failed attempt stores a plain reason in `filmstrip_jobs` without fabricating an evidence image.
+
+`left_out_at` is an observed presence/follow-up crossing, independent of ownership or dirty-condition review. It does not itself unlock named statistics. A passed timer, a late disappearance or a post-gap sighting cannot manufacture that observation. `repair-left-out --since YYYY-MM-DD --dry-run` reports automatic-dismissal restorations by deposit date in the configured local timezone, plus stale opens of every age; omit `--dry-run` to apply on the explicitly selected data root. Human dismissals remain untouched. The default Python repair function is dry-run, and repeating the same repair is idempotent.
+
+Camera closures persist `closure_kind` (`removed` or `missing`) separately from editable reason text. Confirming a person with a new note cannot turn an unknown outcome into washing or an on-time success. Human washing confirmation clears that machine closure.
+
+Legacy geometric aliases are conservative review metadata: their observed intervals must overlap for at least 30 minutes, their record starts must be within one hour, and their spots must overlap. Complete nested vessels are protected from rim/sliver matching. Wider time gaps and ambiguous geometry remain separate for review; Lane G's source tracking remains necessary. These aliases do not certify dirty condition or responsibility. Segment-mtime plus decoded PTS provides approximate wall-clock timestamps (`timestamp_estimated=true`); original camera overlays remain the exact-clock reference.

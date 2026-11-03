@@ -4,6 +4,7 @@ import { accountability, RANGES } from "../metrics.js";
 import { scoreboard } from "../scoreboard.js";
 
 export function peoplePage(main) {
+  const joinLinks = new Map();
   let range = localStorage.getItem("dw-people-range") === "7d" ? "7d" : "30d";
   const lede = h("p", {});
   const grid = h("div", { class: "people" });
@@ -15,9 +16,12 @@ export function peoplePage(main) {
         h("button", { type: "button", class: "btn", onclick: addPerson }, icon("plus", 15), h("span", {}, "Add person")))),
     grid, guesses, archived));
 
-  let sig = "", board = null;
+  let sig = "", board = null, accounts = new Map();
   async function loadBoard() {
-    try { board = await api("/api/scoreboard"); sig = ""; render(); } catch { /* the rest of the page still works */ }
+    const result = await Promise.allSettled([api('/api/scoreboard'), api('/api/league/accounts')]);
+    if (result[0].status === 'fulfilled') board = result[0].value;
+    if (result[1].status === 'fulfilled') accounts = new Map(result[1].value.map(r => [r.resident_id, r.has_account]));
+    sig = ''; render();
   }
 
   function render() {
@@ -64,7 +68,23 @@ export function peoplePage(main) {
         stat(x?.median != null ? duration(x.median) : "—", "usual time to wash")),
       h("div", { class: "spark-days", role: "img", "aria-label": `Dishes left each day for the last 14 days: ${(x?.days || []).map(z => z.n).join(", ")}` },
         (x?.days || []).map(z => h("i", { class: z.late ? "late" : z.n ? "some" : "", style: { height: `${z.n ? 20 + z.n / maxDay * 80 : 6}%` } }))),
+      signIn(r),
       h("footer", { class: "person-foot" }, h("span", {}, "Last 14 days", x?.helped ? ` · washed ${x.helped} for others` : ""), h("a", { class: "link", href: `#/incidents?person=${r.id}` }, "History", icon("arrowRight", 13))));
+  }
+
+  function signIn(r) {
+    const link = joinLinks.get(r.id);
+    const input = link ? h('input', { value: link.url, readonly: true, 'aria-label': `One-time sign-in link for ${r.name}`, onfocus: e => e.target.select() }) : null;
+    return h('div', { class: 'house-signin stack' },
+      h('p', {}, accounts.has(r.id) ? accounts.get(r.id) ? 'House sign-in ready' : 'No house sign-in yet' : 'Checking house sign-in…'),
+      h('div', { class: 'row-actions' }, h('button', { type: 'button', class: 'btn sm', onclick: e => busy(e.currentTarget, async () => {
+        const created = await api(`/api/league/residents/${r.id}/join-link`, { method: 'POST', body: {} });
+        joinLinks.set(r.id, created); sig = ''; render();
+      }) }, 'Make sign-in link')),
+      link ? field(`Send privately to ${r.name}`, input, 'Single use, expires in 7 days. Also resets their password. Making another link revokes this one.') : null,
+      link ? h('button', { type: 'button', class: 'btn sm', onclick: e => busy(e.currentTarget, async () => {
+        try { await navigator.clipboard.writeText(link.url); toast('Sign-in link copied.'); } catch { input.focus(); input.select(); }
+      }) }, 'Copy sign-in link') : null);
   }
 
   function addPerson() {

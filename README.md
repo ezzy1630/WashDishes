@@ -37,6 +37,26 @@ The default run script stores data in `.data/live` and `.data/demo`. The install
 
 ## Use the dashboard
 
+People starts with the weekly kitchen-duty league: verified late dish points,
+the current pick, who's on duty, and unnamed visits to review. Pick a past week
+to see its frozen result. Naming a visit names all dishes from that trip together;
+a camera guess stays uncounted until someone confirms it. The older all-time
+named-picture list remains below. Setup → Kitchen duty controls weights,
+minimum points/lead, the house's on/off vote and an operator duty override.
+Housemates → Make sign-in link creates a one-time seven-day account/reset link.
+Visit review also offers Not a dish, It's clean, Same dish as another and Can't
+tell. The first three remove it for everyone with an attributed answer and
+operator undo; Can't tell only hides it for you and writes no training label.
+Automatic camera names also need a person's confirmation before league points.
+
+The optional house site uses Supabase **only for sign-in**; dish data stays on the
+Jetson. Configure `SUPABASE_URL`, server-only `SUPABASE_SECRET_KEY`, optional
+`SUPABASE_JWT_SECRET`, `HOUSE_SITE_ORIGIN` and `HOUSE_PUBLIC_ORIGIN` through env
+or the private data root's `house-settings.json`. The tunnel must allow only
+`^/house/`; app middleware independently enforces that boundary on Cloudflare
+requests. There is no house live-video endpoint. See [the API contract](docs/house-api.md)
+for exact shapes, security, week closing, signed media and initial history behavior.
+
 Overview shows pending deadlines, past-due ledger entries, and events requiring review. Add a manual deposit, inspect its evidence, confirm or correct responsibility, or mark it clean and record the cleaner. A resolved event can be corrected with an earlier cleanup time. Disputes and dismissed records are excluded from named statistics. Reassignment preserves the original observation and updates the derived totals.
 
 Each incident opens an evidence timeline: handling, left unattended (or first seen for backlog), past the deadline, and outcome. Full camera frames stay primary, with a linked handler detail crop and expandable original event clips. Captures carry dates, seconds, and the browser's time zone. A human photo identification is separate from confirmed responsibility. Missing or expired captures, observation gaps, and human cleanup decisions remain explicit; a passed timer or vanished dish never becomes camera proof of not washing. The activity log and all attached originals remain available below the timeline.

@@ -1,3 +1,4 @@
+import { nameChips as residentChips } from '../name-chips.js';
 // Home: one finished picture per dish still out past its deadline, ready to send to the house chat.
 // Found in the footage by the Jetson on its own; a picture leaves when its dish does. Dishes still out
 // whose put-down it could not find retain an explicitly incomplete four-stage view.
@@ -97,17 +98,11 @@ export function proofPage(main) {
 
   // Housemates in a fixed order, so a name is always in the same place; the camera's guess outlined.
   function nameChips(p) {
-    const named = p.resident_id != null;
-    return [...data.people].sort((a, b) => a.name.localeCompare(b.name)).map(person => {
-      const chosen = p.resident_id === person.id, guessed = !named && p.guess_id === person.id;
-      const chip = h('button', { type: 'button', class: `name-chip${chosen ? ' on' : ''}${guessed ? ' guess' : ''}`, 'aria-pressed': String(chosen) },
-        person.name, guessed ? h('small', {}, 'guess') : null);
-      chip.addEventListener('click', () => chosen || busy(chip, async () => {
+    return residentChips(data.people, { selected: p.resident_id, guess: p.guess_id,
+      choose: (person, chip) => busy(chip, async () => {
         await act(p.id, { action: 'confirm', resident_id: person.id, note: 'Named from the proof picture' });
         await load();
-      }));
-      return chip;
-    });
+      }) });
   }
 
   // Removing is undoable for a few seconds: a mis-tap on a phone should not lose a proof. Leaving
