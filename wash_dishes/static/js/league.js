@@ -5,16 +5,17 @@ import { time } from './photo-ui.js';
 import { sendButton } from './share.js';
 
 export function leaguePanel({ onChanged = () => {} } = {}) {
-  let alive = true, selected = '', request = 0, data = null, signature = '', currentId = null;
+  let alive = true, selected = '', request = 0, data = null, signature = '', currentId = null, showWeak = false;
   const pending = new Map();
   const summary = h('section', { class: 'week-summary', 'aria-label': 'Weekly kitchen duty' }, h('p', { class: 'tx2' }, 'Loading this week…'));
   const queueTitle = h('h2', { tabindex: '-1' }, 'To review');
-  const count = h('span', { class: 'review-count' });
+  const weakLink = h('button', { type: 'button', class: 'weak-evidence-link', hidden: true });
+  const queueNote = h('p', { class: 'league-note' }, 'Unnamed visits simply don’t count.');
   const queueBody = h('div', { class: 'review-body', 'aria-busy': 'true' });
   const receipts = h('div', { class: 'review-receipts', 'aria-live': 'polite' });
   const errorBox = h('p', { class: 'form-error', role: 'alert' });
   const queue = h('section', { class: 'visit-review', 'aria-label': 'Visit review' },
-    h('header', { class: 'home-section-head' }, queueTitle, count), receipts, errorBox, queueBody);
+    h('header', { class: 'home-section-head' }, queueTitle), weakLink, queueNote, receipts, errorBox, queueBody);
   const history = h('details', { class: 'week-history' }, h('summary', {}, 'Week’s record'));
   const sharing = h('section', { class: 'week-share', 'aria-label': 'Share this week' });
   const label = value => new Date(`${value}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -41,7 +42,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     const { week, rules, on_duty: duty, standings, pick } = data;
     const current = week.start === data.weeks[0].start;
     const choose = h('select', { 'aria-label': 'Week of', disabled: pending.size > 0, onchange: e => {
-      selected = e.target.value; signature = ''; currentId = null; load();
+      selected = e.target.value; signature = ''; currentId = null; showWeak = false; load();
     } }, data.weeks.map(w => h('option', { value: w.start, selected: w.start === week.start }, `${label(w.start)}${w.closed ? ' · closed' : ''}`)));
     const leaders = standings.filter(p => p.points > 0);
     fill(summary,
@@ -61,14 +62,22 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
 
   function renderQueue() {
     queueBody.removeAttribute('aria-busy');
-    const visits = data.week.closed ? [] : data.visits.filter(v => (!v.resident || v.can_settle) && !pending.has(v.id));
-    count.textContent = `${visits.length} ${visits.length === 1 ? 'visit' : 'visits'}`;
+    const available = data.week.closed ? [] : data.visits.filter(v => ((!v.resident && v.can_name) || v.can_settle) && !pending.has(v.id));
+    const clear = available.filter(v => !v.resident && v.evidence !== 'weak').length;
+    const weak = available.filter(v => !v.resident && v.evidence === 'weak').length;
+    queueTitle.textContent = data.week.closed ? 'Week closed' : `${clear} clear ${clear === 1 ? 'one' : 'ones'} to name`;
+    weakLink.hidden = !weak;
+    weakLink.textContent = showWeak ? 'Hide weak evidence' : `+${weak} with weak evidence`;
+    weakLink.setAttribute('aria-expanded', String(showWeak));
+    weakLink.onclick = () => { showWeak = !showWeak; currentId = null; renderQueue(); returnToReview(); };
+    const visits = available.filter(v => v.can_settle || showWeak || v.evidence !== 'weak');
     const next = visits.find(v => v.id === currentId) || visits[0];
     currentId = next?.id;
     fill(queueBody, next ? visitCard(next) : h('div', { class: 'review-empty' },
       h('h3', {}, data.week.closed ? 'This week is closed' : pending.size ? 'All visits answered' : data.visits.length || data.verdicts.length ? 'You’re caught up' : 'Nothing to review yet'),
       h('p', {}, data.week.closed ? 'Names, answers and points are frozen. Choose an open week to review.'
         : pending.size ? 'Your answers will save in a moment. You can still undo them.'
+        : weak ? 'The remaining visits have weak evidence. You can leave them unnamed or reveal them above.'
         : 'New visits appear when dishes are seen past their deadline. Only confirmed names score points.'),
       h('a', { class: 'link', href: '#/live' }, 'Open Live kitchen')));
   }
@@ -123,7 +132,8 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     } else controls.append(h('p', { class: 'league-note' }, 'This week is closed.'));
     return h('article', { class: 'visit-card', 'data-visit-id': visit.id },
       h('header', { class: 'visit-heading' }, h('div', {}, h('h3', {}, visit.title),
-        h('p', {}, `${visit.area || 'Kitchen'} · ${time(visit.at)}`)), h('span', {}, visit.resident ? `${visit.resident.name} · ${visit.points} pt` : `${visit.points} potential pt`)),
+        h('p', {}, `${visit.evidence[0].toUpperCase() + visit.evidence.slice(1)} evidence · ${visit.area || 'Kitchen'} · ${time(visit.at)}`),
+        visit.reason ? h('p', {}, visit.reason) : null), h('span', {}, visit.resident ? `${visit.resident.name} · ${visit.points} pt` : `${visit.points} potential pt`)),
       h('div', { class: 'visit-content' }, media, controls),
       h('a', { class: 'visit-record link', href: `#/incident/${visit.dish_ids[0]}` }, 'Photos & record'));
   }

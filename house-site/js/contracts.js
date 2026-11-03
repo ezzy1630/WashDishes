@@ -144,6 +144,8 @@ export function week(value) {
     visits: array(x.visits, visit),
     unnamed_count: number(x.unnamed_count),
     unreviewed_count: number(x.unreviewed_count),
+    clear_count: number(x.clear_count),
+    weak_count: number(x.weak_count),
     verdicts: array(x.verdicts, (item) => {
       const v = object(item);
       return {
@@ -221,6 +223,8 @@ export function visit(value) {
     photo_url: nullable(v.photo_url, string),
     ...mediaSize(v),
     arrival_seen: boolean(v.arrival_seen),
+    evidence: evidence(v.evidence),
+    reason: nullable(v.reason, string),
     resident: nullable(v.resident, resident),
     named_by: nullable(v.named_by, resident),
     named_at: nullable(v.named_at, string),
@@ -262,4 +266,11 @@ function mediaSize(value) {
     photo_width: nullable(value.photo_width, dimension),
     photo_height: nullable(value.photo_height, dimension),
   };
+}
+
+/** @param {unknown} value @returns {'strong'|'fair'|'weak'} */
+function evidence(value) {
+  if (value !== "strong" && value !== "fair" && value !== "weak")
+    throw new Error("Invalid evidence rating");
+  return value;
 }

@@ -894,3 +894,69 @@ def test_duplicate_visit_correction_rolls_back_if_later_member_has_no_target(hou
     assert all(store.obligation(i['id'])['lifecycle'] == 'open' for i in items)
     assert store.conn.execute('SELECT count(*) FROM dish_reviews').fetchone()[0] == 0
     assert store.conn.execute('SELECT count(*) FROM house_verdicts').fetchone()[0] == 0
+
+
+def test_review_evidence_orders_tiers_then_newest_and_closes_weak_pending(house_client):
+    client, store = house_client, house_client.app.state.store
+    weak_unnamed = late(client)
+    weak = late(client)
+    fair_old, fair_new = late(client), late(client)
+    strong = late(client)
+    for item, vid, arrival, people in [(fair_old, 'fair-old', True, False), (fair_new, 'fair-new', False, True), (strong, 'strong', True, True)]:
+        eid = stored_visit(client, [item], visit_id=vid, arrival_seen=arrival)
+        with store.conn:
+            capture = json.loads(store.conn.execute('SELECT capture FROM evidence WHERE id=?', (eid,)).fetchone()[0])
+            capture['frames'] = [{'person_boxes': [[0, 0, 1, 1]] if people else []}]
+            store.conn.execute('UPDATE evidence SET capture=? WHERE id=?', (json.dumps(capture), eid))
+            store.conn.execute('UPDATE arrival_visits SET metadata=? WHERE id=?', (json.dumps(capture), vid))
+    (store.root / 'models').mkdir(exist_ok=True)
+    (store.root / 'models' / 'dish-probe-kitchen.json').write_text(json.dumps({
+        'weights': [3.] + [0.] * 511, 'bias': 0., 'threshold': .5, 'proof_threshold': .8}))
+    sample = store.add_dish_sample([1.] + [0.] * 511, .99)
+    store.link_dish_sample(sample, strong['id'])
+    # The newest weak record must never precede a fair/strong one.
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET created_at=? WHERE id=?', (stamp(), weak['id']))
+        store.conn.execute('UPDATE obligations SET created_at=? WHERE id=?', (stamp(utcnow() - timedelta(minutes=2)), fair_old['id']))
+        store.conn.execute('UPDATE obligations SET created_at=? WHERE id=?', (stamp(utcnow() - timedelta(minutes=1)), fair_new['id']))
+    board = client.get('/house/api/week').json()
+    assert [v['id'] for v in board['visits']] == ['strong', 'fair-new', 'fair-old', f"dish-{weak['id']}", f"dish-{weak_unnamed['id']}"]
+    assert [v['evidence'] for v in board['visits']] == ['strong', 'fair', 'fair', 'weak', 'weak']
+    assert board['visits'][-1]['reason'] == 'Arrival not recorded'
+    assert (board['clear_count'], board['weak_count'], board['unreviewed_count']) == (3, 2, 5)
+    assert sum(p['points'] for p in board['standings']) == 0
+    # Weak evidence remains nameable by a human who knows, and still scores normally.
+    assert client.post(f"/house/api/visits/dish-{weak['id']}/name", json={'resident_id': client.people[0]['id']}).status_code == 200
+    named = client.get('/house/api/week').json()
+    assert named['weak_count'] == 1 and named['standings'][0]['points'] == 2
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=?', (stamp(utcnow() - timedelta(weeks=2)),))
+    prior = league.week_bounds(now=utcnow() - timedelta(weeks=2))['start']
+    with store.conn:
+        store.conn.execute('DELETE FROM league_weeks WHERE start=?', (prior,))  # replace the empty startup fixture
+    frozen = client.get('/house/api/week', params={'start': prior}).json()
+    assert frozen['week']['closed'] and frozen['weak_count'] == 0
+    assert frozen['clear_count'] == 3 and frozen['unreviewed_count'] == 3
+    assert frozen['standings'][0]['points'] == 2
+    assert len(frozen['visits']) == 5  # history survives, including weak evidence
+
+
+def test_confident_saved_still_is_fair_without_arrival_and_expiry_downgrades(house_client):
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    store.add_evidence(item['id'], 'later-only', 'later.jpg', 'snapshot', 'Matching dish still visible after the deadline')
+    (store.root / 'models').mkdir(exist_ok=True)
+    (store.root / 'models' / 'dish-probe-kitchen.json').write_text(json.dumps({
+        'weights': [3.] + [0.] * 511, 'bias': 0., 'threshold': .5, 'proof_threshold': .8}))
+    sample = store.add_dish_sample([1.] + [0.] * 511, .99)
+    store.link_dish_sample(sample, item['id'])
+    board = client.get('/house/api/week').json()
+    assert board['visits'][0]['evidence'] == 'fair'
+    assert board['visits'][0]['arrival_seen'] is False
+    assert (board['clear_count'], board['weak_count']) == (1, 0)
+    with store.conn:
+        store.conn.execute("UPDATE evidence SET expired=1 WHERE id='later-only'")
+    expired = client.get('/house/api/week').json()
+    assert expired['visits'][0]['evidence'] == 'weak'
+    assert (expired['clear_count'], expired['weak_count']) == (0, 1)
+    assert sum(p['points'] for p in expired['standings']) == 0

@@ -793,7 +793,6 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .week-next { margin-top: 12px; font-weight: 550; }
 .week-summary .league-note { margin-top: 4px; }
 .visit-review { margin-top: 28px; scroll-margin-top: 76px; }
-.review-count { color: var(--tx2); font-size: 14px; }
 .visit-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin: 14px 0 12px; }
 .visit-heading p, .visit-heading > span { font-size: 13px; color: var(--tx2); }
 .visit-heading > span { text-align: right; flex: none; }
@@ -848,3 +847,8 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
   .home-warning { margin-bottom: 16px; }
 }
 .home-mode { color: #a9c4ff; font-size: 13px; margin-bottom: 12px; }
+
+.operator-home .weak-evidence-link { display: inline-flex; align-items: center; min-height: 44px; padding: 4px 0; border: 0; background: transparent; color: var(--tx2); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.operator-home .weak-evidence-link[hidden] { display: none; }
+.operator-home .weak-evidence-link:hover { color: var(--tx); }
+.visit-review > .league-note { margin: 0 0 16px; }

@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import house_verdicts, house_visits, league
+from . import house_verdicts, house_visits, league, review_evidence
 from .house_auth import HouseConfig, JWTVerifier, SupabaseAdmin
 from .house_schema import slug_for
 from .store import parse_stamp, stamp, utcnow
@@ -317,18 +317,37 @@ class House:
             evidence = [e | live[e['id']] for e in evidence if e['id'] in live]
             raw = {d['id']: d for d in data['dishes']}
             basis = data.get('guess_basis', {}) if closed else self.store.suggestion_basis(list(raw))
+            samples = {r['obligation_id']: r['embedding'] for r in self.store.conn.execute(
+                'SELECT obligation_id,embedding FROM dish_samples WHERE id IN (SELECT max(id) FROM dish_samples WHERE obligation_id IN (SELECT value FROM json_each(?)) GROUP BY obligation_id)',
+                (json.dumps(list(raw)),))}
+            memories = [dict(r) for r in self.store.conn.execute('SELECT m.embedding,m.area_id,m.area_role FROM remembered_objects m JOIN dish_reviews r ON r.event_id=m.event_id')]
+            areas = self.store.settings()['areas']
             hidden = set() if _include_hidden else {r[0] for r in self.store.conn.execute('SELECT visit_id FROM house_hidden_visits WHERE resident_id=?', (actor['id'] if actor else 0,))}
             first = league.week_times(league.week_bounds())[0]
             history = {r['start']: r['pick_name'] for r in self.store.conn.execute(
                 "SELECT start,json_extract(snapshot,'$.pick.name') pick_name FROM league_weeks WHERE start>=?", ((first.date() - timedelta(weeks=7)).isoformat(),))}
         data = league.project(data)
+        probe = review_evidence.kitchen_probe(self.store.root)
+        for memory in memories:
+            memory['embedding'] = json.loads(memory['embedding'])
+        # Same configured area geometry as Inventory, without importing inference.
+        from .inventory import area_for
+        signals = {}
+        for oid, item in raw.items():
+            box = item.get('box')
+            box = json.loads(box) if isinstance(box, str) else box
+            signals[oid] = review_evidence.signals(samples.get(oid), probe, memories,
+                                                  area_for(box, areas) if box else None)
         evidence_by_dish = {}
         for entry in evidence:
             evidence_by_dish.setdefault(entry['obligation_id'], []).append(entry)
         dishes = [self.dish(d, residents, data['rules'], actor=actor, closed=closed, evidence=evidence_by_dish.get(d['id'], [])) for d in data['dishes']]
         visits = self.visits(data['dishes'], dishes, evidence, residents, basis, actor=actor,
                              groups=data.get('visit_groups'), duplicates=data.get('duplicates'),
-                             alias_guesses=data.get('alias_guesses', {}))
+                             alias_guesses=data.get('alias_guesses', {}), signals=signals)
+        # Keep records/history, but closed weak unnamed visits are no longer pending.
+        pending = [v for v in visits if v['resident'] is None and (v['dispute'] or {}).get('state') != 'open'
+                   and not (closed and v['evidence'] == 'weak') and v['id'] not in hidden]
         hidden_dishes = {oid for v in visits if v['id'] in hidden for oid in v['dish_ids']}
         visits = [v for v in visits if v['id'] not in hidden]
         dishes = [d for d in dishes if d['id'] not in hidden_dishes]
@@ -342,10 +361,12 @@ class House:
             weeks.append({'start': start_date, 'pick_name': history.get(start_date), 'closed': start_date in history})
         return {k: data[k] for k in ('week', 'rules', 'standings', 'pick', 'on_duty')} | {
             'dishes': dishes, 'visits': visits, 'unnamed_count': sum(d['resident'] is None for d in dishes),
-            'unreviewed_count': sum(v['resident'] is None for v in visits),
+            'unreviewed_count': len(pending),
+            'clear_count': sum(v['evidence'] != 'weak' for v in pending),
+            'weak_count': sum(v['evidence'] == 'weak' for v in pending),
             'verdicts': verdicts, 'weeks': weeks}
 
-    def visits(self, raw_dishes, dishes, evidence, residents, basis, *, actor, groups=None, duplicates=None, alias_guesses=None):
+    def visits(self, raw_dishes, dishes, evidence, residents, basis, *, actor, groups=None, duplicates=None, alias_guesses=None, signals=None):
         raw = {d['id']: d for d in raw_dishes}
         formatted = {d['id']: d for d in dishes}
         people = {r['id']: r for r in residents}
@@ -369,7 +390,15 @@ class House:
             for oid in group['dish_ids']:
                 formatted[oid]['filmstrip_url'] = url
                 formatted[oid].update({f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, url).items()})
-            visits.append(house_visits.serialize(group, raw, formatted, guess=guess, filmstrip_url=url))
+            member_signals = [(signals or {}).get(oid, {}) for oid in group['dish_ids']]
+            rating = review_evidence.rate(group.get('capture', {}), has_filmstrip=bool(url),
+                has_photo=any(formatted[oid]['photo_url'] for oid in group['dish_ids']),
+                dish_confident=all(s.get('dish_confident', False) for s in member_signals),
+                remembered_near_match=any(s.get('remembered_near_match', False) for s in member_signals))
+            visits.append(house_visits.serialize(group, raw, formatted, guess=guess, filmstrip_url=url) | rating)
+        # Stable passes preserve newest first within each evidence tier.
+        visits.sort(key=lambda v: (parse_stamp(v['at']), v['id']), reverse=True)
+        visits.sort(key=lambda v: {'strong': 0, 'fair': 1, 'weak': 2}[v['evidence']])
         return visits
 
     def visit_for_dish(self, oid: int) -> dict | None:

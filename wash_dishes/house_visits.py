@@ -32,7 +32,7 @@ def _metadata(capture, filmstrip=None) -> dict | None:
     if not isinstance(canonical, list) or set(canonical) != set(ids) - set(aliases):
         return None
     return {'id': str(visit_id), 'dish_ids': list(dict.fromkeys(ids)), 'filmstrip': filmstrip,
-            'duplicate_of': aliases, 'arrival_seen': capture.get('window', {}).get('arrival_recorded') is True}
+            'duplicate_of': aliases, 'capture': capture, 'arrival_seen': capture.get('window', {}).get('arrival_recorded') is True}
 
 
 def catalog(store, ids: list[int] | None = None) -> list[dict]:

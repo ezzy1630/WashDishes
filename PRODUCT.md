@@ -48,7 +48,7 @@ A camera over the counters with detection running on a Jetson Orin Nano in the k
   until confirmed. Only the named person disputes, pausing points. Another
   housemate, excluding the disputer and namer, or the operator settles. Visit
   changes and their events are atomic. Closed-week naming/disputes are refused.
-- The review queue includes an unreviewed-visit count. Not a dish, It's clean and
+- The review queue orders strong, fair, then weak evidence, newest first within each tier. The headline counts clear (strong + fair) visits; weak evidence is optional behind a quiet disclosure. Unnamed visits simply do not count. Weak unnamed visits stop being pending at week close; history and scoring stay unchanged. The rating uses saved arrival/person metadata, existing kitchen-probe features and remembered-object matches, never new inference. Confident dishes with saved stills can be fair even when arrivals are missing. Not a dish, It's clean and
   Same dish as another exclude a visit for everyone, attributed to the answerer
   and reversible by the operator. Can't tell hides it only for that resident and
   creates no label. Camera-assigned names also score zero until a person confirms
