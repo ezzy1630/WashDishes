@@ -1,7 +1,7 @@
 import { button, date, field, h, photo, tag, mediaSize } from "../ui.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
-/** @param {Visit} visit */
+/** @param {{verdict: Visit["verdict"]}} visit */
 export function verdictText(visit) {
   if (!visit.verdict) return "";
   const labels = {
@@ -10,7 +10,7 @@ export function verdictText(visit) {
     duplicate: "Marked same as another visit",
     cant_tell: "Couldn’t tell",
   };
-  return `${labels[visit.verdict.kind]} by ${visit.verdict.by.name}`;
+  return `${labels[visit.verdict.kind]} by ${visit.verdict.by?.name || "the operator"}`;
 }
 /** @param {Visit} dish @param {boolean} settle @param {import("../types.js").ScreenContext} context */
 export function record(dish, settle, context) {

@@ -1,9 +1,11 @@
 """Child process: launch this checkout with workers disabled and isolated storage."""
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 from datetime import datetime
@@ -67,13 +69,19 @@ def main():
     from wash_dishes.config import Config
 
     root = Path(os.environ["HOUSE_E2E_DATA"])
-    app = create_app(Config(root=root, workers=False, password=os.environ["WASHDISHES_ACCESS_KEY"]))
+    app = create_app(Config(root=root, workers=False, password=os.environ["WASHDISHES_ACCESS_KEY"]),
+                     house_tunnel_port=int(os.environ["HOUSE_E2E_TUNNEL_PORT"]))
     fixture = seed(app)
     install_fixture_clock(Path(os.environ["HOUSE_E2E_CLOCK_FILE"]))
     fixture["house_api"] = hasattr(app.state, "house")
     (root.parent / "fixture.json").write_text(json.dumps(fixture, indent=2))
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ["HOUSE_E2E_PORT"]), log_level="warning",
-                ssl_certfile=os.environ["HOUSE_E2E_TLS_CERT"], ssl_keyfile=os.environ["HOUSE_E2E_TLS_KEY"])
+    with socket.socket() as private, socket.socket() as tunnel:
+        for sock, port in ((private, "HOUSE_E2E_PORT"), (tunnel, "HOUSE_E2E_TUNNEL_PORT")):
+            sock.bind(("127.0.0.1", int(os.environ[port])))
+            sock.listen()
+        server = uvicorn.Server(uvicorn.Config(app, proxy_headers=False, log_level="warning",
+            ssl_certfile=os.environ["HOUSE_E2E_TLS_CERT"], ssl_keyfile=os.environ["HOUSE_E2E_TLS_KEY"]))
+        asyncio.run(server.serve(sockets=[private, tunnel]))
 
 
 if __name__ == "__main__":

@@ -98,11 +98,10 @@ await page.route(`${authOrigin}/**`, async (r) => {
 });
 await page.route(`${origin}/house/api/**`, async (r) => {
   const headers = r.request().headers();
-  if (!r.request().url().endsWith("login-names"))
-    assert.ok(
-      [first, fresh].includes(headers.authorization?.slice(7)),
-      "real access token on API call",
-    );
+  assert.ok(
+    [first, fresh].includes(headers.authorization?.slice(7)),
+    "real access token on API call",
+  );
   await r.fulfill({
     response: await r.fetch({
       headers: { ...headers, authorization: "Bearer mock:ezzy" },
@@ -111,7 +110,7 @@ await page.route(`${origin}/house/api/**`, async (r) => {
 });
 try {
   await page.goto(origin);
-  await page.getByLabel("Your name").selectOption("ezzy");
+  await page.getByLabel("Your name").fill("ezzy");
   await page.getByLabel("Password", { exact: true }).fill("house-demo");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("heading", { name: "This week", exact: true }).waitFor();

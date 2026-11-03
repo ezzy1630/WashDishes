@@ -164,7 +164,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
       h('p', { class: 'league-note' }, `Pan ${data.rules.weights.pan} · pot ${data.rules.weights.pot} · other ${data.rules.weights.default} pt. Pick needs ${data.rules.min_points} points and ${data.rules.min_lead} ahead. Only human-confirmed names count.`),
       ...data.visits.filter(v => !pending.has(v.id)).map(v => h('details', { class: 'league-dish' }, h('summary', {}, `${v.title} · ${v.resident?.name || 'Unnamed'}${v.dispute?.state === 'open' ? ' · disputed' : ''}`), visitCard(v, { reviewing: false }))),
       ...data.verdicts.map(v => h('div', { class: 'league-verdict' }, h('p', {}, v.title),
-        h('p', { class: 'league-note' }, `${v.by?.name || 'Operator'}: ${v.verdict === 'not_dish' ? 'Not a dish' : v.verdict === 'clean' ? 'It’s clean' : 'Same dish as another'} · ${time(v.at)}`),
+        h('p', { class: 'league-note' }, `${v.by?.name || 'Operator'}: ${v.kind === 'not_dish' ? 'Not a dish' : v.kind === 'clean' ? 'It’s clean' : 'Same dish as another'} · ${time(v.at)}`),
         !data.week.closed ? h('button', { type: 'button', class: 'btn', onclick: e => busy(e.currentTarget, async () => {
           await api(`/api/league/visits/${encodeURIComponent(v.visit_id)}/undo-verdict`, { method: 'POST', body: {} });
           currentId = v.visit_id; await Promise.all([load(), onChanged()]);

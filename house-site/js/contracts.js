@@ -45,16 +45,6 @@ export function resident(value) {
   return { id: id(r.id), name: string(r.name) };
 }
 /** @param {unknown} value */
-export function names(value) {
-  return array(value, (item) => {
-    const n = object(item),
-      slug = string(n.slug);
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
-      throw new Error("Invalid login name");
-    return { slug, name: string(n.name) };
-  });
-}
-/** @param {unknown} value */
 export function me(value) {
   const m = object(value);
   return { resident: resident(m.resident), house: string(m.house) };
@@ -154,6 +144,15 @@ export function week(value) {
     visits: array(x.visits, visit),
     unnamed_count: number(x.unnamed_count),
     unreviewed_count: number(x.unreviewed_count),
+    verdicts: array(x.verdicts, (item) => {
+      const v = object(item);
+      return {
+        ...verdict(v),
+        visit_id: id(v.visit_id),
+        title: string(v.title),
+        of_visit_id: nullable(v.of_visit_id, string),
+      };
+    }),
     weeks: array(x.weeks, (item) => {
       const h = object(item);
       return {
@@ -234,7 +233,7 @@ export function visit(value) {
   };
 }
 
-/** @param {unknown} value @returns {{kind:'not_dish'|'clean'|'duplicate'|'cant_tell',by:ReturnType<typeof resident>,at:string}} */
+/** @param {unknown} value @returns {{kind:'not_dish'|'clean'|'duplicate'|'cant_tell',by:ReturnType<typeof resident>|null,at:string}} */
 function verdict(value) {
   const v = object(value),
     kind = string(v.kind);
@@ -245,7 +244,7 @@ function verdict(value) {
     kind !== "cant_tell"
   )
     throw new Error("Invalid visit verdict");
-  return { kind, by: resident(v.by), at: string(v.at) };
+  return { kind, by: nullable(v.by, resident), at: string(v.at) };
 }
 
 /** @param {unknown} value */

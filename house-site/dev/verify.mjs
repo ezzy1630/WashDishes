@@ -51,7 +51,7 @@ function observe(page) {
 }
 async function signedIn(page, slug = "ezzy") {
   await page.goto(`${origin}/?mock=1`);
-  await page.getByLabel("Your name").selectOption(slug);
+  await page.getByLabel("Your name").fill(slug);
   await page.getByLabel("Password", { exact: true }).fill("house-demo");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("heading", { name: "This week", exact: true }).waitFor();
@@ -170,7 +170,7 @@ try {
       observe(page);
       const size = `${width}x${height}`;
       await page.goto(`${origin}/?mock=1`);
-      await page.getByLabel("Your name").selectOption("ezzy");
+      await page.getByLabel("Your name").fill("ezzy");
       await capture(page, "sign-in", size, theme);
       await page.goto(`${origin}/join?mock=1#demo-invite`);
       await capture(page, "join", size, theme);
@@ -429,24 +429,19 @@ try {
     },
   );
   await check(
-    "sign-in rejects bad password; ten alphabetical names",
+    "sign-in uses a private name input and generic errors",
     async () => {
       await page.goto(`${origin}/?mock=1`);
-      await page.getByLabel("Your name").selectOption("ezzy");
-      const names = await page.locator("select option").allTextContents();
-      assert.equal(names.length, 11);
-      assert.deepEqual(names.slice(1), [
-        "Andrew",
-        "Calder",
-        "Daniel",
-        "Elliot",
-        "Ezzy",
-        "Henry",
-        "Jacob",
-        "Jadon",
-        "Pedro",
-        "Sutton",
-      ]);
+      await page.getByLabel("Your name").fill("ezzy");
+      assert.equal(await page.locator("select").count(), 0);
+      await page.getByLabel("Your name").fill("unknown-person");
+      await page.getByLabel("Password", { exact: true }).fill("house-demo");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "didn’t match" })
+        .waitFor();
+      await page.getByLabel("Your name").fill("EZZY");
       await page.getByLabel("Password", { exact: true }).fill("wrong");
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
       await page
@@ -528,15 +523,19 @@ try {
       );
       assert.equal(data.unreviewed_count, 0);
       assert.equal(
-        data.visits.find((v) => v.id === "visit-101").resident,
-        null,
+        data.visits.some((v) => v.id === "visit-101"),
+        false,
+      );
+      assert.equal(
+        data.verdicts.find((v) => v.visit_id === "visit-101").kind,
+        "not_dish",
       );
       await control({ reset: true });
       await page.reload();
       await page
         .getByRole("button", { name: "Same as another", exact: true })
         .click();
-      assert.equal(await page.locator(".duplicate-choice").count(), 6);
+      assert.equal(await page.locator(".duplicate-choice").count(), 5);
       await page.getByRole("button", { name: /Dinner plate/ }).click();
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
       await page
@@ -549,7 +548,7 @@ try {
         }).then((r) => r.json()),
       );
       assert.equal(
-        data.visits.find((v) => v.id === "visit-101").verdict.kind,
+        data.verdicts.find((v) => v.visit_id === "visit-101").kind,
         "duplicate",
       );
       assert.equal(

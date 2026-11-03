@@ -156,7 +156,7 @@ class BodyLimit:
         return await self.app(scope, bounded_receive, send)
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+def create_app(config: Config | None = None, *, house_tunnel_port: int = 8788) -> FastAPI:
     config = config or Config.environment()
     config.prepare()
     house_config = HouseConfig.load(config.root)
@@ -179,6 +179,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             store.close()
 
     app = FastAPI(title="Dish watch", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.house_tunnel_port = house_tunnel_port
     app.state.store, app.state.media, app.state.runtime, app.state.access, app.state.config = store, media, runtime, access, config
     hosts = ["localhost", "127.0.0.1", "[::1]", "*.ts.net", "testserver"]
     hosts += [h.strip() for h in os.getenv("WASHDISHES_ALLOWED_HOSTS", "").split(",") if h.strip()]
