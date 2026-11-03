@@ -19,15 +19,15 @@ const fixtureInfo = JSON.parse(
 );
 const slugs = [
   "ezzy",
-  "jadon",
-  "sutton",
-  "henry",
-  "calder",
-  "andrew",
-  "elliot",
-  "pedro",
-  "daniel",
-  "jacob",
+  "wren",
+  "nico",
+  "finn",
+  "jules",
+  "theo",
+  "remy",
+  "ari",
+  "milo",
+  "leo",
 ];
 const residents = slugs.map((slug, i) => ({
   id: i + 1,
@@ -191,7 +191,7 @@ function visits(records, user) {
           !first.resident && first.id === 101 && !confirmed.has(first.id)
             ? {
                 resident_id: 2,
-                name: "Jadon",
+                name: "Wren",
                 basis:
                   "Similar outfit in the arrival photos. This is a suggestion, not a confirmed name.",
               }
@@ -335,7 +335,7 @@ function week(start, user) {
     weeks: [
       {
         start: "2026-11-02",
-        pick_name: old || older ? "Jadon" : pick.name,
+        pick_name: old || older ? "Wren" : pick.name,
         closed: false,
       },
       { start: "2026-10-26", pick_name: null, closed: true },

@@ -219,7 +219,7 @@ def main():
         if not fixture["house_api"]:
             missing.append("Lane B /house/api/week")
         if args.foundation or missing:
-            report["pending"] = ["Full UI journey: join Jadon/Andrew/Daniel, camera guess, exact scores/pick, disputes/settlement, closed week, auth/media/tunnel refusals"]
+            report["pending"] = ["Full UI journey: join Wren/Theo/Milo, camera guess, exact scores/pick, disputes/settlement, closed week, auth/media/tunnel refusals"]
             if missing:
                 report["pending"].append("Merge prerequisites: " + ", ".join(missing))
             report["result"] = "foundation-passed; full-pending"

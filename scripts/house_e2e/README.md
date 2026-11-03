@@ -52,7 +52,7 @@ pan + plate + bowl (**4**), cup (**1**), pot (**2**). A fourth belongs to a clos
 week two Mondays ago. Only synthetic, visibly labeled JPEGs are generated.
 The seed uses a one-minute deadline and the real matching-late-photo label.
 Arrival evidence uses the production `wash_dishes.filmstrip.render` with six synthetic frames in its two-column grid. The cup visit explicitly has an unrecorded arrival. Evidence uses `filmstrip` / `arrival` and real capture metadata
-`{visit_id,obligation_ids,frames,window:{arrival_recorded}}`. Andrew is the first visit's camera guess.
+`{visit_id,obligation_ids,frames,window:{arrival_recorded}}`. Theo is the first visit's camera guess.
 Data and JPEGs are read back through authenticated HTTP before Chrome starts.
 Times follow the current house week in America/Los_Angeles; the first five
 minutes of Monday are refused because a current-week overdue fixture cannot
@@ -69,27 +69,27 @@ The in-memory fake Auth implements ES256/JWKS, password/refresh grants, admin
 create/password update, user lookup, settings and logout. Admin calls require a
 fresh per-run API key. It is a protocol fixture, not a production GoTrue server.
 
-The full journey uses independent **390×844** Chrome contexts for Jadon, Andrew
-and Daniel, the real site and API contracts in `docs/house-api.md`:
+The full journey uses independent **390×844** Chrome contexts for Wren, Theo
+and Milo, the real site and API contracts in `docs/house-api.md`:
 
 1. Operator cookie + CSRF creates actual join links; each actor sets a password
    through `/join#token` and lands signed in using real supabase-js.
-2. Jadon confirms Andrew through the camera button, privately skips the fair pot,
+2. Wren confirms Theo through the camera button, privately skips the fair pot,
    then reveals weak evidence and names the cup as himself. The pot stays available
-   to Daniel; the skip creates no label.
-   Atomic visit membership, owner/namer audit, **4:1** points and Andrew's pick
+   to Milo; the skip creates no label.
+   Atomic visit membership, owner/namer audit, **4:1** points and Theo's pick
    are checked through API reads and rendered standings.
-3. Andrew disputes (**0:1**, no pick); the namer and disputer cannot settle.
-   Daniel settles “them” (**4:1**) and then a second dispute “not them”
+3. Theo disputes (**0:1**, no pick); the namer and disputer cannot settle.
+   Milo settles “them” (**4:1**) and then a second dispute “not them”
    (**0:1**, back to unnamed). Ezzy remains on duty.
-4. Daniel names the pot as Jadon: **4:3**, insufficient lead, no pick. Closed historical
+4. Milo names the pot as Wren: **4:3**, insufficient lead, no pick. Closed historical
    week selection renders “Closed” and refuses naming with HTTP 409.
 5. Valid auth succeeds; expired/forged/wrong-audience/wrong-issuer/missing JWTs
    fail with 401. A different housemate cannot dispute (403).
 6. Signed media works, refuses another evidence id, expires, then works again
    when the isolated server clock is restored. Cache headers are checked.
    A tunnel header refuses the operator dashboard (403) while allowing the
-   authenticated house API. Andrew signs out and signs back in using the remembered login name and password.
+   authenticated house API. Theo signs out and signs back in using the remembered login name and password.
 
 Media expiry advances only the isolated app child's wall clock past the URL's
 actual signed `exp`; no verifier, secret, signature or expiry policy is replaced.

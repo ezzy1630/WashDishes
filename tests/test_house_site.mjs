@@ -8,10 +8,10 @@ const payload = pick => ({
   week: {start:'2026-11-02', end:'2026-11-09', closes_at:'2026-11-09T20:00:00Z', closed:false, timezone:'America/Los_Angeles'},
   rules: {enabled:true,weights:{pan:2,pot:2,default:1},min_points:4,min_lead:2},
   // Deliberately unrelated totals: a view must render the authoritative decision, not derive it.
-  standings:[{resident_id:1,name:'Andrew',points:99,dishes:99}],
+  standings:[{resident_id:1,name:'Theo',points:99,dishes:99}],
   pick, on_duty:null, dishes:[], visits:[], unnamed_count:0, unreviewed_count:0, clear_count:0, weak_count:0, verdicts:[], weeks:[],
 });
-const chosen = {resident_id:1,name:'Andrew',state:'pick',points:6,lead:4,needed_points:0,needed_lead:0,reason:'6 points · 4 ahead'};
+const chosen = {resident_id:1,name:'Theo',state:'pick',points:6,lead:4,needed_points:0,needed_lead:0,reason:'6 points · 4 ahead'};
 
 test('site reads the server pick breakdown without rebuilding or stripping its reason', () => {
   const data = week(payload(chosen));

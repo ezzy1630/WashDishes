@@ -98,9 +98,9 @@ def test_shared_image_names_the_pick_without_repeating_it_in_the_explanation(mon
         return original(draw, xy, text, *args, **kwargs)
 
     monkeypatch.setattr(ImageDraw.ImageDraw, 'text', record)
-    board = [{'resident_id': 1, 'name': 'Andrew', 'points': 6}, {'resident_id': 2, 'name': 'Jadon', 'points': 2}]
+    board = [{'resident_id': 1, 'name': 'Theo', 'points': 6}, {'resident_id': 2, 'name': 'Wren', 'points': 2}]
     render({'week': league.week_bounds(), 'rules': league.DEFAULT_RULES, 'standings': board,
             'pick': league.pick(board, league.DEFAULT_RULES), 'on_duty': None})
-    assert drawn.count('Andrew') == 2  # One standings row, one duty name.
+    assert drawn.count('Theo') == 2  # One standings row, one duty name.
     assert '6 points · 4 ahead' in drawn
-    assert not any('Andrew' in text and text != 'Andrew' for text in drawn)
+    assert not any('Theo' in text and text != 'Theo' for text in drawn)

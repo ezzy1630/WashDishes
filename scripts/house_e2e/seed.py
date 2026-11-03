@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw
 
-NAMES = "ezzy jadon sutton henry calder andrew elliot pedro daniel jacob".split()
+NAMES = "ezzy wren nico finn jules theo remy ari milo leo".split()
 
 
 def jpeg(title: str) -> bytes:
@@ -70,7 +70,7 @@ def seed(app) -> dict:
                                 "Matching dish still visible after the deadline", at=when + timedelta(minutes=2))
             store.record_seen(oid, when + timedelta(minutes=2))
             if index == 0:
-                store.set_suggestion(oid, residents["andrew"], 0.95, {"face": 0.95})
+                store.set_suggestion(oid, residents["theo"], 0.95, {"face": 0.95})
         evidence_id = f"e2efilmstrip{index + 1}"
         filename = evidence_id + ".jpg"
         picture, capture = filmstrip(visit_id, when, kinds, arrival_seen=index != 1)

@@ -31,7 +31,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ui = { join: 'Set password & come in', nameTab: 'Name dishes',
   signOut: 'Sign out', signIn: 'Sign in', dispute: 'That wasn’t me',
   disputeSubmit: 'Submit dispute|Send dispute|Dispute', settle: 'Settle|Review dispute',
-  them: 'Them|It was them|Confirm Andrew', notThem: 'Not them|Not Andrew',
+  them: 'Them|It was them|Confirm Theo', notThem: 'Not them|Not Theo',
   ...cfg.ui };
 const rx = key => new RegExp(`^(?:${ui[key]})$`, 'i');
 
@@ -89,21 +89,21 @@ async function refused(url, options, statuses = [401, 403], label = 'refused') {
   checks.push({ check: label, path: new URL(url, cfg.api).pathname, status: result.status, expected_statuses: statuses });
 }
 
-async function showStandings(actor, andrew, jadon, pick, label) {
+async function showStandings(actor, theo, wren, pick, label) {
   await actor.page.goto(cfg.site + '/');
   await actor.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
-  for (const [name, expected] of [['Andrew', andrew], ['Jadon', jadon]]) {
+  for (const [name, expected] of [['Theo', theo], ['Wren', wren]]) {
     const row = actor.page.locator('.rankings li').filter({ has: actor.page.locator('.rank-name > span:first-child', { hasText: new RegExp(`^${name}$`) }) });
     if (expected) assert.equal(await row.locator('.points').innerText(), String(expected), `${name} rendered points`);
     else assert.equal(await row.count(), 0, `${name} must not have a positive points row`);
   }
-  assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Andrew is in line/ : /No clear pick yet/);
+  assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Theo is in line/ : /No clear pick yet/);
   const source = await week(actor);
   assert.equal(await actor.page.locator('.pick > p').first().innerText(), source.pick.reason, 'render the API explanation verbatim');
-  assert.equal(source.pick.points, Math.max(andrew, jadon));
-  assert.equal(source.pick.lead, Math.abs(andrew - jadon));
+  assert.equal(source.pick.points, Math.max(theo, wren));
+  assert.equal(source.pick.lead, Math.abs(theo - wren));
   assert.equal(source.pick.state === 'pick', Boolean(pick));
-  assert(!/Andrew|Jadon/.test(source.pick.reason), 'pick reason must not repeat a name');
+  assert(!/Theo|Wren/.test(source.pick.reason), 'pick reason must not repeat a name');
   assert.match(await actor.page.locator('.duty').innerText(), /Ezzy/);
   await screenshot(actor.page, label);
 }
@@ -195,12 +195,12 @@ function points(state, name) {
   return row.points;
 }
 
-function scores(state, andrew, jadon, pick) {
-  assert.equal(points(state, 'andrew'), andrew, 'Andrew points');
-  assert.equal(points(state, 'jadon'), jadon, 'Jadon points');
-  for (const name of Object.keys(cfg.fixture.residents).filter(n => !['andrew', 'jadon'].includes(n))) assert.equal(points(state, name), 0, `${name} points`);
+function scores(state, theo, wren, pick) {
+  assert.equal(points(state, 'theo'), theo, 'Theo points');
+  assert.equal(points(state, 'wren'), wren, 'Wren points');
+  for (const name of Object.keys(cfg.fixture.residents).filter(n => !['theo', 'wren'].includes(n))) assert.equal(points(state, name), 0, `${name} points`);
   assert.equal(residentId(state.pick), pick ? cfg.fixture.residents[pick] : null, 'weekly pick');
-  checks.push({ check: 'score-and-pick', expected: { andrew, jadon, pick }, observed: { standings: state.standings, pick: state.pick, on_duty: state.on_duty } });
+  checks.push({ check: 'score-and-pick', expected: { theo, wren, pick }, observed: { standings: state.standings, pick: state.pick, on_duty: state.on_duty } });
 }
 
 function findVisit(state, fixtureIndex) {
@@ -224,7 +224,7 @@ async function card(page, visit) {
 async function nameVisit(actor, visit, name, guess = false) {
   await actor.page.getByRole('link', { name: rx('nameTab') }).click();
   const item = await card(actor.page, visit);
-  const button = guess ? item.getByRole('button', { name: new RegExp(cfg.ui.guess || '^Camera thinks Andrew — tap to confirm$', 'i') })
+  const button = guess ? item.getByRole('button', { name: new RegExp(cfg.ui.guess || '^Camera thinks Theo — tap to confirm$', 'i') })
     : item.getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
   if (guess) await screenshot(actor.page, 'camera-guess-awaiting-one-tap-confirmation');
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/house/api/visits/${visit.id}/name`) && r.request().method() === 'POST');
@@ -274,8 +274,8 @@ async function settle(actor, visit, decision) {
   assert((await response).ok(), 'Settlement UI failed');
   const updated = await (await response).json();
   assert.equal(updated.dispute.state, decision === 'them' ? 'upheld' : 'overturned');
-  assert.equal(residentId(updated.dispute.settled_by), cfg.fixture.residents.daniel);
-  assert.equal(residentId(updated.resident), decision === 'them' ? cfg.fixture.residents.andrew : null);
+  assert.equal(residentId(updated.dispute.settled_by), cfg.fixture.residents.milo);
+  assert.equal(residentId(updated.resident), decision === 'them' ? cfg.fixture.residents.theo : null);
   checks.push({ check: 'UI dispute settled', decision, visit: updated });
   await item.waitFor({ state: 'detached' });
   await actor.page.getByText('All settled here.', { exact: true }).waitFor();
@@ -294,17 +294,17 @@ async function clockOffset(seconds) {
 }
 
 async function journey() {
-  const jadon = await join('jadon');
-  const andrew = await join('andrew');
-  const daniel = await join('daniel');
-  let state = await week(jadon);
+  const wren = await join('wren');
+  const theo = await join('theo');
+  const milo = await join('milo');
+  let state = await week(wren);
   assert.equal(state.start_week, cfg.fixture.closed_start, 'Persisted first-run week');
   assert.equal(state.weeks.length, 3, 'History includes only weeks since the league started');
   assert(state.weeks.every(w => w.start >= state.start_week), 'No pre-start week in navigation');
   const beforeStart = new Date(state.start_week + 'T12:00:00Z');
   beforeStart.setUTCDate(beforeStart.getUTCDate() - 7);
   const preStart = beforeStart.toISOString().slice(0, 10);
-  await refused('/house/api/week?start=' + preStart, { token: jadon.token }, [400]);
+  await refused('/house/api/week?start=' + preStart, { token: wren.token }, [400]);
   await refused('/api/league/week?start=' + preStart, { operator: true }, [400]);
   const operatorPage = await newPage();
   await operatorPage.context().addCookies(cfg.operatorCookie.split('; ').map(cookie => {
@@ -329,19 +329,19 @@ async function journey() {
   const pot = findVisit(state, 2);
   assert.equal(multi.points, 4);
   assert.equal(single.points, 1);
-  assert.equal(residentId(multi.guess), cfg.fixture.residents.andrew, 'Camera guess Andrew required');
+  assert.equal(residentId(multi.guess), cfg.fixture.residents.theo, 'Camera guess Theo required');
   assert(multi.filmstrip_url, 'Shared arrival filmstrip URL missing');
   // Real verdict response -> production parser -> refreshed review history.
-  await jadon.page.getByRole('link', { name: rx('nameTab') }).click();
-  const review = await card(jadon.page, multi);
-  const verdictResponse = jadon.page.waitForResponse(r => r.url().endsWith(`/visits/${multi.id}/verdict`) && r.request().method() === 'POST');
+  await wren.page.getByRole('link', { name: rx('nameTab') }).click();
+  const review = await card(wren.page, multi);
+  const verdictResponse = wren.page.waitForResponse(r => r.url().endsWith(`/visits/${multi.id}/verdict`) && r.request().method() === 'POST');
   await review.getByRole('button', { name: 'Not a dish', exact: true }).click();
   const savedVerdict = await verdictResponse;
   assert.equal(savedVerdict.status(), 200);
   assert.equal((await savedVerdict.json()).verdict.kind, 'not_dish');
-  await jadon.page.getByText(/Reviewed this week/).click();
-  await jadon.page.getByText('Marked not a dish by Jadon', { exact: true }).waitFor();
-  for (const actor of [jadon, andrew, daniel]) {
+  await wren.page.getByText(/Reviewed this week/).click();
+  await wren.page.getByText('Marked not a dish by Wren', { exact: true }).waitFor();
+  for (const actor of [wren, theo, milo]) {
     const excluded = await week(actor);
     assert(!excluded.visits.some(v => v.id === multi.id));
     assert(!excluded.dishes.some(d => multi.dish_ids.includes(d.id)));
@@ -349,90 +349,90 @@ async function journey() {
     assert.equal(excluded.verdicts.find(v => v.visit_id === multi.id).kind, 'not_dish');
     await actor.page.goto(cfg.site + '/name');
     await actor.page.getByText(/Reviewed this week/).click();
-    await actor.page.getByText('Marked not a dish by Jadon', { exact: true }).waitFor();
+    await actor.page.getByText('Marked not a dish by Wren', { exact: true }).waitFor();
   }
-  await screenshot(jadon.page, 'global-verdict-history');
+  await screenshot(wren.page, 'global-verdict-history');
   await ok(`/api/league/visits/${multi.id}/undo-verdict`, {method:'POST',operator:true,body:{}});
-  state = await week(jadon);
+  state = await week(wren);
   assert(findVisit(state,0));
   assert.equal(state.verdicts.length,0);
-  await jadon.page.goto(cfg.site + '/');
-  await nameVisit(jadon, multi, 'Andrew', true);
+  await wren.page.goto(cfg.site + '/');
+  await nameVisit(wren, multi, 'Theo', true);
   // The fair pot precedes the weak cup now. Exercise the real private skip,
   // then opt into weak evidence; another resident can still name the pot later.
-  await jadon.page.getByRole('link', {name: rx('nameTab')}).click();
-  const potReview = await card(jadon.page, pot);
-  const skippedPot = jadon.page.waitForResponse(r => r.url().endsWith(`/visits/${pot.id}/verdict`) && r.request().method() === 'POST');
+  await wren.page.getByRole('link', {name: rx('nameTab')}).click();
+  const potReview = await card(wren.page, pot);
+  const skippedPot = wren.page.waitForResponse(r => r.url().endsWith(`/visits/${pot.id}/verdict`) && r.request().method() === 'POST');
   await potReview.getByRole('button', {name: 'Can’t tell', exact: true}).click();
   assert.equal((await skippedPot).status(), 200);
   await potReview.waitFor({state: 'detached'});
-  assert(!(await week(jadon)).visits.some(v => v.id === pot.id));
-  assert((await week(daniel)).visits.some(v => v.id === pot.id));
-  await nameVisit(jadon, single, 'Jadon');
-  state = await week(jadon);
-  scores(state, 4, 1, 'andrew');
-  await refused(`/house/api/visits/${multi.id}/verdict`, {token:andrew.token,method:'POST',body:{verdict:'not_dish'}}, [409], 'resident cannot exclude named visit');
+  assert(!(await week(wren)).visits.some(v => v.id === pot.id));
+  assert((await week(milo)).visits.some(v => v.id === pot.id));
+  await nameVisit(wren, single, 'Wren');
+  state = await week(wren);
+  scores(state, 4, 1, 'theo');
+  await refused(`/house/api/visits/${multi.id}/verdict`, {token:theo.token,method:'POST',body:{verdict:'not_dish'}}, [409], 'resident cannot exclude named visit');
 
   assert.equal(state.unnamed_count, 0, 'The only remaining unnamed visit was privately skipped');
-  await showStandings(jadon, 4, 1, 'andrew', 'standings-andrew-four-jadon-one');
+  await showStandings(wren, 4, 1, 'theo', 'standings-theo-four-wren-one');
   const disputePath = `/house/api/visits/${multi.id}/dispute`;
   const settlePath = `/house/api/visits/${multi.id}/settle`;
-  await refused(disputePath, { token: jadon.token, method: 'POST', body: { note: 'Not my visit' } }, [403], 'only the named person may dispute');
-  await dispute(andrew, multi, 'andrew-disputed');
-  state = await week(jadon);
+  await refused(disputePath, { token: wren.token, method: 'POST', body: { note: 'Not my visit' } }, [403], 'only the named person may dispute');
+  await dispute(theo, multi, 'theo-disputed');
+  state = await week(wren);
   scores(state, 0, 1, null);
   assert.deepEqual(state.on_duty, duty, 'No pick retains the current duty person');
-  await showStandings(jadon, 0, 1, null, 'disputed-visit-zero-points');
-  for (const actor of [jadon, andrew]) await refused(settlePath, { token: actor.token, method: 'POST', body: { decision: 'them' } }, [403], actor === jadon ? 'namer cannot settle' : 'disputer cannot settle');
-  await settle(daniel, multi, 'them');
-  scores(await week(jadon), 4, 1, 'andrew');
-  await showStandings(jadon, 4, 1, 'andrew', 'upheld-points-restored');
-  await dispute(andrew, multi, 'andrew-disputed-again');
-  scores(await week(jadon), 0, 1, null);
-  await settle(daniel, multi, 'not_them');
-  state = await week(jadon);
+  await showStandings(wren, 0, 1, null, 'disputed-visit-zero-points');
+  for (const actor of [wren, theo]) await refused(settlePath, { token: actor.token, method: 'POST', body: { decision: 'them' } }, [403], actor === wren ? 'namer cannot settle' : 'disputer cannot settle');
+  await settle(milo, multi, 'them');
+  scores(await week(wren), 4, 1, 'theo');
+  await showStandings(wren, 4, 1, 'theo', 'upheld-points-restored');
+  await dispute(theo, multi, 'theo-disputed-again');
+  scores(await week(wren), 0, 1, null);
+  await settle(milo, multi, 'not_them');
+  state = await week(wren);
   scores(state, 0, 1, null);
   const reset = state.visits.find(v => v.id === multi.id);
   assert.equal(residentId(reset.resident), null, 'Not-them must return visit to unnamed');
   assert.equal(state.unnamed_count, 3);
   assert.equal(state.unreviewed_count, 1);
-  await showStandings(jadon, 0, 1, null, 'overturned-back-to-unnamed');
+  await showStandings(wren, 0, 1, null, 'overturned-back-to-unnamed');
   // Exercise the lead threshold independently of the minimum-points threshold.
-  await jadon.page.reload();
-  await nameVisit(jadon, multi, 'Andrew');
-  await daniel.page.reload();
-  await nameVisit(daniel, pot, 'Jadon');
-  state = await week(jadon);
+  await wren.page.reload();
+  await nameVisit(wren, multi, 'Theo');
+  await milo.page.reload();
+  await nameVisit(milo, pot, 'Wren');
+  state = await week(wren);
   scores(state, 4, 3, null);
   assert.deepEqual(state.on_duty, duty);
-  await showStandings(jadon, 4, 3, null, 'lead-one-no-pick');
-  const closed = await week(jadon, cfg.fixture.closed_start);
+  await showStandings(wren, 4, 3, null, 'lead-one-no-pick');
+  const closed = await week(wren, cfg.fixture.closed_start);
   const closedVisit = findVisit(closed, 3);
   assert.equal(closed.week.closed, true);
-  await refused(`/house/api/visits/${closedVisit.id}/name`, { token: jadon.token, method: 'POST', body: { resident_id: cfg.fixture.residents.jadon } }, [409]);
+  await refused(`/house/api/visits/${closedVisit.id}/name`, { token: wren.token, method: 'POST', body: { resident_id: cfg.fixture.residents.wren } }, [409]);
   assert.equal(closedVisit.can_name, false, 'Closed-week visit must not offer naming');
-  const past = jadon.page.getByRole('button', { name: /^(Past weeks|History)$/i }).or(jadon.page.getByRole('link', { name: /^(Past weeks|History)$/i }));
+  const past = wren.page.getByRole('button', { name: /^(Past weeks|History)$/i }).or(wren.page.getByRole('link', { name: /^(Past weeks|History)$/i }));
   await past.click();
-  const closedWeek = jadon.page.locator('.week-choice').filter({ hasText: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: closed.week.timezone }).format(new Date(cfg.fixture.closed_start + 'T12:00:00Z')) });
-  const pastResponse = jadon.page.waitForResponse(r => r.url().endsWith('/house/api/week?start=' + cfg.fixture.closed_start));
+  const closedWeek = wren.page.locator('.week-choice').filter({ hasText: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: closed.week.timezone }).format(new Date(cfg.fixture.closed_start + 'T12:00:00Z')) });
+  const pastResponse = wren.page.waitForResponse(r => r.url().endsWith('/house/api/week?start=' + cfg.fixture.closed_start));
   await closedWeek.click();
   assert((await pastResponse).ok());
-  await jadon.page.locator('.past-detail').getByText('Closed', { exact: true }).waitFor();
-  assert.equal(await jadon.page.locator('.week-choice').count(), 3, 'Past-weeks UI respects the start boundary');
-  assert.equal(await jadon.page.locator('.past-detail button').count(), 0, 'Closed history must not offer naming');
-  await screenshot(jadon.page, 'past-weeks-closed-naming-refused');
-  await ok('/house/api/me', { token: andrew.token });
+  await wren.page.locator('.past-detail').getByText('Closed', { exact: true }).waitFor();
+  assert.equal(await wren.page.locator('.week-choice').count(), 3, 'Past-weeks UI respects the start boundary');
+  assert.equal(await wren.page.locator('.past-detail button').count(), 0, 'Closed history must not offer naming');
+  await screenshot(wren.page, 'past-weeks-closed-naming-refused');
+  await ok('/house/api/me', { token: theo.token });
   const key = createPrivateKey(await fs.readFile(cfg.privateKey));
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { exp: Math.floor(Date.now() / 1000) - 10 }) }, [401], 'expired JWT');
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { aud: 'wrong-audience' }) }, [401], 'wrong JWT audience');
-  await refused('/house/api/me', { token: jwtWith(andrew.token, key, { iss: 'http://wrong-issuer.invalid/auth/v1' }) }, [401], 'wrong JWT issuer');
-  await refused('/house/api/me', { token: jwtWith(andrew.token, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey) }, [401], 'forged JWT signature');
+  await refused('/house/api/me', { token: jwtWith(theo.token, key, { exp: Math.floor(Date.now() / 1000) - 10 }) }, [401], 'expired JWT');
+  await refused('/house/api/me', { token: jwtWith(theo.token, key, { aud: 'wrong-audience' }) }, [401], 'wrong JWT audience');
+  await refused('/house/api/me', { token: jwtWith(theo.token, key, { iss: 'http://wrong-issuer.invalid/auth/v1' }) }, [401], 'wrong JWT issuer');
+  await refused('/house/api/me', { token: jwtWith(theo.token, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey) }, [401], 'forged JWT signature');
   await refused('/house/api/me', {}, [401], 'missing JWT');
   await refused('/api/dashboard', { operator: true, headers: { 'Cf-Connecting-IP': '203.0.113.20' } }, [403, 404], 'tunnel cannot reach operator dashboard');
   await refused(cfg.api + '/api/dashboard', {operator:true}, [404], 'tunnel rejects operator session without CF header');
   await refused(cfg.api + '/api/health', {}, [404], 'tunnel rejects private health');
-  await ok('/house/api/me', { token: andrew.token, headers: { 'Cf-Connecting-IP': '203.0.113.20' } });
-  const freshVisit = findVisit(await week(jadon), 0);
+  await ok('/house/api/me', { token: theo.token, headers: { 'Cf-Connecting-IP': '203.0.113.20' } });
+  const freshVisit = findVisit(await week(wren), 0);
   const media = new URL(freshVisit.filmstrip_url, cfg.api);
   assert(allowed.has(media.origin));
   const good = await request(media);
@@ -451,17 +451,17 @@ async function journey() {
   try { await refused(media, undefined, [403], 'signed media expired'); }
   finally { await clockOffset(0); }
   assert.equal((await request(media)).status, 200, 'Media must work again when fixture clock is restored');
-  await screenshot(andrew.page, 'auth-media-and-tunnel-refusals-checked');
-  await andrew.page.getByRole('button', { name: rx('signOut') }).click();
-  await andrew.page.waitForFunction(() => !Object.values(localStorage).some(v => { try { return !!JSON.parse(v)?.access_token; } catch { return false; } }));
-  await andrew.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
-  await screenshot(andrew.page, 'signed-out');
-  assert.equal(await andrew.page.getByLabel('Your name').inputValue(), 'andrew');
-  await andrew.page.locator('input[type=password]').fill('house-e2e-password');
-  await andrew.page.getByRole('button', { name: rx('signIn') }).click();
-  assert.equal((await session(andrew.page)).user.email, 'andrew@highest-house.ezzyrappeport.com');
-  await andrew.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
-  await screenshot(andrew.page, 'remembered-name-signed-in-again');
+  await screenshot(theo.page, 'auth-media-and-tunnel-refusals-checked');
+  await theo.page.getByRole('button', { name: rx('signOut') }).click();
+  await theo.page.waitForFunction(() => !Object.values(localStorage).some(v => { try { return !!JSON.parse(v)?.access_token; } catch { return false; } }));
+  await theo.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+  await screenshot(theo.page, 'signed-out');
+  assert.equal(await theo.page.getByLabel('Your name').inputValue(), 'theo');
+  await theo.page.locator('input[type=password]').fill('house-e2e-password');
+  await theo.page.getByRole('button', { name: rx('signIn') }).click();
+  assert.equal((await session(theo.page)).user.email, 'theo@highest-house.ezzyrappeport.com');
+  await theo.page.getByRole('heading', { name: 'This week', exact: true }).waitFor();
+  await screenshot(theo.page, 'remembered-name-signed-in-again');
 }
 
 try {

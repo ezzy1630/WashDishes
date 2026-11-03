@@ -278,19 +278,19 @@ try {
       assert.deepEqual(
         await page.locator(".name-chips button").allTextContents(),
         [
-          "Andrew",
-          "Calder",
-          "Daniel",
-          "Elliot",
+          "Theo",
+          "Jules",
+          "Milo",
+          "Remy",
           "Ezzy",
-          "Henry",
-          "Jacob",
-          "Jadon",
-          "Pedro",
-          "Sutton",
+          "Finn",
+          "Leo",
+          "Wren",
+          "Ari",
+          "Nico",
         ],
       );
-      assert.equal(await page.locator(".camera-chip").innerText(), "Jadon");
+      assert.equal(await page.locator(".camera-chip").innerText(), "Wren");
       async function assertImageRatios() {
         const sizes = await page
           .locator(".naming .photo img")
@@ -350,12 +350,12 @@ try {
         .click();
       await page.getByText("Reviewed this week (5)", { exact: true }).click();
       await page
-        .getByText("Marked not a dish by Daniel", { exact: true })
+        .getByText("Marked not a dish by Milo", { exact: true })
         .waitFor();
       await capture(page, "reviewed-visits", size, theme);
       await page
         .locator(".name-chips")
-        .getByRole("button", { name: "Andrew", exact: true })
+        .getByRole("button", { name: "Theo", exact: true })
         .click();
       await page
         .getByRole("heading", { name: "Dinner plate", exact: true })
@@ -386,7 +386,7 @@ try {
       );
       await page.getByRole("button", { name: /Oct 26/ }).click();
       await page
-        .getByText("Jadon would need 2 more points for a clear pick.")
+        .getByText("Wren would need 2 more points for a clear pick.")
         .waitFor();
       await capture(page, "no-pick", size, theme);
       await navigation(page, "This week");
@@ -467,7 +467,7 @@ try {
       assert.equal(before.visits[0].resident, null);
       assert.equal(before.unnamed_count, 3);
       await page
-        .getByRole("button", { name: "Camera thinks Jadon — tap to confirm" })
+        .getByRole("button", { name: "Camera thinks Wren — tap to confirm" })
         .click();
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
       const after = await page.evaluate(() =>
@@ -478,7 +478,7 @@ try {
       assert.equal(after.unnamed_count, 1);
       assert.equal(
         after.dishes.filter(
-          (d) => [101, 102].includes(d.id) && d.resident?.name === "Jadon",
+          (d) => [101, 102].includes(d.id) && d.resident?.name === "Wren",
         ).length,
         2,
       );
@@ -487,7 +487,7 @@ try {
       await page
         .getByRole("button", { name: "Look at skipped visits" })
         .click();
-      await page.getByRole("button", { name: "Andrew", exact: true }).click();
+      await page.getByRole("button", { name: "Theo", exact: true }).click();
       await page
         .getByRole("heading", { name: "You’re all caught up." })
         .waitFor();
@@ -640,7 +640,7 @@ try {
       await page.getByRole("button", { name: "Not them", exact: true }).click();
       await page.getByRole("heading", { name: "All settled here." }).waitFor();
       await page.getByRole("button", { name: "Sign out", exact: true }).click();
-      await signedIn(page, "henry");
+      await signedIn(page, "finn");
       await navigation(page, "My dishes");
       await page.getByRole("button", { name: "It was them" }).click();
       await page.getByRole("heading", { name: "All settled here." }).waitFor();
