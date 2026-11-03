@@ -761,6 +761,42 @@ try {
       assert.ok(requests > before);
     },
   );
+  await check(
+    "evidence tiers prioritize clear visits and weak visits require disclosure",
+    async () => {
+      await control({ reset: true, evidenceQueue: true });
+      await page.goto(`${origin}/?mock=1`);
+      await page
+        .getByRole("heading", { name: "2 clear ones to name" })
+        .waitFor();
+      await page
+        .getByRole("link", { name: "+1 with weak evidence", exact: true })
+        .click();
+      await page.getByRole("button", { name: "Hide weak evidence" }).waitFor();
+      assert.equal(
+        await page.locator("article.naming").getAttribute("data-dish-id"),
+        "visit-101",
+      );
+      await page
+        .getByRole("button", { name: "Not a dish", exact: true })
+        .click();
+      await page.locator('article[data-dish-id="visit-103"]').waitFor();
+      await page
+        .getByRole("button", { name: "It’s clean", exact: true })
+        .click();
+      await page.locator('article[data-dish-id="visit-113"]').waitFor();
+      await page
+        .getByText("Arrival not recorded · No one in the photos", {
+          exact: true,
+        })
+        .waitFor();
+      await page.getByRole("button", { name: "Hide weak evidence" }).click();
+      assert.equal(await page.locator("article.naming").count(), 0);
+      await page
+        .getByRole("button", { name: "+1 with weak evidence", exact: true })
+        .waitFor();
+    },
+  );
   await context.close();
   assert.deepEqual(issues, [], "Browser exceptions/CSP errors");
   await writeFile(

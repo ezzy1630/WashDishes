@@ -208,20 +208,47 @@ export function namePage(context) {
       v.can_name &&
       (!v.verdict || v.verdict.kind === "cant_tell"),
   );
-  const remaining = unreviewed.filter((v) => !state.skipped.has(v.id)),
+  const remaining = unreviewed.filter(
+      (v) =>
+        !state.skipped.has(v.id) && (state.showWeak || v.evidence !== "weak"),
+    ),
     visit = remaining[0];
-  const intro = `${data.unreviewed_count} to review. A dish only counts once someone names it.`;
+  const intro = data.week.closed
+    ? "Week closed. Unnamed visits don’t count."
+    : `${data.clear_count} clear ${data.clear_count === 1 ? "one" : "ones"} to name. Unnamed visits simply don’t count.`;
+  const weakLink =
+    !data.week.closed && data.weak_count
+      ? h(
+          "button",
+          {
+            type: "button",
+            class: "weak-evidence-link",
+            "aria-expanded": String(state.showWeak),
+            onclick: () => {
+              state.showWeak = !state.showWeak;
+              render();
+              focusHeading();
+            },
+          },
+          state.showWeak
+            ? "Hide weak evidence"
+            : `+${data.weak_count} with weak evidence`,
+        )
+      : null;
   const reviewed = reviewedVisits(data);
   if (!visit)
     return h(
       "div",
       {},
       heading("Name the dishes", intro),
+      weakLink,
       empty(
         state.skipped.size ? "That’s the round." : "You’re all caught up.",
         state.skipped.size
           ? "The visits you couldn’t tell stay unnamed. That’s better than a guess."
-          : "There’s nothing waiting for you to review right now.",
+          : data.weak_count
+            ? "The remaining visits have weak evidence. Leave them unnamed or reveal them above."
+            : "There’s nothing waiting for you to review right now.",
       ),
       state.skipped.size
         ? button(
@@ -243,6 +270,7 @@ export function namePage(context) {
     "div",
     {},
     heading("Name the dishes", intro),
+    weakLink,
     h(
       "article",
       { class: "naming", "data-dish-id": visit.id },
@@ -260,7 +288,10 @@ export function namePage(context) {
         h(
           "p",
           { class: "help visit-metadata" },
-          `${visit.area} · ${date(visit.at, data.week.timezone, true)} · ${visit.points} potential ${visit.points === 1 ? "point" : "points"}`,
+          `${visit.evidence[0].toUpperCase() + visit.evidence.slice(1)} evidence · ${visit.area} · ${date(visit.at, data.week.timezone, true)} · ${visit.points} potential ${visit.points === 1 ? "point" : "points"}`,
+          visit.reason
+            ? h("span", { class: "evidence-reason" }, visit.reason)
+            : null,
         ),
         photo(
           visit.filmstrip_url,

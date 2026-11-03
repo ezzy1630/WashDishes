@@ -62,7 +62,8 @@ Dish = {
 }
 Visit = {
   id: string, dish_ids: [integer], alias_ids: [integer],
-  aliases: [Dish & {duplicate_of: integer}], arrival_seen: boolean, title: string, area: string, at: UTC_ISO,
+  aliases: [Dish & {duplicate_of: integer}], arrival_seen: boolean,
+  evidence: "strong"|"fair"|"weak", reason: string|null, title: string, area: string, at: UTC_ISO,
   points: integer, filmstrip_url: URL|null, photo_url: URL|null,
   filmstrip_width: integer|null, filmstrip_height: integer|null,
   photo_width: integer|null, photo_height: integer|null,
@@ -83,6 +84,7 @@ WeekResponse = {
          reason: string},
   on_duty: {resident_id: integer, name: string, since: UTC_ISO, why: string}|null,
   dishes: [Dish], visits: [Visit], unnamed_count: integer, unreviewed_count: integer,
+  clear_count: integer, weak_count: integer,
   verdicts: [{visit_id: string, title: string, kind: "not_dish"|"clean"|"duplicate",
               by: Person|null, at: UTC_ISO, of_visit_id: string|null}],
   weeks: [{start: LOCAL_DATE, pick_name: string|null, closed: boolean}]
@@ -291,3 +293,49 @@ Operator home additions (never exposed under `/house/`):
   incomplete sequences or loading search progress. The default contract remains
   available to existing consumers. House review exclusions also suppress proofs
   and named-proof totals until the exclusion is undone.
+
+## Review evidence and priority
+
+Each visit includes `evidence: "strong"|"fair"|"weak"` and `reason: string|null`.
+`visits` is ordered strong → fair → weak, then newest `at` first within a tier
+(visit ID breaks exact time ties). Both review clients walk this server order.
+The rating is a review aid, never a responsibility, dirty-condition or scoring
+verdict. It changes no `can_*` permissions or resident verdict restrictions.
+
+- **Strong:** a retained arrival filmstrip records the arrival; at least one of
+  its frames has a person in reach; every canonical member passes the existing
+  kitchen probe's `proof_threshold` (or its adopted threshold for older probes);
+  and no member near-matches an active remembered object in the same area/role.
+- **Fair:** a retained strip has either arrival or person context, or retained
+  photo evidence has a confident kitchen-probe dish verdict. Missing arrivals
+  can therefore be fair; clients still warn to name only someone you know.
+- **Weak:** no useful retained signal, including no retained photos/filmstrip.
+  Reasons use plain words, e.g. `Arrival not recorded`, `No one in the photos`,
+  or `Arrival photos unavailable` when a recorded strip has expired.
+  Missing probe/features never invent a confident verdict.
+
+The fair fallback intentionally keeps confident dishes with a saved later photo
+visible when arrival footage is missing. Requiring a strip for fair hid too many
+confirmed dishes in the isolated historical evaluation. This does not relax the
+four-part strong definition. All canonical members must pass the dish-confidence
+check; duplicate aliases do not add votes. Person boxes are the filmstrip worker's
+existing reach-filtered detections, never a fresh identity inference.
+
+The server copies only the week's latest linked dish features, active remembered
+objects (at most 64), and configured areas under the existing store lock. It
+scores those saved features outside the lock using the existing local kitchen
+probe and remembered-object cosine cutoff. No pixels are decoded, no image inference runs and no model is trained. Missing/malformed probes fail conservatively. The rating
+reflects currently retained evidence and the current adopted probe/memory; it is
+not part of the frozen score snapshot. Retention may reduce it on later reads.
+Read budgets, signed-media visibility and the tunnel listener remain unchanged.
+
+Week responses also include `clear_count` (strong + fair unnamed, undisputed
+visits) and `weak_count` (weak unnamed, undisputed visits), after the viewer's
+private skips. `unreviewed_count` is their sum. A closed week's weak unnamed
+visits contribute zero to pending counts, but remain in `visits`/history. Closed
+names, points, rules and duty picks remain immutable. Unnamed visits always score
+zero, regardless of rating; nobody needs to empty the queue.
+
+The headline is “N clear ones to name”. A quiet “+M with weak evidence” control
+reveals weak visits for the current review session. They remain optional and come
+after strong/fair visits. Closed pages show history without a naming prompt.

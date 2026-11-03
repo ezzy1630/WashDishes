@@ -74,13 +74,15 @@ and Daniel, the real site and API contracts in `docs/house-api.md`:
 
 1. Operator cookie + CSRF creates actual join links; each actor sets a password
    through `/join#token` and lands signed in using real supabase-js.
-2. Jadon confirms Andrew through the camera button and names the cup as himself.
+2. Jadon confirms Andrew through the camera button, privately skips the fair pot,
+   then reveals weak evidence and names the cup as himself. The pot stays available
+   to Daniel; the skip creates no label.
    Atomic visit membership, owner/namer audit, **4:1** points and Andrew's pick
    are checked through API reads and rendered standings.
 3. Andrew disputes (**0:1**, no pick); the namer and disputer cannot settle.
    Daniel settles “them” (**4:1**) and then a second dispute “not them”
    (**0:1**, back to unnamed). Ezzy remains on duty.
-4. Jadon names the pot: **4:3**, insufficient lead, no pick. Closed historical
+4. Daniel names the pot as Jadon: **4:3**, insufficient lead, no pick. Closed historical
    week selection renders “Closed” and refuses naming with HTTP 409.
 5. Valid auth succeeds; expired/forged/wrong-audience/wrong-issuer/missing JWTs
    fail with 401. A different housemate cannot dispute (403).

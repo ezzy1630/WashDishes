@@ -53,35 +53,51 @@ export function weekPage(context) {
         "aside",
         { class: "week-aside" },
         h(
-          "a",
-          {
-            class: "name-cta",
-            href: href("/name"),
-            onclick: (/** @type {MouseEvent} */ e) => {
-              e.preventDefault();
-              navigate("/name");
+          "div",
+          { class: "review-cta" },
+          h(
+            "a",
+            {
+              class: "name-cta",
+              href: href("/name"),
+              onclick: (/** @type {MouseEvent} */ e) => {
+                e.preventDefault();
+                navigate("/name");
+              },
             },
-          },
-          h(
-            "h2",
-            {},
-            data.unreviewed_count
-              ? `${data.unreviewed_count} to review`
-              : "Nothing waiting for review",
+            h(
+              "h2",
+              {},
+              data.week.closed
+                ? "Week closed"
+                : `${data.clear_count} clear ${data.clear_count === 1 ? "one" : "ones"} to name`,
+            ),
+            h("p", {}, "Unnamed visits simply don’t count."),
+            h(
+              "span",
+              { class: "cta-action" },
+              !data.week.closed && data.clear_count
+                ? "Review the visits"
+                : "See reviewed visits",
+              icon("arrow"),
+            ),
           ),
-          h(
-            "p",
-            {},
-            data.unreviewed_count
-              ? "A dish only counts once someone names it."
-              : "Thanks for helping the house keep it fair.",
-          ),
-          h(
-            "span",
-            { class: "cta-action" },
-            data.unreviewed_count ? "Review the visits" : "See reviewed visits",
-            icon("arrow"),
-          ),
+          !data.week.closed && data.weak_count
+            ? h(
+                "a",
+                {
+                  class: "weak-evidence-link",
+                  href: href("/name"),
+                  onclick: (/** @type {MouseEvent} */ e) => {
+                    e.preventDefault();
+                    navigate("/name");
+                    state.showWeak = true;
+                    context.render();
+                  },
+                },
+                `+${data.weak_count} with weak evidence`,
+              )
+            : null,
         ),
         h(
           "section",

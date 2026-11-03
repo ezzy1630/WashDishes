@@ -176,7 +176,7 @@ async function join(name) {
   const me = await ok('/house/api/me', { token: auth.access_token });
   assert.equal(Number(me.resident?.id ?? me.resident_id ?? me.id), cfg.fixture.residents[name]);
   await screenshot(page, `join-${name}-signed-in`);
-  return { page, token: auth.access_token };
+  return { page, token: auth.access_token, name };
 }
 
 async function week(actor, start) {
@@ -213,6 +213,9 @@ function findVisit(state, fixtureIndex) {
 
 async function card(page, visit) {
   const result = page.locator(`[data-dish-id="${visit.id}"]`);
+  if (visit.evidence === 'weak' && !await result.count()) {
+    await page.getByRole('button', {name: /with weak evidence/}).click();
+  }
   await result.first().waitFor();
   assert.equal(await result.count(), 1, `Need one data-dish-id visit card for ${visit.id}`);
   return result;
@@ -231,7 +234,7 @@ async function nameVisit(actor, visit, name, guess = false) {
   assert(saved.ok(), `UI naming failed: ${saved.status()} ${await saved.text()}`);
   const updated = await saved.json();
   assert.equal(residentId(updated.resident), cfg.fixture.residents[name.toLowerCase()]);
-  assert.equal(residentId(updated.named_by), cfg.fixture.residents.jadon);
+  assert.equal(residentId(updated.named_by), cfg.fixture.residents[actor.name]);
   assert.deepEqual(updated.dish_ids, visit.dish_ids);
   checks.push({ check: 'UI visit named atomically', visit: updated });
   const body = saved.request().postDataJSON();
@@ -323,6 +326,7 @@ async function journey() {
   assert.equal(residentId(duty), cfg.fixture.residents.ezzy, 'Ezzy must be the current duty person');
   const multi = findVisit(state, 0);
   const single = findVisit(state, 1);
+  const pot = findVisit(state, 2);
   assert.equal(multi.points, 4);
   assert.equal(single.points, 1);
   assert.equal(residentId(multi.guess), cfg.fixture.residents.andrew, 'Camera guess Andrew required');
@@ -354,12 +358,22 @@ async function journey() {
   assert.equal(state.verdicts.length,0);
   await jadon.page.goto(cfg.site + '/');
   await nameVisit(jadon, multi, 'Andrew', true);
+  // The fair pot precedes the weak cup now. Exercise the real private skip,
+  // then opt into weak evidence; another resident can still name the pot later.
+  await jadon.page.getByRole('link', {name: rx('nameTab')}).click();
+  const potReview = await card(jadon.page, pot);
+  const skippedPot = jadon.page.waitForResponse(r => r.url().endsWith(`/visits/${pot.id}/verdict`) && r.request().method() === 'POST');
+  await potReview.getByRole('button', {name: 'Can’t tell', exact: true}).click();
+  assert.equal((await skippedPot).status(), 200);
+  await potReview.waitFor({state: 'detached'});
+  assert(!(await week(jadon)).visits.some(v => v.id === pot.id));
+  assert((await week(daniel)).visits.some(v => v.id === pot.id));
   await nameVisit(jadon, single, 'Jadon');
   state = await week(jadon);
   scores(state, 4, 1, 'andrew');
   await refused(`/house/api/visits/${multi.id}/verdict`, {token:andrew.token,method:'POST',body:{verdict:'not_dish'}}, [409], 'resident cannot exclude named visit');
 
-  assert.equal(state.unnamed_count, 1, 'One current-week visit remains unnamed');
+  assert.equal(state.unnamed_count, 0, 'The only remaining unnamed visit was privately skipped');
   await showStandings(jadon, 4, 1, 'andrew', 'standings-andrew-four-jadon-one');
   const disputePath = `/house/api/visits/${multi.id}/dispute`;
   const settlePath = `/house/api/visits/${multi.id}/settle`;
@@ -380,13 +394,14 @@ async function journey() {
   scores(state, 0, 1, null);
   const reset = state.visits.find(v => v.id === multi.id);
   assert.equal(residentId(reset.resident), null, 'Not-them must return visit to unnamed');
-  assert.equal(state.unnamed_count, 4);
-  assert.equal(state.unreviewed_count, 2);
+  assert.equal(state.unnamed_count, 3);
+  assert.equal(state.unreviewed_count, 1);
   await showStandings(jadon, 0, 1, null, 'overturned-back-to-unnamed');
   // Exercise the lead threshold independently of the minimum-points threshold.
   await jadon.page.reload();
   await nameVisit(jadon, multi, 'Andrew');
-  await nameVisit(jadon, findVisit(state, 2), 'Jadon');
+  await daniel.page.reload();
+  await nameVisit(daniel, pot, 'Jadon');
   state = await week(jadon);
   scores(state, 4, 3, null);
   assert.deepEqual(state.on_duty, duty);

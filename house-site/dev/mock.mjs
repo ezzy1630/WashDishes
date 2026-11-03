@@ -60,7 +60,9 @@ function item(id, kind, owner = null, dispute = null) {
           ? "Pot on the counter"
           : kind === "plate"
             ? "Dinner plate"
-            : "Bowl by the sink",
+            : kind === "cup"
+              ? "Cup on the counter"
+              : "Bowl by the sink",
     location: fixture.area,
     out_since:
       id >= 200
@@ -84,6 +86,8 @@ function item(id, kind, owner = null, dispute = null) {
     photo_width: id >= 200 ? null : fixture.photo_width,
     photo_height: id >= 200 ? null : fixture.photo_height,
     arrival_seen: fixture.arrival_seen,
+    evidence: id === 113 ? "weak" : id === 101 ? "strong" : "fair",
+    reason: id === 113 ? "Arrival not recorded · No one in the photos" : null,
     verdict: null,
     can_name: false,
     can_dispute: false,
@@ -151,50 +155,59 @@ function visits(records, user) {
     .filter((list) => list.length);
   const grouped = new Set(groups.flat());
   units.push(...records.filter((d) => !grouped.has(d.id)).map((d) => [d]));
-  return units.map((list) => {
-    const first = list[0],
-      v = permissions(first, user),
-      title =
-        list.length === 4
-          ? "2 pans, pot and plate"
-          : list.length === 2
-            ? list[0].kind === "pan"
-              ? "Pan and pot"
-              : "Pot and bowl"
-            : first.title;
-    return {
-      id: `visit-${first.id}`,
-      dish_ids: list.map((d) => d.id),
-      title,
-      area: fixtureInfo[String(first.id)]?.area || first.location,
-      at: first.out_since,
-      points: list.reduce((n, d) => n + d.points, 0),
-      filmstrip_url: first.filmstrip_url,
-      photo_url: first.photo_url,
-      filmstrip_width: first.filmstrip_width,
-      filmstrip_height: first.filmstrip_height,
-      photo_width: first.photo_width,
-      photo_height: first.photo_height,
-      arrival_seen: first.arrival_seen,
-      resident: v.resident,
-      named_by: v.named_by,
-      named_at: v.named_at,
-      verdict: first.verdict,
-      guess:
-        !first.resident && first.id === 101 && !confirmed.has(first.id)
-          ? {
-              resident_id: 2,
-              name: "Jadon",
-              basis:
-                "Similar outfit in the arrival photos. This is a suggestion, not a confirmed name.",
-            }
-          : null,
-      dispute: v.dispute,
-      can_name: v.can_name,
-      can_dispute: v.can_dispute,
-      can_settle: v.can_settle,
-    };
-  });
+  return units
+    .map((list) => {
+      const first = list[0],
+        v = permissions(first, user),
+        title =
+          list.length === 4
+            ? "2 pans, pot and plate"
+            : list.length === 2
+              ? list[0].kind === "pan"
+                ? "Pan and pot"
+                : "Pot and bowl"
+              : first.title;
+      return {
+        id: `visit-${first.id}`,
+        dish_ids: list.map((d) => d.id),
+        title,
+        area: fixtureInfo[String(first.id)]?.area || first.location,
+        at: first.out_since,
+        points: list.reduce((n, d) => n + d.points, 0),
+        filmstrip_url: first.filmstrip_url,
+        photo_url: first.photo_url,
+        filmstrip_width: first.filmstrip_width,
+        filmstrip_height: first.filmstrip_height,
+        photo_width: first.photo_width,
+        photo_height: first.photo_height,
+        arrival_seen: first.arrival_seen,
+        evidence: first.evidence,
+        reason: first.reason,
+        resident: v.resident,
+        named_by: v.named_by,
+        named_at: v.named_at,
+        verdict: first.verdict,
+        guess:
+          !first.resident && first.id === 101 && !confirmed.has(first.id)
+            ? {
+                resident_id: 2,
+                name: "Jadon",
+                basis:
+                  "Similar outfit in the arrival photos. This is a suggestion, not a confirmed name.",
+              }
+            : null,
+        dispute: v.dispute,
+        can_name: v.can_name,
+        can_dispute: v.can_dispute,
+        can_settle: v.can_settle,
+      };
+    })
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+    .sort(
+      (a, b) =>
+        ({ strong: 0, fair: 1, weak: 2 })[a.evidence] -
+        { strong: 0, fair: 1, weak: 2 }[b.evidence],
+    );
 }
 function week(start, user) {
   const old = start === "2026-10-26",
@@ -304,6 +317,18 @@ function week(start, user) {
     unnamed_count: records.filter(
       (d) => !d.resident && (!d.verdict || d.verdict.kind === "cant_tell"),
     ).length,
+    clear_count: visits(records, user).filter(
+      (v) =>
+        !v.resident &&
+        v.evidence !== "weak" &&
+        (!v.verdict || v.verdict.kind === "cant_tell"),
+    ).length,
+    weak_count:
+      old || older
+        ? 0
+        : visits(records, user).filter(
+            (v) => !v.resident && v.evidence === "weak" && !v.verdict,
+          ).length,
     unreviewed_count: visits(records, user).filter(
       (v) => !v.resident && (!v.verdict || v.verdict.kind === "cant_tell"),
     ).length,
@@ -352,6 +377,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/dev/control" && req.method === "POST") {
       const b = await body(req);
       if (b.reset) reset();
+      if (b.evidenceQueue) dishes.push(item(113, "cup"));
       if ("closesAt" in b) closesAt = b.closesAt;
       if (["pick", "carry", "override", "disabled"].includes(b.dutyMode))
         dutyMode = b.dutyMode;
@@ -506,7 +532,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const photo = pathname.match(
-      /^\/dev\/photos\/(101|103|104|105|106|110|112)-(strip|later)\.jpg$/,
+      /^\/dev\/photos\/(101|103|104|105|106|110|112|113)-(strip|later)\.jpg$/,
     );
     let filename;
     if (photo) filename = path.join(fixtureRoot, `${photo[1]}-${photo[2]}.jpg`);

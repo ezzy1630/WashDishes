@@ -18,6 +18,7 @@ const state = {
   lastLoaded: 0,
   selected: "",
   skipped: new Set(),
+  showWeak: false,
   working: false,
   loading: false,
 };
@@ -43,6 +44,7 @@ function page() {
 function navigate(path) {
   history.pushState({}, "", href(path));
   state.skipped.clear();
+  state.showWeak = false;
   if (page() !== "past" && state.selected) {
     state.selected = "";
     state.data = null;
@@ -91,6 +93,7 @@ function clearSession() {
   state.offline = false;
   state.loading = false;
   state.skipped.clear();
+  state.showWeak = false;
   state.selected = "";
   history.replaceState({}, "", href("/"));
   renderAuth();
