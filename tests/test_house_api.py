@@ -657,3 +657,17 @@ def test_media_sizes_follow_actual_jpegs_and_cache_header_reads(house_client, mo
     expired = client.get('/house/api/week').json()['visits'][0]
     assert expired['filmstrip_url'] is None
     assert expired['filmstrip_width'] is None and expired['filmstrip_height'] is None
+
+
+def test_operator_and_house_share_the_structured_pick_contract(house_client):
+    client = house_client
+    for owner, quantity in ((0, 6), (1, 2)):
+        item = late(client, kind='plate', quantity=quantity)
+        response = client.post(f"/house/api/dishes/{item['id']}/name", json={'resident_id': client.people[owner]['id']})
+        assert response.status_code == 200
+    chosen = client.get('/house/api/week').json()['pick']
+    assert chosen == {'resident_id': client.people[0]['id'], 'name': 'Alex', 'state': 'pick',
+                      'points': 6, 'lead': 4, 'needed_points': 0, 'needed_lead': 0,
+                      'reason': '6 points · 4 ahead'}
+    operator(client)
+    assert client.get('/api/league/week').json()['pick'] == chosen

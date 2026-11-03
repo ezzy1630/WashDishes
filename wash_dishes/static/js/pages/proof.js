@@ -14,10 +14,12 @@ export function proofPage(main) {
   const health = h('p', { class: 'home-health' });
   const mode = h('p', { class: 'home-mode', hidden: !state.session?.demo }, 'Demo · synthetic household');
   const list = h('div', { class: 'send-list home-proofs', 'aria-busy': 'true' }, h('p', { class: 'tx2' }, 'Loading proof pictures…'));
-  const errorBox = h('p', { class: 'form-error', role: 'alert' });
+  const errorBox = h('div', { class: 'form-error', role: 'alert' });
+  const proofs = h('div', { class: 'home-proof-block' }, list);
+  const sendGrid = h('div', { class: 'home-send-grid' }, league.sharing);
   fill(main, h('div', { class: 'page operator-home' }, mode, warning, league.summary, league.queue,
-    h('section', { class: 'home-ready', 'aria-label': 'Ready to send' }, h('h2', {}, 'Ready to send'),
-      h('div', { class: 'home-send-grid' }, league.sharing, h('div', {}, errorBox, list))),
+    h('section', { class: 'home-ready', 'aria-label': 'Ready to send' }, h('h2', {}, 'Ready to send'), errorBox,
+      sendGrid),
     league.history, health));
 
   async function loadProofs() {
@@ -28,8 +30,8 @@ export function proofPage(main) {
     } catch (e) {
       if (!alive) return;
       list.removeAttribute('aria-busy');
-      errorBox.textContent = `Could not refresh proof pictures. ${e.message}`;
-      if (!data) fill(list, h('button', { class: 'btn', type: 'button', onclick: loadProofs }, 'Try again'));
+      fill(errorBox, h('p', {}, `Could not refresh proof pictures. ${e.message}`),
+        h('button', { class: 'btn', type: 'button', onclick: loadProofs }, 'Try again'));
     }
   }
 
@@ -60,7 +62,7 @@ export function proofPage(main) {
     fill(health, h('span', {}, demo ? status.mode === 'demo' ? 'Demo · synthetic data' : 'Saved snapshot' : cam.connected ? 'Camera live' : 'Camera offline'),
       h('span', {}, status.analyzed_at ? `Last analysed ${ago(status.analyzed_at)}` : 'No analysis yet'),
       h('span', {}, status.footage_hours === null ? 'Footage hours unavailable' : `≈${status.footage_hours.toFixed(1)} h footage saved`),
-      h('a', { class: 'link', href: '#/live' }, 'Live kitchen'));
+      h('a', { class: 'link', href: '#/live' }, 'Inspect dishes in Live'));
   }
 
   function renderProofs() {
@@ -68,9 +70,10 @@ export function proofPage(main) {
     const sig = JSON.stringify([items, data.people]);
     if (sig === shown) return;
     shown = sig; list.removeAttribute('aria-busy');
-    fill(list, items.length ? items.map(card) : h('div', { class: 'home-proof-empty' }, h('h3', {}, 'No finished proof pictures'),
-      h('p', { class: 'tx2' }, 'You can review visits and share the week without a four-photo proof.'),
-      h('a', { class: 'link', href: '#/live' }, 'Inspect dishes in Live')));
+    if (items.length) sendGrid.append(proofs);
+    else proofs.remove();
+    sendGrid.classList.toggle('has-proofs', items.length > 0);
+    fill(list, items.map(card));
   }
 
   function card(p, index) {

@@ -78,7 +78,7 @@ export function pastPage(context) {
         h(
           "p",
           { class: "past-pick" },
-          data.pick.name
+          data.pick.state === "pick"
             ? `${data.pick.name} ${data.week.closed ? "was picked." : "is in line."}`
             : "No one picked.",
         ),

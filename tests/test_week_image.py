@@ -47,7 +47,8 @@ def test_week_image_handles_long_names_extra_scorers_off_and_demo():
     data = {'week': league.week_bounds(), 'rules': league.DEFAULT_RULES, 'standings': board,
             'pick': league.pick(board, league.DEFAULT_RULES), 'on_duty': None}
     normal = render(data)
-    off = render(data | {'rules': league.DEFAULT_RULES | {'enabled': False}}, demo=True)
+    off_rules = league.DEFAULT_RULES | {'enabled': False}
+    off = render(data | {'rules': off_rules, 'pick': league.pick(board, off_rules)}, demo=True)
     assert normal != off
     for picture in (normal, off):
         with Image.open(BytesIO(picture)) as image:
@@ -85,3 +86,21 @@ def test_closed_no_pick_share_keeps_its_duty_assignment(authenticated):
     picture = client.get(url).content
     league.override(store, bo['id'])
     assert client.get(url).content == picture
+
+
+def test_shared_image_names_the_pick_without_repeating_it_in_the_explanation(monkeypatch):
+    from PIL import ImageDraw
+    drawn = []
+    original = ImageDraw.ImageDraw.text
+
+    def record(draw, xy, text, *args, **kwargs):
+        drawn.append(text)
+        return original(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', record)
+    board = [{'resident_id': 1, 'name': 'Andrew', 'points': 6}, {'resident_id': 2, 'name': 'Jadon', 'points': 2}]
+    render({'week': league.week_bounds(), 'rules': league.DEFAULT_RULES, 'standings': board,
+            'pick': league.pick(board, league.DEFAULT_RULES), 'on_duty': None})
+    assert drawn.count('Andrew') == 2  # One standings row, one duty name.
+    assert '6 points · 4 ahead' in drawn
+    assert not any('Andrew' in text and text != 'Andrew' for text in drawn)

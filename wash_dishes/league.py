@@ -102,19 +102,31 @@ def standings(dishes: list[dict], residents: list[dict], rules: dict) -> Standin
 
 
 def pick(rows: Standings, rules: dict) -> dict:
-    no_pick = {'resident_id': None, 'name': None}
-    if not rules['enabled']:
-        return no_pick | {'reason': 'Kitchen duty is switched off by the house.'}
-    if not rows or rows[0]['points'] == 0:
-        return no_pick | {'reason': 'No one this week: no named points.'}
-    top = rows[0]
+    """One decision for all views; needed_* are additional points/lead still required."""
+    top = rows[0] if rows else None
+    score = top['points'] if top else 0
     second = rows[1]['points'] if len(rows) > 1 else 0
-    if top['points'] < rules['min_points']:
-        return no_pick | {'reason': f"No one this week: nobody reached {rules['min_points']} points."}
-    if top['points'] == second or top['points'] - second < rules['min_lead']:
-        return no_pick | {'reason': f"No one this week: the lead must be at least {rules['min_lead']} points, with no tie."}
-    return {'resident_id': top['resident_id'], 'name': top['name'],
-            'reason': f"{top['name']} is the pick for next week's kitchen duty with {top['points']} points, {top['points'] - second} ahead."}
+    lead = score - second
+    needed_points = max(0, rules['min_points'] - score)
+    # Even a zero-lead rule requires a unique leader with at least one point.
+    needed_lead = max(0, max(1, rules['min_lead']) - lead)
+    point_text = f"{score} {'point' if score == 1 else 'points'}"
+    if not rules['enabled']:
+        state, reason = 'disabled', 'Standings still count.'
+        needed_points = needed_lead = 0
+    elif not score or needed_points:
+        state = 'below_minimum'
+        reason = f"{point_text if score else 'No named points'} · needs {rules['min_points']}"
+    elif not lead:
+        state, reason = 'tie', f'Tied for first · needs a {needed_lead}-point lead'
+    elif needed_lead:
+        state = 'too_close'
+        reason = f"Too close — {lead} {'point' if lead == 1 else 'points'} ahead, needs {rules['min_lead']}"
+    else:
+        state, reason = 'pick', f'{point_text} · {lead} ahead'
+    return {'resident_id': top['resident_id'] if state == 'pick' else None,
+            'name': top['name'] if state == 'pick' else None, 'state': state, 'reason': reason,
+            'points': score, 'lead': lead, 'needed_points': needed_points, 'needed_lead': needed_lead}
 
 
 def carry_duty(current: dict | None, chosen: dict, rules: dict, *, since: str) -> dict | None:
@@ -125,7 +137,7 @@ def carry_duty(current: dict | None, chosen: dict, rules: dict, *, since: str) -
         return current
     if current and current['resident_id'] == chosen['resident_id']:
         return current
-    return {k: chosen[k] for k in ('resident_id', 'name')} | {'since': since, 'why': chosen['reason']}
+    return {k: chosen[k] for k in ('resident_id', 'name')} | {'since': since, 'why': f"Weekly pick: {chosen['reason'].rstrip('.')}."}
 
 
 def rules(store: Store) -> dict:
@@ -206,6 +218,10 @@ def result(store: Store, start: str | None = None, *, now: datetime | None = Non
         close_weeks(store, now=now)
         row = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?', (week['start'],)).fetchone()
         value = json.loads(row[0]) if row else _live(store, week)
+        if 'state' not in value['pick']:
+            # Project the new display contract from frozen inputs, without changing a stored
+            # result or applying today's rules/names to an older week.
+            value = value | {'pick': pick(value['standings'], value['rules'])}
         # The duty banner always answers who is on duty now, also when browsing history.
         return value | {'on_duty': duty(store) if rules(store)['enabled'] else None}
 

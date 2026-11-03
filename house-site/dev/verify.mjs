@@ -184,6 +184,28 @@ try {
         await page.locator(".pick > p").first().innerText(),
         "7 points · 4 ahead",
       );
+      const tiedLeadGate = await page.evaluate(async () => {
+        const { getWeek } = await import("/js/api.js");
+        const { standings } = await import("/js/pages/standings.js");
+        const data = await getWeek();
+        const view = standings({
+          ...data,
+          rules: { ...data.rules, min_lead: 0 },
+          pick: {
+            resident_id: null,
+            name: null,
+            state: "tie",
+            points: 4,
+            lead: 0,
+            needed_points: 0,
+            needed_lead: 1,
+            reason: "Tied for first · needs a 1-point lead",
+          },
+        });
+        return view.querySelectorAll(".gate")[1].textContent;
+      });
+      assert.match(tiedLeadGate, /Leads by 0 · needs 1/);
+      assert.match(tiedLeadGate, /1 to go/);
       assert.deepEqual(
         await page.evaluate(async () => {
           const { weekRange } = await import("/js/pages/league-copy.js");

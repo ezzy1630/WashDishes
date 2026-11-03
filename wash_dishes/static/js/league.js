@@ -44,8 +44,6 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
       selected = e.target.value; signature = ''; currentId = null; load();
     } }, data.weeks.map(w => h('option', { value: w.start, selected: w.start === week.start }, `${label(w.start)}${w.closed ? ' · closed' : ''}`)));
     const leaders = standings.filter(p => p.points > 0);
-    const top = standings[0], second = standings[1]?.points || 0;
-    const needed = top ? Math.max(0, rules.min_points - top.points, second + Math.max(1, rules.min_lead) - top.points) : rules.min_points;
     fill(summary,
       h('header', { class: 'home-section-head' }, h('h1', { id: 'page-title', tabindex: '-1' }, current ? 'This week' : `Week of ${label(week.start)}`), choose),
       h('div', { class: 'week-duty' }, h('p', {}, 'On kitchen ', h('strong', {}, duty?.name || 'Nobody yet')),
@@ -54,10 +52,10 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
         h('a', { href: `#/people/${p.resident_id}` }, p.name), h('b', {}, `${p.points} pt`)))),
       leaders.length < standings.length ? h('p', { class: 'league-note' }, leaders.length ? 'Everyone else 0' : 'Everyone 0 points') : null,
       leaders.length > 3 ? h('p', { class: 'league-note' }, leaders.slice(3).map(p => `${p.name} ${p.points} pt`).join(' · ')) : null,
-      h('p', { class: 'week-next' }, pick.resident_id ? `${pick.name} ${week.closed ? 'was picked for' : 'is in line for'} next week’s kitchen.`
-        : rules.enabled ? 'No clear pick for next week yet.' : 'Standings still count.'),
-      h('p', { class: 'league-note' }, !rules.enabled ? pick.reason : week.closed || pick.resident_id ? pick.reason
-        : `${top?.points ? `${top.name} needs ${needed} more ${needed === 1 ? 'point' : 'points'}` : `Pick needs ${rules.min_points} points`} and ${rules.min_lead} ahead.${duty ? ` Otherwise ${duty.name} stays on kitchen.` : ''}`));
+      h('p', { class: 'week-next' }, pick.state === 'pick' ? `${pick.name} ${week.closed ? 'was picked for' : 'is in line for'} next week’s kitchen.`
+        : pick.state === 'disabled' ? 'Kitchen duty is off.' : week.closed ? 'No one picked this week.' : 'No clear pick for next week yet.'),
+      h('p', { class: 'league-note' }, pick.reason,
+        pick.state !== 'pick' && pick.state !== 'disabled' && duty ? ` · ${duty.name} stays on kitchen.` : ''));
     renderQueue(); renderHistory(); renderShare();
   }
 

@@ -30,16 +30,16 @@ export function weekPage(context) {
           h(
             "h2",
             {},
-            !data.rules.enabled
+            data.pick.state === "disabled"
               ? "No weekly pick while duty is paused."
-              : data.pick.name
+              : data.pick.state === "pick"
                 ? `${data.pick.name} ${data.week.closed ? "is picked" : "is in line"} for next week.`
                 : data.week.closed
                   ? "No one picked this week."
                   : "No clear pick yet.",
           ),
           h("p", {}, pickDetail(data)),
-          data.rules.enabled && !data.pick.name && duty
+          data.pick.state !== "disabled" && data.pick.state !== "pick" && duty
             ? h(
                 "p",
                 { class: "help" },

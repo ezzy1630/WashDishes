@@ -814,16 +814,15 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
 .review-receipt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--ln); }
 .review-receipt span { font-size: 13px; color: var(--tx2); }
 .home-ready { margin-top: 36px; border-top: 1px solid var(--ln2); padding-top: 24px; }
-.home-send-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; margin-top: 18px; align-items: start; }
+.home-send-grid { display: grid; gap: 32px; margin-top: 18px; align-items: start; }
+.home-send-grid.has-proofs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .week-share { display: grid; gap: 12px; }
-.week-share p, .home-proof-empty p { font-size: 14px; max-width: 55ch; }
+.week-share p { font-size: 14px; max-width: 55ch; }
 .week-share .send-bar .btn { min-height: 48px; font-size: 15px; }
 .week-image-preview { color: var(--tx2); font-size: 13px; }
 .week-image-preview summary { cursor: pointer; padding-block: 10px; }
 .week-image-preview img { width: 100%; height: auto; margin-top: 8px; border-radius: 8px; }
 .home-proofs { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-.home-proof-empty { display: grid; gap: 8px; }
-.home-proof-empty a { font-size: 13px; color: var(--tx2); }
 .week-history { margin-top: 28px; border-block: 1px solid var(--ln); }
 .week-history > summary { padding: 16px 0; cursor: pointer; }
 .week-history .league-dish summary { padding: 12px 0; cursor: pointer; }
@@ -838,7 +837,7 @@ pre.code { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--ln); 
   .week-duty { display: grid; gap: 2px; margin-top: 8px; }
   .week-standings { gap: 10px 20px; margin-top: 10px; }
   .week-standings li { gap: 8px; font-size: 13px; }
-  .visit-content, .home-send-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .visit-content, .home-send-grid.has-proofs { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .visit-review { margin-top: 22px; }
   .visit-heading { gap: 12px; }
   .visit-heading > span { max-width: 96px; }

@@ -57,7 +57,10 @@ WeekResponse = {
   rules: {enabled: boolean, weights: {pan: integer, pot: integer, default: integer},
           min_points: integer, min_lead: integer},
   standings: [{resident_id: integer, name: string, points: integer, dishes: integer}],
-  pick: {resident_id: integer|null, name: string|null, reason: string},
+  pick: {resident_id: integer|null, name: string|null,
+         state: "pick"|"too_close"|"below_minimum"|"disabled"|"tie",
+         points: integer, lead: integer, needed_points: integer, needed_lead: integer,
+         reason: string},
   on_duty: {resident_id: integer, name: string, since: UTC_ISO, why: string}|null,
   dishes: [Dish], visits: [Visit], unnamed_count: integer, unreviewed_count: integer,
   verdicts: [{visit_id: string, title: string, verdict: "not_dish"|"clean"|"duplicate",
@@ -85,6 +88,24 @@ name; `dishes` sums quantities. Last eight weeks include current; open weeks hav
 null `pick_name`. Unnamed dishes show potential points but contribute zero to
 standings; open disputes show zero points. `on_duty` always describes **now**, even
 on a historical page. Closed scores, roster, rules, guesses and pick stay frozen.
+
+`pick` is the authoritative decision for the operator home, weekly image and house
+site. `points` is the leading score and `lead` its margin over second place (zero
+for a tie or empty standings). Both remain available when duty is disabled.
+`needed_points` and `needed_lead` are **additional** score/lead still required,
+never negative; both are zero when disabled. The additional points for a clear
+pick, if nobody else scores, are `max(needed_points, needed_lead)`. A tied leader
+needs at least one point of lead even when `min_lead=0`.
+
+State priority is disabled, below minimum (including no named points), tie,
+too close, then pick. Only `state="pick"` has a non-null resident ID and name.
+`reason` never includes a person's name: e.g. `6 points · 4 ahead`, or
+`Too close — 1 point ahead, needs 2`. Render the name once in the heading and the
+reason underneath; do not strip sentences or recalculate eligibility in clients.
+Older closed snapshots receive this display shape on read from their **frozen**
+standings and rules; stored snapshots and their selected person are not rewritten.
+New weekly duty assignments keep `why` prefixed with `Weekly pick:` so it remains
+distinct from a house-vote override.
 
 Weeks follow **deadlines**, Monday midnight to next Monday midnight in
 `notify.timezone()`, closing Monday noon after 12 hours for Sunday naming. DST uses

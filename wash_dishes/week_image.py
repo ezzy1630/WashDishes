@@ -59,11 +59,11 @@ def render(data: dict, *, demo: bool = False) -> bytes:
     y += 32
     line('Kitchen duty result' if week['closed'] else 'Next kitchen duty · if the week ended now', 32, MUTED)
     chosen, current = data['pick'], data['on_duty']
-    name = chosen['name'] or (current['name'] if current else 'Nobody assigned')
-    line(name if rules['enabled'] else 'Kitchen duty is off', 56, weight=650)
+    name = chosen['name'] if chosen['state'] == 'pick' else current['name'] if current else 'Nobody assigned'
+    line(name if chosen['state'] != 'disabled' else 'Kitchen duty is off', 56, weight=650)
     paragraph(chosen['reason'])
-    if rules['enabled'] and not chosen['resident_id']:
-        paragraph(f"{current['name']} stays on kitchen duty." if current else 'No current duty assignment to carry forward.')
+    if chosen['state'] not in ('pick', 'disabled'):
+        paragraph('Stays on kitchen duty.' if current else 'No current duty assignment to carry forward.')
     y += 22
     paragraph(f"Pan {rules['weights']['pan']} pt · pot {rules['weights']['pot']} pt · other {rules['weights']['default']} pt. Pick needs {rules['min_points']} points and a {rules['min_lead']}-point lead.", 28)
     if not week['closed']:

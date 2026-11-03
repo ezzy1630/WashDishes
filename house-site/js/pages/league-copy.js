@@ -82,10 +82,5 @@ export function weekRange(start, end, timezone) {
 }
 /** @param {Week} data */
 export function pickDetail(data) {
-  if (!data.rules.enabled) return "Standings still count.";
-  const rows = [...data.standings].sort((a, b) => b.points - a.points);
-  const top = rows[0];
-  if (!top?.points) return "No named points yet.";
-  const lead = top.points - (rows[1]?.points || 0);
-  return `${top.points} ${top.points === 1 ? "point" : "points"} · ${lead ? `${lead} ahead` : "tied for first"}`;
+  return data.pick.reason;
 }

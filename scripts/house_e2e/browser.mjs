@@ -98,6 +98,12 @@ async function showStandings(actor, andrew, jadon, pick, label) {
     else assert.equal(await row.count(), 0, `${name} must not have a positive points row`);
   }
   assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Andrew is in line/ : /No clear pick yet/);
+  const source = await week(actor);
+  assert.equal(await actor.page.locator('.pick > p').first().innerText(), source.pick.reason, 'render the API explanation verbatim');
+  assert.equal(source.pick.points, Math.max(andrew, jadon));
+  assert.equal(source.pick.lead, Math.abs(andrew - jadon));
+  assert.equal(source.pick.state === 'pick', Boolean(pick));
+  assert(!/Andrew|Jadon/.test(source.pick.reason), 'pick reason must not repeat a name');
   assert.match(await actor.page.locator('.duty').innerText(), /Ezzy/);
   await screenshot(actor.page, label);
 }
