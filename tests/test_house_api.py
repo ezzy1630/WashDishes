@@ -808,6 +808,39 @@ def test_read_concurrency_and_formatting_release_camera_lock(house_client, monke
         assert pending.result().status_code == 200
 
 
+def test_overlapping_reads_wait_for_a_slot_and_waiters_are_capped(house_client, monkeypatch):
+    client, house = house_client, house_client.app.state.house
+    entered, release = threading.Event(), threading.Event()
+    original = house.week
+    def slow_week(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(house, 'week', slow_week)
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(client.get, '/house/api/week')
+        assert entered.wait(5)
+        overlap = pool.submit(client.get, '/house/api/week')
+        time.sleep(.2)
+        release.set()
+        # The same phone's overlapping refresh is served once the first read ends.
+        assert first.result().status_code == 200 and overlap.result().status_code == 200
+    house.week_budget.max_waiting = 0
+    entered.clear()
+    release.clear()
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(client.get, '/house/api/week')
+        assert entered.wait(5)
+        started = time.monotonic()
+        try:
+            assert client.get('/house/api/week').status_code == 429
+            assert time.monotonic() - started < 1, 'a full waiting line rejects immediately'
+        finally:
+            release.set()
+        assert first.result().status_code == 200
+
+
 @pytest.mark.parametrize('empty', [False, True])
 def test_failed_and_empty_jwks_have_attempt_cooldown(house_client, monkeypatch, empty):
     from urllib.error import URLError
@@ -979,6 +1012,8 @@ def test_review_evidence_orders_tiers_then_newest_and_closes_weak_pending(house_
     prior = league.week_bounds(now=utcnow() - timedelta(weeks=2))['start']
     with store.conn:
         store.conn.execute('DELETE FROM league_weeks WHERE start=?', (prior,))  # replace the empty startup fixture
+        # Simulate a league that was already running then; pre-start weeks are never frozen.
+        store.conn.execute('UPDATE league_start SET start_week=? WHERE id=1', (prior,))
     frozen = client.get('/house/api/week', params={'start': prior}).json()
     assert frozen['week']['closed'] and frozen['weak_count'] == 0
     assert frozen['clear_count'] == 3 and frozen['unreviewed_count'] == 3

@@ -99,31 +99,52 @@ class RateLimit:
 
 
 class ReadBudget:
-    """Bound admitted work and concurrent workers without waiting on Store.lock."""
-    def __init__(self, *, per_identity: int, total: int, concurrent: int, per_concurrent: int = 1):
+    """Bound admitted work and concurrent workers without waiting on Store.lock.
+
+    Ordinary overlap (two housemates opening the link together, or one phone's
+    overlapping refreshes) waits briefly for a slot instead of failing. Waiters are
+    capped, so a flood still gets 429 without tying up the server's thread pool.
+    """
+    def __init__(self, *, per_identity: int, total: int, concurrent: int, per_concurrent: int = 1,
+                 wait: float = 2.0, max_waiting: int = 8):
         self.rate = RateLimit()
         self.per_identity, self.total = per_identity, total
-        self.slots = threading.BoundedSemaphore(concurrent)
-        self.lock = threading.Lock()
+        self.concurrent, self.per_concurrent = concurrent, per_concurrent
+        self.wait, self.max_waiting = wait, max_waiting
+        self.ready = threading.Condition()
+        self.running = 0
+        self.waiting = 0
         self.active: dict[str, int] = {}
-        self.per_concurrent = per_concurrent
+
+    def _free(self, identity: str) -> bool:
+        return self.running < self.concurrent and self.active.get(identity, 0) < self.per_concurrent
 
     @contextmanager
     def admit(self, identity: str):
         self.rate.check(identity, count=self.per_identity)
         self.rate.check('global', count=self.total)
-        with self.lock:
-            if self.active.get(identity, 0) >= self.per_concurrent or not self.slots.acquire(blocking=False):
-                raise HTTPException(429, 'The house is busy. Try again shortly.')
+        with self.ready:
+            if not self._free(identity):
+                if self.waiting >= self.max_waiting:
+                    raise HTTPException(429, 'The house is busy. Try again shortly.')
+                self.waiting += 1
+                try:
+                    admitted = self.ready.wait_for(lambda: self._free(identity), timeout=self.wait)
+                finally:
+                    self.waiting -= 1
+                if not admitted:
+                    raise HTTPException(429, 'The house is busy. Try again shortly.')
+            self.running += 1
             self.active[identity] = self.active.get(identity, 0) + 1
         try:
             yield
         finally:
-            with self.lock:
+            with self.ready:
+                self.running -= 1
                 self.active[identity] -= 1
                 if not self.active[identity]:
                     del self.active[identity]
-                self.slots.release()
+                self.ready.notify_all()
 
 
 def client_identity(request: Request) -> str:
