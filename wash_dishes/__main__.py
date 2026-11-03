@@ -49,6 +49,9 @@ def main() -> None:
     verifier = sub.add_parser("train-verifier", help="Retrain the kitchen probe from people's answers about detections; adopted only if it holds up")
     verifier.add_argument("--holdout", action="append", default=[], metavar="TRUTH_JSON", help="Keep this evaluation window's frames out of training")
     verifier.add_argument("--frames", action="store_true", help="Retrain the general probe over the labeled frames instead (loads the detector and CLIP: stop live analysis first)")
+    repair = sub.add_parser("repair-left-out", help="Restore observed left-out dismissals and close stale camera episodes")
+    repair.add_argument("--since", help="Recover auto-dismissals deposited since this local date (YYYY-MM-DD); stale opens have no date cutoff")
+    repair.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing records")
     args = parser.parse_args()
     config = Config.environment(demo=getattr(args, "demo", False))
     config.prepare()
@@ -61,6 +64,19 @@ def main() -> None:
         else:
             print("Dish watch at http://127.0.0.1:%s — run 'washdishes access-key' for the household key." % args.port)
         uvicorn.run(create_app(config), host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="127.0.0.1", log_level="warning")
+    elif args.command == "repair-left-out":
+        import json
+        import os
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from .store import Store
+        since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=ZoneInfo(os.getenv("WASHDISHES_TIMEZONE", "America/Los_Angeles"))) if args.since else None
+        store = Store(config.root)
+        try:
+            print(json.dumps(store.repair_left_out(since=since, dry_run=args.dry_run), indent=2))
+        finally:
+            store.close()
     elif args.command == "access-key":
         from .security import Access
         Access(config.root, config.password)
