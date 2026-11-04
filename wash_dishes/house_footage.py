@@ -75,6 +75,7 @@ class Footage:
         self.index_lock = threading.Lock()
         self.scanned = 0.0
         self.segments: list[Segment] = []
+        self.by_id: dict[str, Segment] = {}
         self.moments_at = 0.0
         self.moments: list[dict] = []
 
@@ -97,6 +98,7 @@ class Footage:
             # The newest can still be open even if no packets arrived recently.
             # A grace period also avoids the writer's last flush/rotation race.
             self.segments = [s for s in found[:-1] if s.end < time.time() - 15]
+            self.by_id = {s.id: s for s in self.segments}
             self.scanned = time.monotonic()
             return self.segments
 
@@ -110,7 +112,8 @@ class Footage:
     def source(self, chunk):
         if not re.fullmatch('[a-f0-9]{32}', chunk):
             raise HTTPException(404, 'Recording not found.')
-        segment = next((s for s in self.inventory() if s.id == chunk), None)
+        self.inventory()
+        segment = self.by_id.get(chunk)
         if segment is None:
             raise HTTPException(410, 'This recording is no longer kept. Refresh the footage.')
         path = segment.path
@@ -198,7 +201,7 @@ class Footage:
         segments = self.inventory()
         if not segments or at < segments[0].end - 60 or at > segments[-1].end + 1:
             raise HTTPException(410, 'Footage from this time is no longer kept or has not finished recording. The photo is still available.')
-        i = min(bisect.bisect_left([s.end for s in segments], at), len(segments) - 1)
+        i = min(bisect.bisect_left(segments, at, key=lambda s: s.end), len(segments) - 1)
         s = self.source(segments[i].id)
         duration = self.probe(s)
         start = s.end - duration
@@ -265,6 +268,10 @@ class Footage:
                 size -= sum(p.stat().st_size for p in Path(entry.directory.name).glob('*.mp4'))
                 entry.directory.cleanup()
                 del self.cache[key]
+
+    def cleanup(self):
+        with self.cache_lock:
+            self.prune()
 
     def close(self):
         with self.cache_lock:

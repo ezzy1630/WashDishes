@@ -22,3 +22,8 @@
 .footage-moments button { display: block; width: 100%; min-height: 44px; text-align: left; white-space: normal; border-bottom: 1px solid var(--line); }
 .footage-moments .help { margin-bottom: 12px; }
 .watch-footage { margin-top: 12px; min-height: 44px; }
+@media (max-width: 600px) {
+  .footage-jump { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .footage-jump input { min-width: 0; }
+  .footage-jump button { justify-self: start; }
+}

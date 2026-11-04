@@ -1,4 +1,4 @@
-// Local preflight only: read public config and sync the two CSP origins.
+// Local preflight only: read public config and sync the CSP origins.
 import { readFile, writeFile } from "node:fs/promises";
 import {
   SUPABASE_URL,
@@ -36,7 +36,8 @@ const csp = config.headers[0].headers.find(
 );
 csp.value = csp.value
   .replace(/connect-src[^;]+/, `connect-src 'self' ${origins.join(" ")}`)
-  .replace(/img-src[^;]+/, `img-src 'self' ${origins.join(" ")}`);
+  .replace(/img-src[^;]+/, `img-src 'self' ${origins.join(" ")}`)
+  .replace(/media-src[^;]+/, `media-src 'self' ${origin(HOUSE_API_ORIGIN)}`);
 await writeFile(file, JSON.stringify(config, null, 2) + "\n");
 console.log(
   "Public config checked; vercel.json CSP matches config.js. No remote resources changed.",

@@ -229,6 +229,7 @@ class House:
             while True:
                 try:
                     await run_in_threadpool(league.close_weeks, self.store)
+                    await run_in_threadpool(self.footage.cleanup)
                 except (OSError, sqlite3.Error):
                     logging.getLogger(__name__).exception('Weekly close failed; retrying on the next minute.')
                 await asyncio.sleep(60)
