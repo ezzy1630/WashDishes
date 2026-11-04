@@ -253,7 +253,7 @@ class House:
         self.media_budget = ReadBudget(per_identity=120, total=600, concurrent=8, per_concurrent=8)
         self.media_visibility: OrderedDict[str, bool] = OrderedDict()
         self.media_revision = None
-        self.thumbnails = Thumbnails(store.root)
+        self.thumbnails = Thumbnails()
         self.join_lock = threading.Lock()
         path = store.root / 'house-media.key'
         try:

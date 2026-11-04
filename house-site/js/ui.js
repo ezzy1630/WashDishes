@@ -112,13 +112,16 @@ export function photo(url, label, wide = false, lazy = false, size) {
   }
   if (size?.width && size.height)
     box.style.aspectRatio = `${size.width} / ${size.height}`;
+  const preview = new URL(src, location.origin);
+  if (!wide && preview.pathname.startsWith('/house/media/'))
+    preview.searchParams.set('w', '640');
   const img = h("img", {
     width: size?.width,
     height: size?.height,
-    src,
+    src: preview.href,
     alt: label,
     loading: lazy ? "lazy" : "eager",
-    decoding: "sync",
+    decoding: "async",
     referrerpolicy: "no-referrer",
   });
   img.onload = () => {

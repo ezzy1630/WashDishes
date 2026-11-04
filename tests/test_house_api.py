@@ -1109,7 +1109,7 @@ def test_snapshot_thumbnail_preserves_original_and_rechecks_visibility(house_cli
     assert len(small.content) < len(original)
     assert client.get(path).content == original
     assert client.get(path + '&w=640').content == small.content
-    assert len(list((store.root / 'house-thumbnails').glob('*.jpg'))) == 1
+    assert not (store.root / 'house-thumbnails').exists()
     assert client.get(path + '&w=10000').status_code == 400
     assert client.get(path.replace('sig=', 'sig=invalid') + '&w=640').status_code == 403
     # A warm derived file must not outlive the source's authorization or expiry.
@@ -1126,14 +1126,15 @@ def test_thumbnail_cache_tracks_replaced_sources_and_is_bounded(tmp_path, monkey
     from wash_dishes import house_images
 
     monkeypatch.setattr(house_images, 'MAX_FILES', 2)
-    cache = house_images.Thumbnails(tmp_path)
+    cache = house_images.Thumbnails()
     source = tmp_path / 'source.jpg'
     outputs = []
     for size in [(1280, 720), (1600, 1200), (1920, 960)]:
         Image.new('RGB', size, '#884466').save(source, 'JPEG')
         outputs.append(cache.image(source))
     assert [Image.open(BytesIO(data)).size for data in outputs] == [(640, 360), (640, 480), (640, 320)]
-    assert len(list(cache.root.glob('*.jpg'))) == 2
+    assert len(cache.cache) == 2
+    assert sum(map(len, cache.cache.values())) <= house_images.MAX_BYTES
     assert Image.open(source).size == (1920, 960)
 
 
