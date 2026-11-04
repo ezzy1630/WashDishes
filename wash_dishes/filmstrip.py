@@ -722,6 +722,11 @@ def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline:
     if not frames or any(not any(abs(f['at']-endpoint['at']) <= .75 for f in frames)
                          for endpoint in (endpoints[0],endpoints[-1])):
         return []
+    return _select_display_frames(journal, frames, boxes)
+
+
+def _select_display_frames(journal, frames: list[dict], boxes: list) -> list[dict]:
+    """Rank decoded pixels, also reusable when re-rendering archived sources."""
     from .evidence_image import distinct_people
     arrival_frames = [f for f in frames if not f.get('use_visit')]
     selected = [arrival_frames[0],arrival_frames[-1],*distinct_people(arrival_frames)]

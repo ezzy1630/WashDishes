@@ -172,6 +172,25 @@ def test_unchanged_background_cannot_supply_a_person():
     assert person_changed(jpeg((160, 180, 200)), background, CLEAR)
 
 
+def test_exposure_change_and_glare_cannot_supply_a_person():
+    from PIL import ImageDraw, ImageEnhance
+
+    from wash_dishes.evidence_image import person_changed
+    image = Image.new('RGB', (160, 240), (60, 70, 80))
+    draw = ImageDraw.Draw(image)
+    for x in range(0, 160, 20):
+        draw.rectangle((x, 0, x+8, 240), fill=(120, 130, 140))
+    def encoded(im):
+        stream = io.BytesIO()
+        im.save(stream, 'JPEG')
+        return stream.getvalue()
+    reference = encoded(image)
+    brighter = encoded(ImageEnhance.Brightness(image).enhance(1.5))
+    assert not person_changed(brighter, reference, [0, 0, 1, 1])
+    glare = Image.new('RGB', (160, 240), (255, 255, 255))
+    assert not person_changed(encoded(glare), reference, [0, 0, 1, 1])
+
+
 def test_supported_arrival_stays_unchanged_but_fleeting_box_gets_context(tmp_path):
     class History:
         def __init__(self, frames):

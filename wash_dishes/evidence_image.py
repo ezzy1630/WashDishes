@@ -198,13 +198,26 @@ def person_changed(picture: bytes, reference: bytes, box: list) -> bool:
     """Reject a journal person box that only depicts the unchanged background.
 
     The reference must have no journal person over this box. This is only a stale
-    box veto, never a new person detection. Small lighting/JPEG noise is ignored.
+    box veto, never a new person detection. Compare structure as well as raw
+    brightness so day/night exposure changes cannot turn the counter into a
+    person. A blown-out head patch is not readable naming context.
     """
     x, y, w, h = box
-    bounds = (x, y, min(1, x+w), min(1, y+h))
+    head = crop(picture, (x, y, min(1, x+w), min(1, y+min(h,w*.8)))).convert('L').resize((24, 24))
+    if sum(v > 230 for v in head.tobytes()) > .35 * 24 * 24:
+        return False
+    bounds = (x, y, min(1, x+w), min(1, y+min(h,w*2)))
     before = crop(picture, bounds).convert('L').resize((32, 48))
     after = crop(reference, bounds).convert('L').resize((32, 48))
-    return ImageStat.Stat(ImageChops.difference(before, after)).mean[0] >= 6
+    if ImageStat.Stat(ImageChops.difference(before, after)).mean[0] < 6:
+        return False
+    a, b = ImageStat.Stat(before), ImageStat.Stat(after)
+    scale = a.stddev[0] * b.stddev[0]
+    if scale > 1:
+        correlation = sum((p-a.mean[0])*(q-b.mean[0]) for p,q in zip(before.tobytes(), after.tobytes())) / (32*48*scale)
+        if correlation >= .8:
+            return False
+    return True
 
 
 @cache
