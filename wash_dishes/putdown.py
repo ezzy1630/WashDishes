@@ -56,7 +56,14 @@ class Sample:
 
 def segments(buffer: Path) -> list[tuple[float, float, Path]]:
     """(start, end, path) per finished segment; a segment ends at its mtime and starts where the previous ended."""
-    ends = sorted((p.stat().st_mtime, p) for p in buffer.glob("*.ts") if not p.is_symlink())
+    ends = []
+    for p in buffer.glob("*.ts"):
+        try:
+            if not p.is_symlink():
+                ends.append((p.stat().st_mtime, p))
+        except FileNotFoundError:
+            continue  # Retention can remove a file between listing and reading it.
+    ends.sort()
     return [(ends[i - 1][0], t, p) for i, (t, p) in enumerate(ends) if i and t - ends[i - 1][0] < 60]
 
 

@@ -1,8 +1,11 @@
 """Nearby people are review context, never a recorded arrival or an owner."""
+import errno
 import io
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -314,3 +317,22 @@ def test_first_partial_segment_decodes_its_last_second(tmp_path):
     segments.deadline = time.monotonic()+10
     photo = filmstrip._photo_at(segments,end-1)
     assert photo is not None and abs(photo[0]-(end-1)) <= .75
+
+
+def test_segment_expired_during_listing_does_not_stop_the_search(tmp_path, monkeypatch):
+    now = time.time() - 300
+    names = [f'1-{i:06d}.ts' for i in range(1, 5)]
+    for offset, name in enumerate(names):
+        path = tmp_path / name
+        path.write_bytes(b'x')
+        os.utime(path, (now + offset * 10, now + offset * 10))
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self.name == names[1]:
+            raise FileNotFoundError(errno.ENOENT, 'No such file', str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', stat)
+    remaining = {segment[2].name for segment in filmstrip.footage_segments(tmp_path)}
+    assert names[1] not in remaining and names[3] in remaining

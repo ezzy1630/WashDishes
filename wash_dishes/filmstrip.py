@@ -320,7 +320,10 @@ def footage_segments(buffer: Path):
     for path in buffer.glob('*.ts'):
         if path in indexed or path.is_symlink():
             continue
-        info=path.stat()
+        try:
+            info=path.stat()
+        except FileNotFoundError:
+            continue
         if info.st_mtime>time.time()-30:
             continue
         # Camera records fixed ten-second segments, also the convention used by
