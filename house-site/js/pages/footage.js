@@ -30,8 +30,8 @@ export function footagePage() {
     slider = h("input", { type: "range", step: 1, "aria-label": "Recording time" }),
     chosen = h("p", { class: "help" }),
     jump = h("input", { type: "datetime-local", name: "footage-time", required: true, step: 1 }),
-    previous = button("Previous chunk", () => { if (current?.previous != null) void load(current.previous); }, "secondary"),
-    next = button("Next chunk", () => { if (current?.next != null) void load(current.next); }, "secondary");
+    previous = button("Previous chunk", () => { if (current?.previous != null) void load(current.previous, false, true); }, "secondary"),
+    next = button("Next chunk", () => { if (current?.next != null) void load(current.next, false, true); }, "secondary");
   previous.disabled = next.disabled = true;
   const refresh = button("Refresh recordings", () => void refreshIndex(), "quiet");
   const root = h("div", { class: "footage-page" }, heading("Kitchen footage", "Browse the recordings kept by the kitchen camera."),
@@ -49,15 +49,15 @@ export function footagePage() {
   }
   video.addEventListener("timeupdate", clockUpdate);
   video.addEventListener("seeked", clockUpdate);
-  video.addEventListener("ended", () => { if (current?.next != null) void load(current.next, true); });
+  video.addEventListener("ended", () => { if (current?.next != null) void load(current.next, true, true); });
   video.addEventListener("error", () => {
     if (alive && current) status.textContent = "Playback stopped. Open the moment again to refresh its link, or try the next chunk.";
   });
   video.addEventListener("play", () => {
     if (current && current.expires <= Date.now() / 1000 + 5) void load(current.start + video.currentTime, true);
   });
-  /** @param {number} at @param {boolean} [play] */
-  async function load(at, play = false) {
+  /** @param {number} at @param {boolean} [play] @param {boolean} [fromStart] */
+  async function load(at, play = false, fromStart = false) {
     const request = ++sequence;
     busy = true;
     video.pause();
@@ -69,9 +69,11 @@ export function footagePage() {
       const src = imageURL(chunk.url);
       if (!src) throw new Error("This recording address is unavailable.");
       current = chunk;
+      const offset = fromStart ? 0 : chunk.offset;
+      if (fromStart) at = chunk.start;
       video.onloadedmetadata = () => {
         if (request !== sequence) return;
-        video.currentTime = Math.min(chunk.offset, Math.max(0, video.duration - 0.1));
+        video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.1));
         clockUpdate();
         if (play) void video.play().catch(() => { status.textContent = "Tap play to continue."; });
       };
@@ -79,7 +81,7 @@ export function footagePage() {
       video.load();
       slider.value = String(at);
       chosen.textContent = timeLabel(at);
-      clock.textContent = timeLabel(chunk.start + chunk.offset);
+      clock.textContent = timeLabel(chunk.start + offset);
       status.textContent = "Scrub the player, or choose another moment below.";
       previous.disabled = chunk.previous === null;
       next.disabled = chunk.next === null;
