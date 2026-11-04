@@ -174,3 +174,9 @@ def test_partial_occlusion_does_not_make_an_existing_dish_absent():
     before[:, :24] = 30
     assert dish_story.partly_visible(before,ref)
     assert not dish_story.partly_visible(dish_story.patch(image(False),BOX),ref)
+
+
+def test_taken_away_before_deadline_gets_no_story_even_if_similar_dish_returns():
+    data = item() | {'lifecycle':'cleared'}
+    assert 'before its deadline' in dish_story.select(History(),None,data,now=239,
+                                                   decode=lambda t:(t,image(t>=45)))

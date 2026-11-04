@@ -103,7 +103,7 @@ def partly_visible(before, reference):
             score = float(cv2.matchTemplate(search,tile,cv2.TM_CCOEFF_NORMED).max())
             # NCC is insensitive to brightness; reject low-contrast background
             # texture matching a strongly outlined rim merely by spatial shape.
-            if score>=.92 and search.std() >= tile.std()*.6:
+            if score>=.8 and search.std() >= tile.std()*.6:
                 matches += 1
     return matches >= 3
 
@@ -119,6 +119,8 @@ def select(journal, buffer: Path, item: dict, *, now=None, deadline=None, decode
 
 def _select(journal, buffer, item, *, now, deadline, decode, pose):
     item = item | {'due_at': item.get('followup_at') or item.get('due_at')}
+    if item.get('lifecycle') in ('dismissed','disputed','cleared'):
+        return 'Dish is dismissed, disputed or was taken away before its deadline; no story.'
     box = item.get('box')
     if not box or not item.get('due_at'):
         return 'No fixed dish box or deadline.'
