@@ -224,3 +224,20 @@ def test_recorder_restart_does_not_stretch_its_first_segment(tmp_path):
     segments = {p.name:(a,b) for a,b,p in filmstrip.footage_segments(tmp_path)}
     assert segments[first.name] == (start+8,start+18)
     assert segments[second.name] == (start+18,start+28)
+
+
+def test_first_partial_segment_decodes_its_last_second(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        pytest.skip('ffmpeg/ffprobe unavailable')
+    movie = tmp_path/'222-000000.ts'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=size=96x64:rate=15',
+                    '-t','8','-c:v','libx264','-f','mpegts',str(movie)],check=True,capture_output=True)
+    end = time.time()-50
+    os.utime(movie,(end,end))
+    segments = filmstrip.footage_segments(tmp_path)
+    segments.deadline = time.monotonic()+10
+    photo = filmstrip._photo_at(segments,end-1)
+    assert photo is not None and abs(photo[0]-(end-1)) <= .75

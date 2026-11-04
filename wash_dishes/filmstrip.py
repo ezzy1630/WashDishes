@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import time
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
@@ -132,6 +133,7 @@ class _Footage(list):
         self.photos = {}
         self.deadline = None
         self.targets = []
+        self.durations = {}
 
 
 def arrival_window(frames, box: list[float], anchor: float, *, family: str | None = None) -> dict | str:
@@ -327,6 +329,28 @@ def _photo_at(segments, at: float) -> tuple[float, bytes] | None:
         deadline = getattr(segments, 'deadline', None)
         if deadline is not None:
             putdown._check_deadline(deadline)
+        if segment[2].name.endswith('-000000.ts'):
+            # The first segment can be shorter than ten seconds. Probe only a
+            # selected first file (once per search), never every retained file.
+            # A nominal start otherwise leaves its final seconds undecodable.
+            durations = getattr(segments, 'durations', {})
+            if segment[2] not in durations:
+                duration = 10
+                try:
+                    result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                                             '-of', 'default=noprint_wrappers=1:nokey=1', str(segment[2])],
+                                            capture_output=True, timeout=max(.01, min(1, deadline-time.monotonic())) if deadline is not None else 1)
+                    value = float(result.stdout)
+                    if result.returncode == 0 and 0 < value <= 15:
+                        duration = value
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    pass
+                durations[segment[2]] = duration
+            if deadline is not None:
+                putdown._check_deadline(deadline)
+            segment = (segment[1]-durations[segment[2]], segment[1], segment[2])
+            if not segment[0] <= at < segment[1]:
+                return None
         # Decode once per short recorder segment and encode only requested
         # instants. Encoding all twenty 2-fps JPEGs costs seconds on the Jetson.
         cache = getattr(segments, 'photos', None)
