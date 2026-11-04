@@ -459,3 +459,43 @@ previous artifact is retained, the promoted artifact is evaluated again, and a r
 regression immediately restores it. Run receipts include training/test IDs, counts,
 metrics, candidate digest and adoption decision. Undo during training rejects that run.
 No UI accuracy claim is shown without an adopted `learning_runs` measurement.
+
+## Recorded footage
+
+The house site's Footage page browses the entire retained buffer. Any active,
+JWT-authenticated household member may browse it, regardless of dish visibility,
+league start, or frozen weeks. “Watch the footage” beneath a visit's photos opens
+this same page at the visit time. There is no remote live stream and no viewer cap.
+
+- `GET /house/api/footage` returns approximate recording ranges, the house timezone,
+  dish-first-seen markers, and sampled journal person-presence markers. The latter
+  are navigation hints, not a complete visit ledger or evidence of ownership.
+- `GET /house/api/footage/chunk?at=<unix-seconds>` chooses a finished recorded
+  segment at that time. It returns a signed URL, approximate wall-clock bounds,
+  playback offset, expiry, and previous/next segment selectors. A missing interval
+  returns a gap message; rolled-off or unfinished footage returns 410. Pictures
+  retain their independent lifetime.
+- `GET|HEAD /house/footage/<opaque-chunk-id>.mp4?uid=...&exp=...&sig=...` serves only
+  the exact signed source fingerprint. A video element uses this five-minute
+  bearer capability without an Authorization header. The active household member
+  and source file are rechecked on every range request. Logout does not revoke an
+  already-issued capability before expiry; archiving the account does.
+
+Completed H.264 MPEG-TS segments remux to fast-start MP4 using video stream copy,
+with audio always discarded. Conversion runs at nice 15. Concurrent requests for
+one source share its prepared file; distinct recordings prepare independently,
+without count-based admission. Idle temporary MP4 copies have a one-minute cache
+lifetime (swept on requests and the house scheduler's minute tick), a 128 MiB idle
+budget, and shutdown cleanup. Active transfers pin their file; new requests still
+fail once the source leaves the retained buffer. No persistent evidence clip is
+created and the configured footage retention is unchanged.
+
+Wall-clock bounds use recorder file-write times, so they are estimates. The index
+assumes roughly ten-second segments and excludes the newest file and files newer
+than 15 seconds, avoiding the active writer. Actual playback duration is probed.
+A stopped camera's last file stays excluded conservatively. Unsupported video
+formats fail explicitly; there is no automatic transcode. Native byte ranges,
+suffix ranges, HEAD and unsatisfiable ranges are supported. CORS permits range
+requests and exposes range headers. Vercel must deploy the `/footage` rewrite,
+`footage.css`, and the CSP `media-src` Jetson origin; `dev/prepare.mjs` keeps that
+origin aligned with public configuration.
