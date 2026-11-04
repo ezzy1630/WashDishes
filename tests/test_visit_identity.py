@@ -39,6 +39,7 @@ def arrival(client, monkeypatch, *, ambiguity=None, grouped=False):
             people = [{k: v for k, v in PERSON.items() if k != 'track_id'}]
         runtime.journal.record(at + i, people)
     frame = jpeg((50, 80, 100))
+    background = jpeg((10, 20, 180))
     crop = jpeg((20, 40, 220))
     seen = []
 
@@ -59,7 +60,7 @@ def arrival(client, monkeypatch, *, ambiguity=None, grouped=False):
         'frames': [{'at': at + i, 'person_boxes': [PERSON['box']] if 10 <= i <= 80 else []}
                    for i in (0, 20, 30, 40, 60, 99)]})
     monkeypatch.setattr(filmstrip, 'footage_segments', lambda _: [])
-    monkeypatch.setattr(filmstrip, '_photo_at', lambda segments, at: (at, frame))
+    monkeypatch.setattr(filmstrip, '_photo_at', lambda segments, when: (when, frame if at+10 <= when <= at+80 else background))
     saved = runtime.filmstrips.generate(item['id'], now=utcnow())
     assert saved['status'] == 'saved'
     return item, store.arrival_visit(store.obligation(item['id'])['arrival_visit_id']), seen, frame, crop

@@ -142,7 +142,7 @@ export function photo(url, label, wide = false, lazy = false, size) {
       h(
         "p",
         { class: "help photo-instruction" },
-        "Arrival frames · Tap to enlarge",
+        "Dish photos · Tap to enlarge",
       ),
     );
   return box;

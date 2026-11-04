@@ -10,7 +10,9 @@ import fcntl
 import hashlib
 import json
 import os
+import subprocess
 import time
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +26,110 @@ MAX_WINDOW = 20 * 60
 TIMEOUT = 'Arrival context search reached its bounded time budget.'
 DECODE_RETRY = 'Retained arrival footage could not be decoded; retry pending.'
 RETRY_DELAY = timedelta(minutes=5)
+USE_LOOKBACK = 6 * 3600
+
+
+def use_frames(frames, box: list[float], anchor: float) -> list[dict]:
+    """Up to three visits near the spot, never a claim of dish use or ownership.
+
+    Merge missed detections less than 90 seconds apart, as in the journal audit.
+    Sustained visits always outrank pass-throughs. Keep a small geometric shortlist
+    per visit for pixel ranking after grouped decoding, rather than decoding hours.
+    """
+    visits, current = [], []
+    previous_at, previous_near = None, False
+    for frame in frames:
+        if not anchor - USE_LOOKBACK <= frame['at'] <= anchor:
+            continue
+        people = [d['box'] for d in frame['detections'] if d['kind'] == 'person'
+                  and putdown._reach(box, d['box']) < .08]
+        # Count adjacent camera observations, including a slow camera cadence.
+        # Empty observations interrupt supported presence even when a short gap
+        # still joins the visit. A stopped camera cannot establish a long stay.
+        covered = frame['at'] - previous_at if previous_near and previous_at is not None else 0
+        covered = covered if 0 <= covered < 90 else 0
+        previous_at, previous_near = frame['at'], bool(people)
+        if not people:
+            continue
+        if current and frame['at'] - current[-1]['at'] >= 90:
+            visits.append(current)
+            current = []
+        current.append({'at': frame['at'], 'person_boxes': people, 'covered_seconds': covered})
+    if current:
+        visits.append(current)
+
+    def observed_seconds(visit):
+        return sum(f['covered_seconds'] for f in visit)
+
+    def rank(visit):
+        duration = observed_seconds(visit)
+        # Recency matters within each class; a twenty-minute stay can beat a
+        # one-minute stay a few minutes later, but not one six hours later.
+        return (duration >= 60, visit[-1]['at'] + min(duration, 30 * 60))
+
+    selected = []
+    sustained = [v for v in visits if observed_seconds(v) >= 60]
+    for priority, visit in enumerate(sorted(sustained or visits, key=rank, reverse=True)[:3]):
+        context = {'start': visit[0]['at'], 'end': visit[-1]['at'], 'observations': len(visit), 'priority': priority,
+                   'observed_seconds': observed_seconds(visit)}
+        times = [f['at'] for f in visit]
+        for frame in visit:
+            neighbors = []
+            for at in (frame['at'] - 3, frame['at'] + 3):
+                index = min(len(visit)-1, bisect_right(times, at))
+                nearby = min(visit[max(0,index-1):index+1], key=lambda f: abs(f['at']-at))
+                if abs(nearby['at']-at) <= 1.5:
+                    neighbors.append(nearby)
+            # Receipt/segment times are approximate. A stable person over six
+            # seconds keeps a moving passer-by's old box off the backsplash.
+            frame['person_stability'] = min((max(putdown.box_iou(p, q) for q in n['person_boxes'])
+                                            for n in neighbors for p in frame['person_boxes']), default=0) if len(neighbors) == 2 else 0
+        # Choose alternate moments across the visit, so a blink/glare in one
+        # frame cannot force the sole displayed view. At most nine use decodes.
+        pool = sorted(visit, key=lambda f: use_frame_rank(f, [box]), reverse=True)
+        picks = []
+        for frame in pool:
+            if all(abs(frame['at'] - p['at']) >= 3 for p in picks):
+                picks.append(frame)
+                if len(picks) == 3:
+                    break
+        selected.extend({k: v for k, v in f.items() if k != 'covered_seconds'} |
+                        {'use_visit': context, 'use_order': order} for order, f in enumerate(picks))
+    return sorted(selected, key=lambda f: f['at'])
+
+
+def use_frame_rank(frame: dict, boxes: list) -> tuple:
+    people = frame.get('person_boxes', [])
+    covered = max((putdown._overlap(b, p) for b in boxes for p in people), default=1)
+    stability = frame.get('person_stability', 0)
+    return (stability >= .4, covered < .15, len(people) == 1, -covered, stability,
+            max((p[2] * p[3] for p in people), default=0))
+
+
+def with_use_context(journal, found: dict, anchor: float, segments) -> dict:
+    """Extend the same plan only when its arrival frames have no nearby person."""
+    found = found | {'use_anchor': anchor}
+    for frame in found['frames']:
+        if not frame.get('person_boxes'):
+            continue
+        # A moving person's journal box can outlast them in the decoded view.
+        # Retain ordinary arrivals when any depicted person has support on both
+        # sides; otherwise add nearby-visit context without inventing a put-down.
+        surrounding = list(journal.frames(frame['at']-4, frame['at']+4))
+        supported = []
+        for at in (frame['at']-3, frame['at']+3):
+            nearby = min(surrounding, key=lambda f: abs(f['at']-at), default=None)
+            supported.append(bool(nearby and abs(nearby['at']-at) <= 1.5 and any(
+                d['kind'] == 'person' and putdown.box_iou(p,d['box']) >= .4
+                for p in frame['person_boxes'] for d in nearby['detections'])))
+        if all(supported):
+            return found
+    starts = [s[0] for s in segments]
+    def retained(frame):
+        index = bisect_right(starts, frame['at']) - 1
+        return index >= 0 and frame['at'] < segments[index][1]
+    frames = use_frames((f for f in journal.frames(anchor - USE_LOOKBACK, anchor) if retained(f)), found['box'], anchor)
+    return found | {'frames': sorted([*frames, *found['frames']], key=lambda f: f['at'])}
 
 
 class _Footage(list):
@@ -34,6 +140,7 @@ class _Footage(list):
         self.photos = {}
         self.deadline = None
         self.targets = []
+        self.durations = {}
 
 
 def arrival_window(frames, box: list[float], anchor: float, *, family: str | None = None) -> dict | str:
@@ -182,7 +289,15 @@ def plan(journal, buffer: Path, item: dict, *, deadline: float | None = None) ->
                     raise putdown._SearchTimeout
                 yield frame
     try:
-        result = _plan(BoundedJournal(), buffer, item, deadline=deadline)
+        # Leave a small reserve for useful missing-arrival context when the
+        # precision search spends its budget on occluded before/after candidates.
+        reserve = min(3, max(0, (deadline - time.monotonic()) / 4))
+        retained = {}
+        try:
+            result = _plan(BoundedJournal(), buffer, item, deadline=deadline-reserve, retained=retained)
+        except putdown._SearchTimeout:
+            putdown._check_deadline(deadline)
+            result = _missing_plan(BoundedJournal(), buffer, item, deadline=deadline, **retained)
         putdown._check_deadline(deadline)
         return result
     except putdown._SearchTimeout:
@@ -196,7 +311,11 @@ def footage_segments(buffer: Path):
     that file. The fixed recorder segment length supplies its approximate start;
     it never supplies an empty-before observation across the gap.
     """
-    found=putdown.segments(buffer)
+    found=[(max(start,end-10) if path.name.endswith('-000000.ts') else start,end,path)
+           for start,end,path in putdown.segments(buffer)]
+    # A recorder restart's first file cannot inherit the previous stream's
+    # mtime: startup gaps would stretch an eight-second video to eighteen seconds.
+    # Use the same nominal ten-second bound as an isolated first segment below.
     indexed={s[2] for s in found}
     for path in buffer.glob('*.ts'):
         if path in indexed or path.is_symlink():
@@ -217,6 +336,28 @@ def _photo_at(segments, at: float) -> tuple[float, bytes] | None:
         deadline = getattr(segments, 'deadline', None)
         if deadline is not None:
             putdown._check_deadline(deadline)
+        if segment[2].name.endswith('-000000.ts'):
+            # The first segment can be shorter than ten seconds. Probe only a
+            # selected first file (once per search), never every retained file.
+            # A nominal start otherwise leaves its final seconds undecodable.
+            durations = getattr(segments, 'durations', {})
+            if segment[2] not in durations:
+                duration = 10
+                try:
+                    result = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                                             '-of', 'default=noprint_wrappers=1:nokey=1', str(segment[2])],
+                                            capture_output=True, timeout=max(.01, min(1, deadline-time.monotonic())) if deadline is not None else 1)
+                    value = float(result.stdout)
+                    if result.returncode == 0 and 0 < value <= 15:
+                        duration = value
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    pass
+                durations[segment[2]] = duration
+            if deadline is not None:
+                putdown._check_deadline(deadline)
+            segment = (segment[1]-durations[segment[2]], segment[1], segment[2])
+            if not segment[0] <= at < segment[1]:
+                return None
         # Decode once per short recorder segment and encode only requested
         # instants. Encoding all twenty 2-fps JPEGs costs seconds on the Jetson.
         cache = getattr(segments, 'photos', None)
@@ -288,7 +429,7 @@ def _already_visible(before: bytes, reference: bytes, box: list[float]) -> bool:
     return cv2.compareHist(histogram(candidate),histogram(template),cv2.HISTCMP_BHATTACHARYYA)<.35
 
 
-def _plan(journal, buffer: Path, item: dict, *, deadline: float) -> dict | str:
+def _plan(journal, buffer: Path, item: dict, *, deadline: float, retained: dict) -> dict | str:
     anchor = parse_stamp(item['created_at']).timestamp()
     box = item['box']
     if not box:
@@ -300,6 +441,9 @@ def _plan(journal, buffer: Path, item: dict, *, deadline: float) -> dict | str:
     reference = _photo_at(segments,anchor)
     if reference is None:
         return DECODE_RETRY if any(s[0] <= anchor < s[1] for s in segments) else 'No retained footage covers the first recorded sighting.'
+    # Reuse the already-decoded sighting if the strict arrival search times out.
+    # Re-decoding it can consume the entire reserve before nearby visits are read.
+    retained.update(segments=segments, reference=reference)
     reference_patch = putdown._jpeg_patch(reference[1],box)
     end = min(anchor+30,bounds[1]) if bounds else anchor
     candidates = []
@@ -357,20 +501,38 @@ def _plan(journal, buffer: Path, item: dict, *, deadline: float) -> dict | str:
             selected = select_frames(journal.frames(window['before'],window['after']),box,window)
             if len(selected)<6:
                 selected = [{'at':window['before']+i*(window['after']-window['before'])/5,'person_boxes':[]} for i in range(6)]
-            return {'window':window,'frames':selected,'box':box}
-    # Evidence of an already-present dish is useful, but a nearby visitor is not its
-    # placer. Do not select that visitor or label a detector return as a put-down.
-    # The prominent image caption and metadata retain this missing-arrival fact.
+            return with_use_context(journal, {'window':window,'frames':selected,'box':box}, anchor, segments)
+    # Nearby visits are useful context, but cannot supply a put-down. Keep the
+    # original missing-arrival fact in both the image caption and metadata.
+    return _missing_plan(journal, buffer, item, deadline=deadline, segments=segments, reference=reference)
+
+
+def _missing_plan(journal, buffer, item, *, deadline, segments=None, reference=None):
+    anchor, box = parse_stamp(item['created_at']).timestamp(), item['box']
+    if not box:
+        return 'No saved dish box locates the arrival spot.'
+    if segments is None:
+        segments = footage_segments(buffer)
+        if isinstance(segments, _Footage):
+            segments.deadline = deadline
+    reference = reference or _photo_at(segments, anchor)
+    if reference is None:
+        return DECODE_RETRY if any(s[0] <= anchor < s[1] for s in segments) else 'No retained footage covers the first recorded sighting.'
     available = [s for s in segments if s[1]>=anchor and s[0]<=anchor+40]
     if not available:
         return 'No retained footage covers the first recorded sighting.'
     first = max(anchor,available[0][0])
-    last = min(anchor+30,available[-1][1]-.5)
+    covered_until = available[0][1]
+    for start, end, _ in available[1:]:
+        if start > covered_until:
+            break
+        covered_until = max(covered_until, end)
+    last = min(anchor+30,covered_until-.5)
     if last-first<3:
         return 'Insufficient retained footage to show distinct already-present views.'
     window = {'before':first,'after':last,'source':'already_present','arrival_recorded':False,
               'first_visible_at':reference[0],'reason':'Already there at the first retained view; arrival not recorded.'}
-    return {'window':window,'box':box,'frames':[{'at':first+i*(last-first)/5,'person_boxes':[]} for i in range(6)]}
+    return with_use_context(journal, {'window':window,'box':box,'frames':[{'at':first+i*(last-first)/5,'person_boxes':[]} for i in range(6)]}, anchor, segments)
 
 
 def same_visit(journal, left: dict, right: dict) -> bool:
@@ -379,6 +541,8 @@ def same_visit(journal, left: dict, right: dict) -> bool:
     A shared track is stronger than proximity. With no track IDs, one unambiguous
     overlapping person box must continue through every journal observation.
     """
+    if any(f.get('use_visit') for p in (left, right) for f in p['frames']):
+        return False  # Context from an earlier visit cannot merge naming units.
     a, b = left['box'], right['box']
     distance = max(0, max(a[0], b[0]) - min(a[0]+a[2], b[0]+b[2])) + max(0, max(a[1], b[1]) - min(a[1]+a[3], b[1]+b[3]))
     if distance > .20:
@@ -454,20 +618,38 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
     if not frames:
         raise ValueError('No retained arrival photos.')
     boxes = boxes or [item['box']]
-    day = datetime.fromtimestamp(frames[0]['at'],timezone.utc).astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles')))
+    arrival_frames = [f for f in frames if not f.get('use_visit')]
+    day = datetime.fromtimestamp(arrival_frames[0]['at'],timezone.utc).astimezone(ZoneInfo(os.getenv('WASHDISHES_TIMEZONE','America/Los_Angeles')))
     def clock(at):
-        return datetime.fromtimestamp(at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M:%S %p')
-    last = frames[-1]
+        local = datetime.fromtimestamp(at,timezone.utc).astimezone(day.tzinfo)
+        return local.strftime(('%b %-d · ' if local.date() != day.date() else '') + '%-I:%M:%S %p')
+    last = arrival_frames[-1]
     panels = [{'jpeg':last['jpeg'],'label':'Dish detail' if len(boxes) == 1 else 'Dish details',
                'time':clock(last['at']),'boxes':boxes,'at':last['at']}]
     # Compare the same crop before/after. An already-present window never earns
     # a before label, and duplicate pixels do not earn another panel.
-    if already_at is None and not approximate and frames[0]['jpeg'] != last['jpeg']:
-        panels.insert(0,{'jpeg':frames[0]['jpeg'],'label':'Earlier view · check this spot',
-                        'time':clock(frames[0]['at']),'at':frames[0]['at'],'boxes':boxes,'expected':True,
+    if already_at is None and not approximate and arrival_frames[0]['jpeg'] != last['jpeg']:
+        panels.insert(0,{'jpeg':arrival_frames[0]['jpeg'],'label':'Earlier view · check this spot',
+                        'time':clock(arrival_frames[0]['at']),'at':arrival_frames[0]['at'],'boxes':boxes,'expected':True,
                         'region':visual.region(boxes,last['jpeg'])})
-    if already_at is None:
-        for frame in visual.distinct_people(frames):
+    use = [f for f in frames if f.get('use_visit') and f.get('person_boxes')]
+    for index, frame in enumerate(use, 1):
+        visit = frame['use_visit']
+        seconds = visit.get('observed_seconds', visit['end'] - visit['start'])
+        duration = f'{int(seconds // 60)} min' if seconds >= 60 else 'under 1 min'
+        local_end = datetime.fromtimestamp(visit['end'],timezone.utc).astimezone(day.tzinfo)
+        until = local_end.strftime(('%b %-d · ' if local_end.date() != day.date() else '') + '%-I:%M %p')
+        heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
+        panels.append({'jpeg':frame['jpeg'], 'label':f'Near this spot for {duration}, until {until}',
+                       'time':f'Candidate visit {index} · frame at {clock(frame["at"])}',
+                       'at':frame['at'], 'boxes':boxes, 'person_boxes':heads, 'people':True})
+    if already_at is None and not use:
+        for frame in visual.distinct_people([f for f in frames if not f.get('use_visit')]):
+            # A journal box can lag behind somebody leaving. Do not give an
+            # unchanged patch of counter a "Who was at the counter" panel.
+            if not any(any(putdown.box_iou(p, q) >= .15 for q in last.get('person_boxes', []))
+                       or visual.person_changed(frame['jpeg'], last['jpeg'], p) for p in frame['person_boxes']):
+                continue
             heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
             panels.append({'jpeg':frame['jpeg'],'label':'Who was at the counter',
                            'time':clock(frame['at']),'at':frame['at'],'boxes':heads,'people':True})
@@ -478,17 +660,22 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
         notes.append("Arrival wasn't recorded — it was already here at " + datetime.fromtimestamp(already_at,timezone.utc).astimezone(day.tzinfo).strftime('%-I:%M %p') + '.')
     elif approximate:
         notes.append('Arrival timing is uncertain; check these views before naming.')
-    notes.append('Only name someone if you know they left these dishes')
-    return visual.render('Dishes to check',f"{day:%b %-d} · {collage.place(item['location'])}",panels,notes)
+    if use:
+        notes.append('Yellow: dish spot. Blue: people nearby, not confirmed users.')
+    notes.append('Only name someone if you know they used these dishes' if use or already_at is not None or not any(f['person_boxes'] for f in arrival_frames) else 'Only name someone if you know they left these dishes')
+    subtitle = f"{day:%b %-d} · {collage.place(item['location'])}"
+    if use:
+        subtitle += ' · Arrival not recorded.' if already_at is not None else ' · Nearby visits; use unconfirmed.'
+    return visual.render('Dishes to check',subtitle,panels,notes)
 
 
-def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline: float) -> list[dict]:
+def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline: float, _segments=None) -> list[dict]:
     """Decode a bounded pool throughout the arrival, then rank pixels, not times.
 
-    Keep the original endpoints and only show people in a recorded arrival. No
-    visit membership, tracking decisions, or identity teaching are changed here.
+    Keep the original endpoints, plus explicitly labeled nearby-visit context.
+    Visit membership and identity teaching never follow a proximity guess.
     """
-    segments = footage_segments(buffer)
+    segments = _segments if _segments is not None else footage_segments(buffer)
     if isinstance(segments, _Footage):
         segments.deadline = deadline
     candidates = list(found['frames'])
@@ -502,10 +689,18 @@ def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline:
         candidates += select_frames(journal.frames(window['before'],window['after']),union,window,count=12)
     # Saved endpoints define the visit. context_start is approach pre-roll for
     # initial planning; applying it again must not expand an existing filmstrip.
-    first, last = found['frames'][0]['at'], found['frames'][-1]['at']
-    candidates = sorted({f['at']: f for f in candidates if first <= f['at'] <= last}.values(), key=lambda f: f['at'])
+    endpoints = [f for f in found['frames'] if not f.get('use_visit')]
+    first, last = endpoints[0]['at'], endpoints[-1]['at']
+    candidates = sorted({f['at']: f for f in candidates if f.get('use_visit') or first <= f['at'] <= last}.values(), key=lambda f: f['at'])
     # Decode endpoints first, so interior ranking cannot consume their budget.
-    candidates = [candidates[0], candidates[-1], *candidates[1:-1]] if candidates else []
+    use = [f for f in candidates if f.get('use_visit') and f['at'] not in (first,last)]
+    if use:
+        # One good frame of each ranked visit before spending on alternatives.
+        # Missing-arrival interior detail frames add nothing to the two endpoints.
+        use.sort(key=lambda f: (f.get('use_order', 0), f['use_visit'].get('priority', 0)))
+        candidates = [endpoints[0], endpoints[-1], *use]
+    else:
+        candidates = [endpoints[0], endpoints[-1], *[f for f in candidates if f['at'] not in (first,last)]]
     if isinstance(segments, _Footage):
         segments.targets = [f['at'] for f in candidates]
     decoded = {}
@@ -522,14 +717,47 @@ def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline:
         nearby = list(journal.frames(at-.75,at+.75))
         observation = min(nearby,key=lambda f:abs(f['at']-at)) if nearby else None
         people = [p['box'] for p in observation['detections'] if p['kind'] == 'person' and
-                  any(putdown._reach(b,p['box']) <= .1 for b in boxes)] if observation and window.get('arrival_recorded',True) else []
-        decoded[round(at,3)] = {'at':at,'jpeg':jpeg,'person_boxes':people}
+                  any(putdown._reach(b,p['box']) < (.08 if selected.get('use_visit') else .1) for b in boxes)] if observation and (selected.get('use_visit') or window.get('arrival_recorded',True)) else []
+        decoded[round(at,3)] = {**selected, 'at':at,'jpeg':jpeg,'person_boxes':people}
     frames = sorted(decoded.values(),key=lambda f:f['at'])
     if not frames or any(not any(abs(f['at']-endpoint['at']) <= .75 for f in frames)
-                         for endpoint in (found['frames'][0],found['frames'][-1])):
+                         for endpoint in (endpoints[0],endpoints[-1])):
         return []
+    selected = _select_display_frames(journal, frames, boxes)
+    if ('use_anchor' in found and not any(f.get('use_visit') for f in found['frames'])
+            and not any(f['person_boxes'] for f in selected) and time.monotonic() < deadline):
+        # Journal boxes can survive after somebody leaves. Once decoded pixels
+        # veto every arrival person, spend only the remaining budget on earlier
+        # visits. Reuse the endpoint decode cache and the same segment grouping.
+        empty = found | {'frames': [f | {'person_boxes': []} for f in found['frames']]}
+        earlier = with_use_context(journal, empty, found['use_anchor'], segments)
+        if any(f.get('use_visit') for f in earlier['frames']):
+            return display_frames(journal, buffer, earlier, boxes, deadline=deadline, _segments=segments) or selected
+    return selected
+
+
+def _select_display_frames(journal, frames: list[dict], boxes: list) -> list[dict]:
+    """Rank decoded pixels, also reusable when re-rendering archived sources."""
     from .evidence_image import distinct_people
-    selected = [frames[0],frames[-1],*distinct_people(frames)]
+    arrival_frames = [f for f in frames if not f.get('use_visit')]
+    from .evidence_image import person_changed, person_quality
+    reference = arrival_frames[-1]
+    nearby = list(journal.frames(reference['at']-.75, reference['at']+.75))
+    observation = min(nearby, key=lambda f: abs(f['at']-reference['at'])) if nearby else None
+    reference_people = [d['box'] for d in observation['detections'] if d['kind'] == 'person'] if observation else []
+    def visible(frame):
+        return [p for p in frame['person_boxes'] if any(putdown.box_iou(p, q) >= .15 for q in reference_people)
+                or person_changed(frame['jpeg'], reference['jpeg'], p)]
+    arrival_frames = [f | {'person_boxes': visible(f)} for f in arrival_frames]
+    selected = [arrival_frames[0],arrival_frames[-1],*distinct_people(arrival_frames)]
+    visits = {}
+    for frame in frames:
+        if frame.get('use_visit') and frame['person_boxes']:
+            people = visible(frame)
+            if people:
+                visits.setdefault(frame['use_visit']['start'], []).append(frame | {'person_boxes': people})
+    for visit in visits.values():
+        selected.append(max(visit, key=lambda f: (*use_frame_rank(f, boxes)[:4], person_quality(f))))
     return sorted({round(f['at'],3):f for f in selected}.values(),key=lambda f:f['at'])
 
 
@@ -540,7 +768,7 @@ def identity_frame(journal, frames: list[dict], boxes: list[list[float]], *, arr
     tracks, handoffs, gaps or an already-present dish supply no teaching capture.
     This does not attribute responsibility or relax any automatic proof check.
     """
-    if not arrival_recorded or not frames:
+    if not arrival_recorded or not frames or any(f.get('use_visit') for f in frames):
         return None
     observations = list(journal.frames(frames[0]['at'] - .75, frames[-1]['at'] + .75))
     if (not observations or observations[0]['at'] > frames[0]['at'] + .75
@@ -663,15 +891,24 @@ class Filmstrips:
         visit_id = prior['id'] if prior else hashlib.sha256((','.join(map(str,obligation_ids))).encode()).hexdigest()[:20]
         created = parse_stamp(prior['created_at']) if prior else now
         if not reason:
-            frames = display_frames(self.journal,self.media.buffer,found,[g[0]['box'] for g in physical],deadline=deadline)
+            frames = display_frames(self.journal,self.media.buffer,found,[g[0]['box'] for g in physical],deadline=deadline-2)
             if not frames:
                 reason = TIMEOUT if time.monotonic() >= deadline else DECODE_RETRY
             if not reason:
                 evidence_id = f"arrival-{visit_id}"
                 filename = evidence_id + '.jpg'
-                atomic_write(self.media.safe_path(filename), render(item, frames, boxes=[g[0]['box'] for g in physical], approximate=found['window'].get('approximate', False), already_at=found['window'].get('first_visible_at') if not found['window'].get('arrival_recorded',True) else None))
+                picture = render(item, frames, boxes=[g[0]['box'] for g in physical], approximate=found['window'].get('approximate', False), already_at=found['window'].get('first_visible_at') if not found['window'].get('arrival_recorded',True) else None)
+                atomic_write(self.media.safe_path(filename), picture)
                 try:
-                    metadata = {**(old or {}), 'visit_id': visit_id, 'obligation_ids': obligation_ids, 'render_version': 1, 'layout': 'stacked',
+                    import io
+
+                    from PIL import Image
+
+                    from .evidence_image import VERSION
+                    with Image.open(io.BytesIO(picture)) as image:
+                        width, height = image.size
+                    metadata = {**(old or {}), 'visit_id': visit_id, 'obligation_ids': obligation_ids, 'render_version': VERSION, 'layout': 'stacked',
+                                'image_width': width, 'image_height': height,
                                 'timestamp_estimated': True, 'time_basis': 'segment_mtime_and_decoded_pts',
                                 'canonical_obligation_ids': canonical_ids, 'duplicate_of': old['duplicate_of'] if old else {str(m['id']):g[0]['id'] for g in physical for m in g[1:]},
                                 'window': found['window'], 'dish_boxes': {str(m['id']): m['box'] for m in members},

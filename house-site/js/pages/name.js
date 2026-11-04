@@ -217,7 +217,7 @@ export function namePage(context) {
     visit = remaining[0];
   const intro = data.week.closed
     ? "Week closed. Unnamed visits don’t count."
-    : "A visit is one kitchen trip. Only name someone you know left these dishes.";
+    : "Look at the pictures. Only name someone if you know they used these dishes.";
   const weakLink =
     !data.week.closed && data.weak_count
       ? h(
@@ -315,7 +315,7 @@ export function namePage(context) {
         ),
         photo(
           visit.filmstrip_url,
-          `${visit.title} arrival photos`,
+          `${visit.title}: dish and nearby people`,
           true,
           false,
           mediaSize(visit),
@@ -341,8 +341,8 @@ export function namePage(context) {
           "p",
           { class: "help" },
           visit.arrival_seen
-            ? "Name the person who used or left them. Carrying dishes doesn’t make them yours."
-            : "Arrival not recorded — only name someone if you know",
+            ? "Name the person who used them. Carrying dishes doesn’t make them yours."
+            : "Arrival not recorded. People nearby are candidates. Only name someone if you know they used these dishes.",
         ),
         visit.guess
           ? h(

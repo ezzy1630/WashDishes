@@ -61,6 +61,7 @@ def test_filmstrip_saved_once_with_real_frame_times_boxes_and_seven_day_expiry(s
         import json
         frames = json.loads(evidence['capture'])['frames']
         assert len(frames) == 2
+        assert not any(f.get('person_boxes') for f in frames)
         # Identical synthetic gray source frames cannot establish an absent-to-arrival change.
         assert json.loads(evidence['capture'])['window']['arrival_recorded'] is False
         assert len({f['at'] for f in frames}) == 2

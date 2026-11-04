@@ -9,12 +9,12 @@ import io
 from functools import cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 
 WIDTH, MARGIN, PHOTO_H = 1080, 40, 560
 PAPER, INK, MUTED, LINE = "#111316", "#e8eaed", "#a3aab2", "#3a4048"
 DISH, BEFORE = "#ffe04f", "#a9c4ff"
-VERSION = 1
+VERSION = 2
 MAX_BYTES = 350_000
 
 
@@ -122,15 +122,16 @@ def render(title: str, subtitle: str, panels: list[dict], notes: list[str] = ())
         ty += 50
     for panel, rows in zip(panels, panel_rows):
         boxes = panel.get("boxes") or []
-        bounds = panel.get("region") or region(boxes, panel["jpeg"], people=panel.get("people", False))
+        person_boxes = panel.get('person_boxes', [])
+        bounds = panel.get("region") or region([*boxes, *person_boxes], panel["jpeg"], people=panel.get("people", False))
         photo = crop(panel["jpeg"], bounds)
         # Contain edge crops so no source pixels needed for the evidence are cut.
         photo = ImageOps.contain(photo, (WIDTH - 2 * MARGIN, PHOTO_H), Image.Resampling.LANCZOS)
         px, py = (WIDTH - photo.width) // 2, y + (PHOTO_H - photo.height) // 2
         canvas.paste(photo, (px, py))
-        if not panel.get("people"):
+        if not panel.get("people") or person_boxes:
             x0, y0, x1, y1 = bounds
-            for bx, by, bw, bh in boxes:
+            for (bx, by, bw, bh), person in [(b, False) for b in boxes] + [(b, True) for b in person_boxes]:
                 sx, sy = photo.width / (x1 - x0), photo.height / (y1 - y0)
                 rect = (
                     max(px + 3, px + (bx - x0) * sx - 6),
@@ -139,7 +140,7 @@ def render(title: str, subtitle: str, panels: list[dict], notes: list[str] = ())
                     min(py + photo.height - 3, py + (by + bh - y0) * sy + 6),
                 )
                 if rect[2] > rect[0] and rect[3] > rect[1]:
-                    color = BEFORE if panel.get("expected") else DISH
+                    color = BEFORE if person or panel.get("expected") else DISH
                     draw.rectangle(rect, outline="#111316", width=9)
                     draw.rectangle(rect, outline=color, width=4)
         y += PHOTO_H + 10
@@ -191,6 +192,32 @@ def person_quality(frame: dict) -> float:
             (10 if face else 0) + min(2, patch.width * patch.height / 50_000) + min(1, sharp / 50),
         )
     return score
+
+
+def person_changed(picture: bytes, reference: bytes, box: list) -> bool:
+    """Reject a journal person box that only depicts the unchanged background.
+
+    The reference must have no journal person over this box. This is only a stale
+    box veto, never a new person detection. Compare structure as well as raw
+    brightness so day/night exposure changes cannot turn the counter into a
+    person. A blown-out head patch is not readable naming context.
+    """
+    x, y, w, h = box
+    head = crop(picture, (x, y, min(1, x+w), min(1, y+min(h,w*.8)))).convert('L').resize((24, 24))
+    if sum(v > 230 for v in head.tobytes()) > .25 * 24 * 24:
+        return False
+    bounds = (x, y, min(1, x+w), min(1, y+min(h,w*2)))
+    before = crop(picture, bounds).convert('L').resize((32, 48))
+    after = crop(reference, bounds).convert('L').resize((32, 48))
+    if ImageStat.Stat(ImageChops.difference(before, after)).mean[0] < 6:
+        return False
+    a, b = ImageStat.Stat(before), ImageStat.Stat(after)
+    scale = a.stddev[0] * b.stddev[0]
+    if scale > 1:
+        correlation = sum((p-a.mean[0])*(q-b.mean[0]) for p,q in zip(before.tobytes(), after.tobytes())) / (32*48*scale)
+        if correlation >= .8:
+            return False
+    return True
 
 
 @cache

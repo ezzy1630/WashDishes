@@ -172,7 +172,7 @@ export function record(dish, settle, context) {
       ? h(
           "p",
           { class: "help" },
-          "Arrival not recorded — only name someone if you know",
+          "Arrival not recorded. People nearby are candidates. Only name someone if you know they used these dishes.",
         )
       : null,
     h("p", { class: "help attribution" }, named),
