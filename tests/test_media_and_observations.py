@@ -221,3 +221,65 @@ def test_real_ffmpeg_segment_export_is_playable(store, media):
     file = media.safe_path(store.evidence(evidence_id)["filename"])
     result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "default=nw=1", str(file)], capture_output=True, text=True, check=True, timeout=5)
     assert "codec_name=h264" in result.stdout
+
+
+def test_deadline_scan_work_stays_bounded_with_unrelated_movement_history(store):
+    now = utcnow()
+    current = [make_item(store) for _ in range(25)]
+    history = make_item(store, minutes=240)
+    with store.lock, store.conn:
+        store.conn.execute("UPDATE obligations SET lifecycle='cleared' WHERE id=?", (history['id'],))
+        store.conn.executemany('INSERT INTO events(obligation_id,created_at,event,description,data) VALUES(?,?,?,?,?)',
+                               [(history['id'], (now-timedelta(hours=2)).isoformat(), 'dish_picked_up', 'Historical pickup', '{}')] * 1000)
+    before = store.conn.execute('SELECT count(*) FROM events').fetchone()[0]
+    steps = 0
+
+    def budget():
+        nonlocal steps
+        steps += 1
+        # Count SQLite work rather than wall time: slow/shared Jetsons must not
+        # flake, and unrelated history must not be rescanned for every dish.
+        return int(steps >= 1200)
+
+    store.conn.set_progress_handler(budget, 1000)
+    try:
+        assert store.scan_deadlines(now) == 0
+    finally:
+        store.conn.set_progress_handler(None, 0)
+    assert store.conn.execute("SELECT count(*) FROM obligations WHERE lifecycle='open'").fetchone()[0] == len(current)
+    assert store.conn.execute('SELECT count(*) FROM events').fetchone()[0] == before
+
+
+def test_before_deadline_removal_preserves_movement_reopen_and_timer_boundaries(store):
+    now = utcnow()
+
+    def event(kind, oid=None, *, at):
+        with store.lock, store.conn:
+            store._event(oid, kind, 'Synthetic movement history', at=at)
+
+    records = {key: make_item(store, minutes=180) for key in (
+        'eligible', 'recent', 'moved_back', 'reopened', 'unknown_timer', 'archived', 'resolved', 'at_deadline', 'no_pickup')}
+    for key, item in records.items():
+        if key != 'no_pickup':
+            at = now - timedelta(minutes=120)
+            if key == 'recent':
+                at = now - timedelta(minutes=20)
+            elif key == 'at_deadline':
+                at = now - timedelta(minutes=90)  # fixture's 90-minute deadline
+            event('dish_picked_up', item['id'], at=at)
+    event('dish_moved', records['moved_back']['id'], at=now-timedelta(minutes=110))
+    event('reopen', records['reopened']['id'], at=now-timedelta(minutes=110))
+    # A global event with a NULL obligation must not act as another dish's pickup.
+    event('dish_picked_up', at=now-timedelta(minutes=120))
+    with store.lock, store.conn:
+        store.conn.execute('UPDATE obligations SET timing_known=0 WHERE id=?', (records['unknown_timer']['id'],))
+        store.conn.execute('UPDATE obligations SET archived_at=? WHERE id=?', (now.isoformat(), records['archived']['id']))
+        store.conn.execute("UPDATE obligations SET lifecycle='resolved',resolved_at=? WHERE id=?",
+                           (now.isoformat(), records['resolved']['id']))
+    store.scan_deadlines(now)
+    cleared = {r[0] for r in store.conn.execute("SELECT id FROM obligations WHERE lifecycle='cleared'")}
+    assert cleared == {records['eligible']['id']}
+    saved = store.obligation(records['eligible']['id'])
+    assert saved['cleaner_id'] is None
+    assert not saved['overdue_verified']
+    assert 'Where it went was not observed' in saved['reason']
