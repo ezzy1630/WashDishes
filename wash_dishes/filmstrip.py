@@ -302,7 +302,11 @@ def footage_segments(buffer: Path):
     that file. The fixed recorder segment length supplies its approximate start;
     it never supplies an empty-before observation across the gap.
     """
-    found=putdown.segments(buffer)
+    found=[(max(start,end-10) if path.name.endswith('-000000.ts') else start,end,path)
+           for start,end,path in putdown.segments(buffer)]
+    # A recorder restart's first file cannot inherit the previous stream's
+    # mtime: startup gaps would stretch an eight-second video to eighteen seconds.
+    # Use the same nominal ten-second bound as an isolated first segment below.
     indexed={s[2] for s in found}
     for path in buffer.glob('*.ts'):
         if path in indexed or path.is_symlink():

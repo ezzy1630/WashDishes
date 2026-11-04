@@ -210,3 +210,17 @@ def test_sparse_passes_do_not_become_a_sustained_stay():
     observations += [observation(t, [CLEAR]) for t in (300, 350, 400)]
     chosen = filmstrip.use_frames(observations, BOX, 500)
     assert {f['use_visit']['start'] for f in chosen} == {0}
+
+
+def test_recorder_restart_does_not_stretch_its_first_segment(tmp_path):
+    import os
+    start = time.time()-1000
+    previous = tmp_path/'111-000099.ts'
+    first = tmp_path/'222-000000.ts'
+    second = tmp_path/'222-000001.ts'
+    for filename, at in ((previous,start),(first,start+18),(second,start+28)):
+        filename.write_bytes(b'synthetic segment index only')
+        os.utime(filename,(at,at))
+    segments = {p.name:(a,b) for a,b,p in filmstrip.footage_segments(tmp_path)}
+    assert segments[first.name] == (start+8,start+18)
+    assert segments[second.name] == (start+18,start+28)
