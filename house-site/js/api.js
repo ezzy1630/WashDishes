@@ -66,6 +66,10 @@ async function parsed(response, parser) {
   }
 }
 export const getMe = () => parsed(request("/me"), parse.me);
+export const getFootage = () => parsed(request("/footage"), parse.footage);
+/** @param {number} at */
+export const getFootageChunk = (at) =>
+  parsed(request(`/footage/chunk?at=${encodeURIComponent(at)}`), parse.footageChunk);
 /** @param {string} [start] */
 export const getWeek = (start = "") =>
   parsed(

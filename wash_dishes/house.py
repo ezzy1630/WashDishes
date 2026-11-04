@@ -183,16 +183,17 @@ class HouseBoundary:
             if message['type'] == 'http.response.start':
                 extra = [(b'cache-control', b'private, no-store')]
                 if origin:
-                    extra += [(b'access-control-allow-origin', origin.encode()), (b'vary', b'Origin')]
+                    extra += [(b'access-control-allow-origin', origin.encode()), (b'vary', b'Origin'),
+                              (b'access-control-expose-headers', b'Accept-Ranges, Content-Range, Content-Length')]
                 message['headers'] = [(k, v) for k, v in message.get('headers', []) if k.lower() != b'cache-control'] + extra
             await send(message)
 
         if scope.get('method') == 'OPTIONS':
             requested = {v.strip().lower() for v in headers.get('access-control-request-headers', '').split(',') if v.strip()}
-            if headers.get('access-control-request-method') not in ('GET', 'POST') or requested - {'authorization', 'content-type'}:
+            if headers.get('access-control-request-method') not in ('GET', 'HEAD', 'POST') or requested - {'authorization', 'content-type', 'range'}:
                 return await JSONResponse({'detail': 'That house request is not allowed.'}, status_code=403)(scope, receive, house_send)
-            return await Response(status_code=204, headers={'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Max-Age': '600'})(scope, receive, house_send)
+            return await Response(status_code=204, headers={'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range', 'Access-Control-Max-Age': '600'})(scope, receive, house_send)
         return await self.app(scope, receive, house_send)
 
 
@@ -239,6 +240,7 @@ class House:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+            self.footage.close()
 
     def resident(self, request: Request) -> dict:
         if request.app.state.config.demo or request.app.state.config.snapshot:
@@ -841,7 +843,7 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
             return house.media_file(evidence_id, exp, sig)
 
     from .house_footage import install as install_footage
-    install_footage(router, house, ReadBudget)
+    install_footage(router, house)
     app.include_router(router)
     operator = APIRouter(prefix='/api/league', dependencies=[Depends(authenticated)])
 

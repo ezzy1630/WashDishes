@@ -275,3 +275,31 @@ function evidence(value) {
     throw new Error("Invalid evidence rating");
   return value;
 }
+
+/** @param {unknown} value */
+export function footage(value) {
+  const v = object(value), timezone = string(v.timezone);
+  new Intl.DateTimeFormat("en", { timeZone: timezone });
+  return {
+    timezone,
+    ranges: array(v.ranges, (item) => {
+      const r = object(item), start = number(r.start), end = number(r.end);
+      if (end <= start) throw new Error("Invalid recording range");
+      return { start, end };
+    }),
+    moments: array(v.moments, (item) => {
+      const m = object(item), kind = string(m.kind);
+      if (kind !== "dish" && kind !== "person") throw new Error("Invalid footage moment");
+      return { at: number(m.at), kind, label: string(m.label) };
+    }),
+    clock_estimated: boolean(v.clock_estimated),
+  };
+}
+/** @param {unknown} value */
+export function footageChunk(value) {
+  const v = object(value), start = number(v.start), end = number(v.end);
+  if (end <= start || end - start > 60) throw new Error("Invalid recording duration");
+  return { url: string(v.url), start, end, offset: number(v.offset),
+    previous: nullable(v.previous, number), next: nullable(v.next, number),
+    expires: number(v.expires), clock_estimated: boolean(v.clock_estimated) };
+}

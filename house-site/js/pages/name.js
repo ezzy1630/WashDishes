@@ -13,6 +13,7 @@ import {
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
 import { verdictText } from "./visit.js";
+import { watchFootage } from "./footage.js";
 /** @param {Week} data */
 function reviewedVisits(data) {
   const reviewed = data.visits.filter((v) => v.resident || v.verdict);
@@ -320,6 +321,7 @@ export function namePage(context) {
           false,
           mediaSize(visit),
         ),
+        watchFootage(visit, context),
         h(
           "div",
           { class: "later-photo" },

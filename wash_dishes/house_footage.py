@@ -17,7 +17,9 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,26 +47,31 @@ class Segment:
 
 
 class Playback(FileResponse):
-    def __init__(self, path, directory, admission):
+    def __init__(self, path, release):
         super().__init__(path, media_type='video/mp4', headers={'Cache-Control': 'private, no-store'})
-        self.directory, self.admission = directory, admission
+        self.release = release
 
     async def __call__(self, scope, receive, send):
-        # FileResponse handles byte/suffix ranges, HEAD, 416 and disconnects. Keep
-        # admission for the entire transfer, not merely until the route returns.
+        # Pin the shared file through byte ranges, HEAD, 416 and disconnects.
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await run_in_threadpool(self.directory.cleanup)
-            self.admission.__exit__(None, None, None)
+            await run_in_threadpool(self.release)
+
+
+@dataclass
+class Prepared:
+    result: Future
+    directory: tempfile.TemporaryDirectory
+    used: float
+    viewers: int = 0
 
 
 class Footage:
-    def __init__(self, house, budget_type):
+    def __init__(self, house):
         self.house = house
-        self.budget = budget_type(per_identity=120, total=600, concurrent=4, per_concurrent=2)
-        self.reads = budget_type(per_identity=60, total=240, concurrent=2, per_concurrent=2)
-        self.convert = threading.Lock()
+        self.cache_lock = threading.Lock()
+        self.cache: dict[str, Prepared] = {}
         self.index_lock = threading.Lock()
         self.scanned = 0.0
         self.segments: list[Segment] = []
@@ -170,6 +177,7 @@ class Footage:
         return {'ranges': ranges, 'moments': self.markers(ranges[0]['start'], ranges[-1]['end']),
                 'timezone': str(league.timezone()), 'clock_estimated': True}
 
+    @lru_cache(maxsize=512)
     def probe(self, segment):
         try:
             result = subprocess.run(['nice', '-n', '15', 'ffprobe', '-v', 'error', '-show_entries',
@@ -192,14 +200,7 @@ class Footage:
             raise HTTPException(410, 'Footage from this time is no longer kept or has not finished recording. The photo is still available.')
         i = min(bisect.bisect_left([s.end for s in segments], at), len(segments) - 1)
         s = self.source(segments[i].id)
-        # Metadata work and remuxes share one non-waiting slot. Never queue a
-        # conversion flood ahead of the camera pipeline.
-        if not self.convert.acquire(blocking=False):
-            raise HTTPException(429, 'Footage is busy. Try again in a moment.')
-        try:
-            duration = self.probe(s)
-        finally:
-            self.convert.release()
+        duration = self.probe(s)
         start = s.end - duration
         if at < start - 2:
             raise HTTPException(404, 'There is a recording gap at this time. Pick a marked recording on the timeline.')
@@ -217,35 +218,63 @@ class Footage:
             raise HTTPException(403, 'This footage link expired or is invalid. Open the recording again.')
         self.member(uid)
         s = self.source(chunk)
-        admission = self.budget.admit(f'user:{uid}')
-        admission.__enter__()
-        directory = None
+        # No viewer-count admission. Same-source requests share one preparation;
+        # distinct chunks remux independently at nice 15. Retention is checked
+        # before consulting the temporary cache, including on every range read.
+        with self.cache_lock:
+            self.prune()
+            entry = self.cache.get(chunk)
+            build = entry is None
+            if build:
+                entry = Prepared(Future(), tempfile.TemporaryDirectory(prefix='dishwatch-footage-'), time.monotonic())
+                self.cache[chunk] = entry
+            entry.viewers += 1
+
+        def release():
+            with self.cache_lock:
+                entry.viewers -= 1
+                entry.used = time.monotonic()
+                self.prune()
+
         try:
-            if not self.convert.acquire(blocking=False):
-                raise HTTPException(429, 'Footage is busy. Try again in a moment.')
-            try:
+            if build:
+                path = Path(entry.directory.name) / 'chunk.mp4'
                 self.probe(s)
-                directory = tempfile.TemporaryDirectory(prefix='dishwatch-footage-')
-                path = Path(directory.name) / 'chunk.mp4'
                 subprocess.run(['nice', '-n', '15', 'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error',
                     '-i', str(s.path), '-map', '0:v:0', '-an', '-c:v', 'copy', '-movflags', '+faststart',
                     '-threads', '1', '-y', str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, timeout=10, check=True)
                 self.source(chunk)
-            finally:
-                self.convert.release()
-            return Playback(path, directory, admission)
+                entry.result.set_result(path)
+            path = entry.result.result(timeout=15)
+            return Playback(path, release)
         except BaseException as error:
-            if directory:
-                directory.cleanup()
-            admission.__exit__(None, None, None)
-            if isinstance(error, (OSError, subprocess.SubprocessError)):
+            if build and not entry.result.done():
+                entry.result.set_exception(error)
+            release()
+            if isinstance(error, (OSError, subprocess.SubprocessError, TimeoutError)):
                 raise HTTPException(503, 'Could not open this recording. Try again shortly.') from None
             raise
 
+    def prune(self):
+        # Called under cache_lock. Active responses pin their temporary files.
+        idle = sorted(((key, e) for key, e in self.cache.items() if not e.viewers), key=lambda p: p[1].used)
+        size = sum(sum(p.stat().st_size for p in Path(e.directory.name).glob('*.mp4')) for e in self.cache.values())
+        for key, entry in idle:
+            if time.monotonic() - entry.used > 60 or size > 128 * 1024 * 1024 or (entry.result.done() and entry.result.exception()):
+                size -= sum(p.stat().st_size for p in Path(entry.directory.name).glob('*.mp4'))
+                entry.directory.cleanup()
+                del self.cache[key]
 
-def install(router: APIRouter, house, budget_type):
-    footage = Footage(house, budget_type)
+    def close(self):
+        with self.cache_lock:
+            for entry in self.cache.values():
+                entry.directory.cleanup()
+            self.cache.clear()
+
+
+def install(router: APIRouter, house):
+    footage = Footage(house)
     house.footage = footage
 
     def fields(request, allowed):
@@ -255,14 +284,12 @@ def install(router: APIRouter, house, budget_type):
     @router.get('/api/footage')
     def index(request: Request, resident=Depends(house.resident)):
         fields(request, set())
-        with footage.reads.admit(f"user:{resident['id']}"):
-            return footage.index()
+        return footage.index()
 
     @router.get('/api/footage/chunk')
     def chunk(at: float, request: Request, resident=Depends(house.resident)):
         fields(request, {'at'})
-        with footage.reads.admit(f"user:{resident['id']}"):
-            return footage.chunk(at, resident['id'])
+        return footage.chunk(at, resident['id'])
 
     @router.api_route('/footage/{chunk}.mp4', methods=['GET', 'HEAD'])
     def file(chunk: str, uid: int, exp: int, sig: str, request: Request):

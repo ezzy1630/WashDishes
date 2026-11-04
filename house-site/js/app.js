@@ -7,10 +7,11 @@ import { namePage } from "./pages/name.js";
 import { pastPage } from "./pages/past.js";
 import { helpPage } from "./pages/help.js";
 import { weekPage } from "./pages/week.js";
+import { footagePage, stopFootage } from "./pages/footage.js";
 import { announce, brand, button, fill, h, heading } from "./ui.js";
 
 /** @typedef {import('./types.js').Visit} Visit */
-/** @typedef {'week'|'name'|'mine'|'past'|'help'} Page */
+/** @typedef {'week'|'name'|'mine'|'past'|'help'|'footage'} Page */
 const root = /** @type {HTMLDivElement} */ (document.getElementById("app"));
 /** @type {import('./types.js').State} */
 const state = {
@@ -54,11 +55,11 @@ let epoch = 0,
 const mockQuery = mock ? "?mock=1" : "";
 /** @param {string} path */
 function href(path) {
-  return path + mockQuery;
+  return path + (mock ? (path.includes("?") ? "&mock=1" : mockQuery) : "");
 }
 /** @returns {Page} */
 function page() {
-  return location.pathname.startsWith("/help") ? "help" : location.pathname.startsWith("/name")
+  return location.pathname.startsWith("/footage") ? "footage" : location.pathname.startsWith("/help") ? "help" : location.pathname.startsWith("/name")
     ? "name"
     : location.pathname.startsWith("/mine")
       ? "mine"
@@ -68,6 +69,8 @@ function page() {
 }
 /** @param {string} path */
 function navigate(path) {
+  stopFootage();
+  root.querySelector(".footage-page")?.remove();
   void answers.flush();
   history.pushState({}, "", href(path));
   state.skipped.clear();
@@ -114,6 +117,7 @@ function footer() {
   );
 }
 function clearSession() {
+  stopFootage();
   answers.cancel();
   state.pending.clear();
   answerError = "";
@@ -157,6 +161,7 @@ function shell(content) {
     ["name", "Name dishes", "/name"],
     ["mine", "My dishes", "/mine"],
     ["past", "Past weeks", "/past"],
+    ["footage", "Footage", "/footage"],
     ["help", "Help camera", "/help"],
   ]);
   fill(
@@ -324,6 +329,11 @@ function render() {
     renderAuth();
     return;
   }
+  if (state.me && page() === "footage") {
+    // Weekly background reads must not replace or interrupt the active video.
+    if (!root.querySelector(".footage-page")) shell(footagePage());
+    return;
+  }
   if (!state.data) {
     shell(
       state.offline
@@ -418,6 +428,8 @@ const context = {
 };
 const { renderAuth, renderJoin } = createAuthScreens(context);
 window.addEventListener("popstate", () => {
+  stopFootage();
+  root.querySelector(".footage-page")?.remove();
   state.selected =
     page() === "past"
       ? new URLSearchParams(location.search).get("start") || ""
