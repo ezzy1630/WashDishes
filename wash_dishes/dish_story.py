@@ -196,7 +196,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
         if not later:
             break
         candidate = photo(later[round(fraction*(len(later)-1))])
-        if candidate and not candidate['covered']:
+        if candidate and candidate['at'] >= due and not candidate['covered']:
             score = comparison(reference['patch'], candidate['patch'])
             if score['same']:
                 after = candidate | {'comparison': score}

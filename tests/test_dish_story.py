@@ -214,3 +214,11 @@ def test_backfill_is_read_only_by_default_and_resumes_without_touching_names(sto
     assert [tuple(r) for r in store.conn.execute('SELECT * FROM obligations ORDER BY id')]==before
     assert [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]==membership
     assert store.obligation(items[0]['id'])['resident_id']==resident['id']
+
+
+def test_decoded_after_must_itself_be_past_deadline():
+    history = History()
+    history.bounds = lambda:(0,180)
+    result = dish_story.select(history,None,item(),now=180,
+                              decode=lambda t:(t-.5,image(t>=45)))
+    assert 'post-deadline' in result
