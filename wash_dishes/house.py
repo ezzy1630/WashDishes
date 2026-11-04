@@ -334,6 +334,13 @@ class House:
             closed = data['week']['closed']
             residents = data.get('residents') or self.store.residents()
             evidence = data.get('evidence', []) if closed else self.evidence_for([d['id'] for d in data['dishes']])
+            if closed:
+                # Backfill may add pictures after a week's decisions froze. Read
+                # only those independent story images; never rewrite the snapshot
+                # or import new membership, names, scores, or arrival metadata.
+                known = {e['id'] for e in evidence}
+                evidence = [*evidence, *(e for e in self.evidence_for([d['id'] for d in data['dishes']])
+                                        if e['label'] == 'dish story' and e['id'] not in known)]
             live = {r['id']: dict(r) for r in self.store.conn.execute(
                 'SELECT id,expired,expires_at,filename FROM evidence WHERE id IN (SELECT value FROM json_each(?))',
                 (json.dumps([e['id'] for e in evidence]),))}

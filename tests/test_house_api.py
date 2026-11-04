@@ -1108,3 +1108,23 @@ def test_fixed_spot_story_leads_single_dish_visit_without_changing_names_or_memb
         store.conn.execute("UPDATE evidence SET expired=1 WHERE id='test-story'")
     fallback = client.get('/house/api/week').json()
     assert old_id in fallback['visits'][0]['filmstrip_url']
+
+
+def test_backfilled_story_can_display_on_closed_week_without_rewriting_frozen_scores(house_client):
+    client, store = house_client, house_client.app.state.store
+    old = utcnow()-timedelta(weeks=2)
+    league.close_weeks(store,now=old)
+    item = late(client)
+    stored_visit(client,[item],visit_id='frozen-story-visit')
+    store.action(item['id'],'confirm',resident_id=client.people[0]['id'])
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=?,created_at=? WHERE id=?',
+                           (stamp(old),stamp(old-timedelta(hours=3)),item['id']))
+    start = league.week_bounds(now=old)['start']
+    before = client.get('/house/api/week',params={'start':start}).json()
+    frozen = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',(start,)).fetchone()[0]
+    store.add_evidence(item['id'],'backfilled-story','backfilled-story.jpg','filmstrip','dish story')
+    after = client.get('/house/api/week',params={'start':start}).json()
+    assert '/house/media/backfilled-story?' in after['visits'][0]['filmstrip_url']
+    assert after['standings']==before['standings'] and not after['visits'][0]['can_name']
+    assert store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',(start,)).fetchone()[0]==frozen
