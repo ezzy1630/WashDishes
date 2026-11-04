@@ -243,7 +243,9 @@ def main() -> None:
                 truth_id = hashlib.sha256(b"".join(t.read_bytes() for t, _ in periods)).hexdigest()
                 data = Dataset(config.root, store)
                 result = run(config.root, store, data.summary()["counts"]["labeled"], force=args.force, truth_id=truth_id,
-                             train=lambda: Path(train_detector(config.root, data.export(), epochs=args.epochs)["model"]),
+                             # The Orin's unified RAM cannot fit forked data loaders
+                             # beside CUDA training. Keep batch, pixels and quality gates.
+                             train=lambda: Path(train_detector(config.root, data.export(), epochs=args.epochs, workers=0)["model"]),
                              evaluate=lambda model: combine([evaluate(config, store, t, f, dish_detector=model) for t, f in periods]),
                              evaluate_stills=lambda model: evaluate_frames(config.root, store, dish_detector=model))
                 print(json.dumps(result, indent=1))
