@@ -2,7 +2,7 @@ import { getFootageChunk } from "./api.js";
 import { button, h, imageURL } from "./ui.js";
 
 /** @typedef {Awaited<ReturnType<typeof getFootageChunk>>} Chunk */
-/** @typedef {{chunk:Chunk,video:HTMLVideoElement,ready:Promise<void>,expires:number,check:Promise<void>|null,controller:AbortController,release:()=>void}} Slot */
+/** @typedef {{chunk:Chunk,video:HTMLVideoElement,ready:Promise<void>,buffered:Promise<void>,expires:number,check:Promise<void>|null,controller:AbortController,release:()=>void}} Slot */
 /** @param {{changed:(chunk:Chunk,at:number)=>void,clock:(at:number)=>void,status:(text:string)=>void}} callbacks */
 export function recordedPlayer(callbacks) {
   let alive = true, generation = 0;
@@ -81,12 +81,21 @@ export function recordedPlayer(callbacks) {
       video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Could not load this recording. Try another moment.")); }, { once: true });
       cancelReady = () => { clearTimeout(timeout); reject(new Error("Recording selection changed.")); };
     });
+    /** @type {()=>void} */ let cancelBuffer = () => {};
+    /** @type {Promise<void>} */
+    const buffered = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("The next recording is still buffering. Try again.")), 20000);
+      video.addEventListener("canplaythrough", () => { clearTimeout(timeout); resolve(); }, { once: true });
+      video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Could not prepare the next recording.")); }, { once: true });
+      cancelBuffer = () => { clearTimeout(timeout); reject(new Error("Recording selection changed.")); };
+    });
+    void buffered.catch(() => {});
     // A cancelled preload can finish after navigation; it must not create an
     // unhandled rejection or replace the currently selected recording.
     void ready.catch(() => {});
-    const slot = { chunk, video, ready, expires: chunk.expires, check: null, controller, release: () => {
+    const slot = { chunk, video, ready, buffered, expires: chunk.expires, check: null, controller, release: () => {
       if (released) return;
-      released = true; controller.abort(); cancelReady(); video.pause();
+      released = true; controller.abort(); cancelReady(); cancelBuffer(); video.pause();
       video.removeAttribute("src"); video.load(); video.remove();
     } };
     slots.add(slot); stage.append(video);
@@ -123,12 +132,34 @@ export function recordedPlayer(callbacks) {
     seek.max = String(slot.video.duration); play.disabled = seek.disabled = false;
     play.textContent = "Play"; update();
     const gap = old && old !== slot ? slot.chunk.start - old.chunk.end : 0;
-    callbacks.status(gap > 2 ? `Recording gap · skipped ${short(gap)}. Resuming at the next recording.`
-      : "Scrub the player, or choose another moment below.");
+    const message = gap > 2 ? `Recording gap · skipped ${short(gap)}. Resuming at the next recording.`
+      : "Scrub the player, or choose another moment below.";
+    callbacks.status(message);
     callbacks.changed(slot.chunk, slot.chunk.start + offset);
-    if (autoplay) void slot.video.play().catch(() => callbacks.status("Tap play to continue."));
     prepareNext(slot);
+    if (autoplay) {
+      const selected = generation;
+      void start(slot, selected, message).catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (alive && active === slot && generation === selected) failed(error);
+      });
+    }
   }
+  /** @param {Slot} slot @param {number} selected @param {string} message */
+  async function start(slot, selected, message) {
+    if (slot.video.duration - slot.video.currentTime < 4 && ahead) {
+      // Exact time jumps can land just before a boundary. Buffer before motion
+      // starts rather than playing a fraction of a second and then freezing.
+      callbacks.status("Preparing the next recording…");
+      const next = await ahead.promise;
+      if (!next.check) next.check = validate(next);
+      await next.check;
+    }
+    if (!alive || selected !== generation || active !== slot) return;
+    callbacks.status(message);
+    await slot.video.play();
+  }
+
   /** @param {Slot} slot */
   function prepareNext(slot) {
     preparing?.abort(); preparing = null; ahead = null;
@@ -140,7 +171,7 @@ export function recordedPlayer(callbacks) {
       const chunk = await getFootageChunk(at, controller.signal);
       if (!alive || active !== slot || controller.signal.aborted) throw new Error("Recording selection changed.");
       const next = obtain(chunk);
-      await next.ready;
+      await next.buffered;
       return next;
     })();
     ahead = { at, promise }; void promise.catch(() => {});
@@ -178,9 +209,27 @@ export function recordedPlayer(callbacks) {
   }
   async function resume() {
     if (!active) return;
-    // Always revalidate a manual resume. Refresh an expired source URL before
-    // playing, including when its old bytes are still in the phone's memory.
-    await load(active.chunk.start + active.video.currentTime, true);
+    if (active.video.ended && active.chunk.next !== null) {
+      await load(active.chunk.next, true, true); return;
+    }
+    const slot = active, at = slot.chunk.start + slot.video.currentTime;
+    const selected = ++generation;
+    selecting?.abort(); selecting = new AbortController(); play.disabled = true;
+    try {
+      // Revalidate without discarding a useful preload on an ordinary pause.
+      // Expired URLs reload through load(); buffered bytes alone cannot resume.
+      const fresh = await getFootageChunk(at, selecting.signal);
+      if (!alive || selected !== generation || active !== slot) return;
+      if (key(fresh) !== key(slot.chunk) || slot.expires <= now() + 20) {
+        await load(at, true); return;
+      }
+      slot.chunk = fresh;
+      if (ahead) void ahead.promise.then((next) => { next.check = null; }).catch(() => {});
+      else prepareNext(slot);
+      callbacks.changed(fresh, at);
+      play.disabled = false;
+      await start(slot, selected, "Scrub the player, or choose another moment below.");
+    } catch (error) { if (alive && selected === generation) failed(error); }
   }
   function stop() {
     alive = false; generation++; selecting?.abort(); preparing?.abort();

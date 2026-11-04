@@ -24,7 +24,12 @@ async function request(path, options = {}) {
   }
   if (options.body !== undefined)
     headers.set("Content-Type", "application/json");
-  let response;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timeout = setTimeout(abort, 15000);
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
+  let response, data;
   try {
     response = await fetch(`${origin}/house/api${path}`, {
       method: options.body === undefined ? "GET" : "POST",
@@ -35,12 +40,15 @@ async function request(path, options = {}) {
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",
-      signal: options.signal || AbortSignal.timeout(15000),
+      signal: controller.signal,
     });
+    data = await response.json().catch(() => null);
   } catch {
     throw new HouseError("Dish Watch is offline right now", 0);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
   }
-  const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail =
       data &&

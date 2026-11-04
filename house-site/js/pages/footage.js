@@ -108,7 +108,7 @@ export function footagePage() {
         chosen, form, moments);
       if (!player.current) {
         const wanted = new URLSearchParams(location.search).get("at");
-        const at = wanted === null ? end - 1 : Number(wanted);
+        const at = wanted === null ? end - 10 : Number(wanted);
         await load(at);
       } else if (player.current) {
         showMoments(player.current.start);
