@@ -297,7 +297,9 @@ class House:
                        'note': item['dispute_note'], 'at': item['dispute_at'],
                        'settled_by': people.get(item['dispute_settled_by'])}
         media = [e for e in evidence if e['obligation_id'] == item['id']]
-        filmstrip = next((e for e in reversed(media) if e['kind'] == 'filmstrip' and e['label'] == 'arrival'), None)
+        filmstrip = next((e for e in reversed(media) if e['label'] == 'dish story' and not e['expired']
+                          and parse_stamp(e['expires_at']) > utcnow()), None)
+        filmstrip = filmstrip or next((e for e in reversed(media) if e['kind'] == 'filmstrip' and e['label'] == 'arrival'), None)
         photos = [e for e in reversed(media) if e['kind'] == 'snapshot' and not e['expired'] and parse_stamp(e['expires_at']) > utcnow()]
         # The site's “later photo” must be the matching deadline observation when retained.
         photo = next((e for e in photos if e['label'] == 'Matching dish still visible after the deadline'), None)
@@ -420,12 +422,21 @@ class House:
                     guess = {'resident_id': person['id'], 'name': person['name'],
                              'basis': seen.get('basis') or 'Appearance suggestion; check the arrival photos.'}
             filmstrip = group['filmstrip']
+            canonical = [oid for oid in group['dish_ids'] if oid not in group['duplicate_of']]
+            if len(canonical) == 1:
+                story = next((e for e in reversed(evidence) if e['obligation_id'] == canonical[0]
+                              and e['label'] == 'dish story' and not e['expired']
+                              and parse_stamp(e['expires_at']) > utcnow()), None)
+                filmstrip = story or filmstrip
             # Refresh retention from live evidence; never fall back to a superseded strip.
             filmstrip = evidence_by_id.get(filmstrip['id']) if filmstrip else None
             url = None
             if filmstrip and not filmstrip['expired'] and parse_stamp(filmstrip['expires_at']) > utcnow():
                 url = self.signed_url(filmstrip) if actor else f"/api/evidence/{filmstrip['id']}"
             for oid in group['dish_ids']:
+                if len(canonical) > 1 and any(e['obligation_id'] == oid and e['label'] == 'dish story'
+                                             and not e['expired'] and parse_stamp(e['expires_at']) > utcnow() for e in evidence):
+                    continue
                 formatted[oid]['filmstrip_url'] = url
                 formatted[oid].update({f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, url).items()})
             member_signals = [(signals or {}).get(oid, {}) for oid in group['dish_ids']]

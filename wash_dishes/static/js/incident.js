@@ -36,7 +36,7 @@ export function describeEvent(e, o) {
 
 // Keep the camera's full scene first. Identity crops supplement the scene.
 export function rankEvidence(list) {
-  const rank = e => e.kind === "clip" ? 5 : /^Person handling|^Person near/.test(e.label) ? 0 : /^Dish left|^Already present/.test(e.label) ? 1 : /^Taken from/.test(e.label) ? 2 : /^Who handled/.test(e.label) ? 4 : 3;
+  const rank = e => e.label === "dish story" ? -1 : e.kind === "clip" ? 5 : /^Person handling|^Person near/.test(e.label) ? 0 : /^Dish left|^Already present/.test(e.label) ? 1 : /^Taken from/.test(e.label) ? 2 : /^Who handled/.test(e.label) ? 4 : 3;
   return [...(list || [])].filter(e => !e.expired && e.url).sort((a, b) => rank(a) - rank(b));
 }
 export function evidenceLabel(e) {

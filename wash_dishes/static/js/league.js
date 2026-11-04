@@ -95,7 +95,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
     const media = h('div', { class: 'visit-media' }, image ? h('a', { href: image, target: '_blank', rel: 'noopener', title: 'Open full size' },
       h('img', { src: image, width: visit.filmstrip_url ? visit.filmstrip_width : visit.photo_width,
         height: visit.filmstrip_url ? visit.filmstrip_height : visit.photo_height, decoding: 'async',
-        loading: reviewing ? 'eager' : 'lazy', alt: visit.filmstrip_url ? `Six arrival views for ${visit.title}. Open full size to inspect.` : `Saved view of ${visit.title}; arrival was not recorded.` }))
+        loading: reviewing ? 'eager' : 'lazy', alt: visit.filmstrip_url ? `Camera views for ${visit.title}. Open full size to inspect.` : `Saved view of ${visit.title}; arrival was not recorded.` }))
       : h('p', { class: 'media-unavailable' }, 'No saved photo. Only answer if you know these dishes.'));
     media.querySelector('img')?.addEventListener('error', () => fill(media, h('p', { class: 'media-unavailable' }, 'Photo unavailable. Open the record or only answer if you know.')), { once: true });
     const controls = h('div', { class: 'visit-controls' });

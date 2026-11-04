@@ -13,7 +13,7 @@ from . import collage, evidence_image, filmstrip, putdown
 from .store import parse_stamp
 
 VERSION = 1
-BUDGET = 30
+BUDGET = 45
 LOOKBACK = 6 * 3600
 TIMEOUT = 'Story search reached its bounded time budget; retry pending.'
 
@@ -52,7 +52,7 @@ def visits(frames, box):
     found, current = [], []
     previous = None
     for frame in frames:
-        if previous is not None and frame['at']-previous > 3:
+        if previous is not None and frame['at']-previous > 30:
             if current:
                 found.append(current)
             current = []
@@ -102,16 +102,16 @@ def comparison(a, b):
             'different': difference >= .28 and corr < .65}
 
 
-def select(journal, buffer: Path, item: dict, *, now=None, deadline=None, decode=None):
+def select(journal, buffer: Path, item: dict, *, now=None, deadline=None, decode=None, pose=None):
     """Return four decoded observations + comparisons, or a plain refusal reason."""
     deadline = deadline if deadline is not None else time.monotonic()+BUDGET
     try:
-        return _select(journal, buffer, item, now=now, deadline=deadline, decode=decode)
+        return _select(journal, buffer, item, now=now, deadline=deadline, decode=decode, pose=pose)
     except putdown._SearchTimeout:
         return TIMEOUT
 
 
-def _select(journal, buffer, item, *, now, deadline, decode):
+def _select(journal, buffer, item, *, now, deadline, decode, pose):
     box = item.get('box')
     if not box or not item.get('due_at'):
         return 'No fixed dish box or deadline.'
@@ -126,12 +126,14 @@ def _select(journal, buffer, item, *, now, deadline, decode):
     if end < due:
         return 'No post-deadline journal observation.'
     frames = []
-    for index, frame in enumerate(journal.frames(max(bounds[0], anchor-LOOKBACK), min(end, anchor+300))):
+    for index, frame in enumerate(journal.frames(max(bounds[0], anchor-LOOKBACK), min(end, anchor+600))):
         if index % 256 == 0:
             putdown._check_deadline(deadline)
         frames.append(frame)
-    clear = list(clear_views(frames, box))
-    reference_views = [f for f in clear if anchor <= f['at'] <= anchor+180]
+    # Clear JOURNAL instants locate candidates, including sparse journal periods.
+    # Exact decoded photos are checked again; gaps never imply absence.
+    clear = [f for f in frames if not people(f, box, covering=True)]
+    reference_views = [f for f in clear if anchor <= f['at'] <= anchor+600]
     if not reference_views:
         return 'No clear dish reference near its first sighting.'
     segments = filmstrip.footage_segments(buffer) if decode is None else None
@@ -141,13 +143,15 @@ def _select(journal, buffer, item, *, now, deadline, decode):
     def photo(frame):
         putdown._check_deadline(deadline)
         if frame['at'] not in cache:
-            got = decode(frame['at']) if decode else filmstrip._photo_at(segments, frame['at'])
+            got = (frame['at'],frame['jpeg']) if 'jpeg' in frame else decode(frame['at']) if decode else filmstrip._photo_at(segments, frame['at'])
             if not got or abs(got[0]-frame['at']) > .75:
                 cache[frame['at']] = None
             else:
                 at, jpeg = got
                 neighbors = list(journal.frames(at-3, at+3))
                 nearest = min(neighbors, key=lambda f: abs(f['at']-at), default=None)
+                if nearest is None and 'jpeg' in frame:
+                    nearest = frame
                 # Any observed covering person around this approximate decode time
                 # vetoes a supposedly clear comparison, including people below reach.
                 cache[frame['at']] = {'at': at, 'jpeg': jpeg,
@@ -155,12 +159,17 @@ def _select(journal, buffer, item, *, now, deadline, decode):
                     'covered': not nearest or abs(nearest['at']-at) > .75 or
                                any(people(f, box, covering=True) for f in neighbors),
                     'patch': patch(jpeg, box)}
-        return cache[frame['at']]
+        result = cache[frame['at']]
+        if result and pose and 'pose' not in result:
+            putdown._check_deadline(deadline)
+            result['pose'] = pose(result['jpeg'], box, result['person_boxes'])
+            result['covered'] |= any(overlap(box,p) for p in result['pose']['person_boxes'])
+        return result
     reference = photo(reference_views[0])
     if not reference or reference['covered']:
         return 'The reference dish view is unavailable or covered.'
     # Verify AFTER first. Searching an arrival is wasted work if the spot is gone.
-    later = list(clear_views(journal.frames(due, min(end, due+1800)), box))
+    later = [f for f in journal.frames(due, min(end, due+1800)) if not people(f, box, covering=True)]
     after = None
     for fraction in (0, .33, .66, 1):
         if not later:
@@ -191,13 +200,17 @@ def _select(journal, buffer, item, *, now, deadline, decode):
         change = comparison(reference['patch'], before['patch'])
         if not change['different']:
             continue
-        # Select temporally distinct views, preferring a visible matching dish next
-        # to the person. Include all nearby people; never choose an owner for them.
-        pool = [visit[round(f*(len(visit)-1))] for f in (.15, .4, .65, .85)]
+        # Decode short 2-fps bursts across the visit, not just journal instants.
+        # Four bursts bound work even during a long cooking visit.
+        pool = during_candidates(segments, visit, journal, box, deadline=deadline) if decode is None else visit
         decoded = [p for f in pool if (p := photo(f)) and p['person_boxes']]
         for p in decoded:
             p['dish_visible'] = not p['covered'] and comparison(reference['patch'], p['patch'])['same']
-        decoded.sort(key=lambda p: (p['dish_visible'], len(p['person_boxes'])), reverse=True)
+        # Wrists and local changes rank views; neither is an assertion of use.
+        for a,b in zip(decoded,decoded[1:]):
+            b['spot_motion'] = comparison(a['patch'],b['patch'])['difference']
+        decoded.sort(key=lambda p: (bool(p.get('pose',{}).get('wrists')), p['dish_visible'],
+                                    p.get('spot_motion',0), len(p['person_boxes'])), reverse=True)
         if len(decoded) < 2:
             continue
         first = decoded[0]
@@ -211,6 +224,26 @@ def _select(journal, buffer, item, *, now, deadline, decode):
                 'frames': [before, *during, after], 'time_basis': 'segment_mtime_and_decoded_pts',
                 'limitations': 'Same spot only. Nearby people are context, not proof of use or ownership.'}
     return 'Arrival unknown: no clear verified spot change spanning a retained visit.'
+
+
+def during_candidates(segments, visit, journal, box, *, deadline):
+    """At most four short bursts, 2 fps. Cache bytes for selection's exact check."""
+    start, end = visit[0]['at'], visit[-1]['at']
+    times = sorted({min(end,max(start,start+q*(end-start)+offset))
+                    for q in (.1,.35,.65,.9) for offset in (-1,-.5,0,.5,1)})
+    segments.targets = times
+    out = []
+    for at in times:
+        putdown._check_deadline(deadline)
+        got = filmstrip._photo_at(segments,at)
+        if not got:
+            continue
+        actual,jpeg = got
+        nearby = list(journal.frames(actual-8,actual+8))
+        nearest = min(nearby,key=lambda f:abs(f['at']-actual),default=None)
+        if nearest and abs(nearest['at']-actual) <= 8 and people(nearest,box):
+            out.append({'at':actual,'jpeg':jpeg,'detections':nearest['detections']})
+    return sorted({round(f['at'],3):f for f in out}.values(),key=lambda f:f['at'])
 
 
 def metadata(found):
@@ -231,7 +264,7 @@ def render(item, found):
             label = 'AFTER · matching dish at this spot'
         else:
             count = len(frame['person_boxes'])
-            label = f"DURING · {'Person' if count == 1 else str(count)+' people'} near this spot"
+            label = f"DURING · {'Person' if count == 1 else str(count)+' people'} at the {collage.place(item.get('location')).lower()}"
             label += ' · dish visible' if frame['dish_visible'] else ' · dish not verified'
         heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
         bounds = evidence_image.region([box,*heads], frame['jpeg']) if index in (1,2) else region
