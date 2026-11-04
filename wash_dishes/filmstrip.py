@@ -598,6 +598,11 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
                        'at':frame['at'], 'boxes':boxes, 'person_boxes':heads, 'people':True})
     if already_at is None:
         for frame in visual.distinct_people([f for f in frames if not f.get('use_visit')]):
+            # A journal box can lag behind somebody leaving. Do not give an
+            # unchanged patch of counter a "Who was at the counter" panel.
+            if not any(any(putdown.box_iou(p, q) >= .15 for q in last.get('person_boxes', []))
+                       or visual.person_changed(frame['jpeg'], last['jpeg'], p) for p in frame['person_boxes']):
+                continue
             heads = [[x,y,w,min(h,max(w,h*.6))] for x,y,w,h in frame['person_boxes']]
             panels.append({'jpeg':frame['jpeg'],'label':'Who was at the counter',
                            'time':clock(frame['at']),'at':frame['at'],'boxes':heads,'people':True})

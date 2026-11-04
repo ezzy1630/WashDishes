@@ -67,7 +67,7 @@ def targets(conn, *, now=None):
     ]
 
 
-def inventory(root: Path, *, now=None, use_context=False, after_visit_id=''):
+def inventory(root: Path, *, now=None, use_context=False, after_visit_id='', obligation_id=None):
     # The selected root must already exist. Dry runs never create a DB/settings.
     with sqlite3.connect((root / "history.db").resolve().as_uri() + "?mode=ro", uri=True) as conn:
         ids = targets(conn, now=now)
@@ -77,8 +77,10 @@ def inventory(root: Path, *, now=None, use_context=False, after_visit_id=''):
             (after_visit_id,),
         ):
             meta = json.loads(metadata)
+            if obligation_id is not None and obligation_id not in meta['obligation_ids']:
+                continue
             if use_context:
-                if any(f.get('person_boxes') for f in meta.get('frames', [])):
+                if obligation_id is None and any(f.get('person_boxes') for f in meta.get('frames', [])):
                     continue
             elif not set(meta["obligation_ids"]).intersection(ids):
                 continue
@@ -96,13 +98,15 @@ def inventory(root: Path, *, now=None, use_context=False, after_visit_id=''):
     return {"obligation_ids": ids, "visits": visits, "sequences": [] if use_context else sequences}
 
 
-def run(root: Path, *, apply=False, limit=100, offset=0, now=None, use_context=False, after_visit_id=''):
+def run(root: Path, *, apply=False, limit=100, offset=0, now=None, use_context=False, after_visit_id='', obligation_id=None):
     if limit < 1 or offset < 0:
         raise ValueError("Limit must be positive and offset nonnegative.")
     root = root.resolve()
     if use_context and offset:
         raise ValueError('Use --after-visit-id, not --offset, for a resumable use-context pass.')
-    plan = inventory(root, now=now, use_context=use_context, after_visit_id=after_visit_id)
+    if obligation_id is not None and (not use_context or obligation_id < 1):
+        raise ValueError('Use a positive --obligation-id with --use-context to repair one visually empty picture.')
+    plan = inventory(root, now=now, use_context=use_context, after_visit_id=after_visit_id, obligation_id=obligation_id)
     actions = [{"kind": "filmstrip", "target": v["visit_id"]} for v in plan["visits"]] + [
         {"kind": "sequence", "target": oid} for oid in plan["sequences"]
     ]
@@ -248,9 +252,10 @@ def main():
     parser.add_argument("--offset", type=int, default=0, help="Continue at this action offset")
     parser.add_argument('--use-context', action='store_true', help='Backfill saved no-person filmstrips from retained nearby visits; 30 seconds each')
     parser.add_argument('--after-visit-id', default='', help='Resume use-context pass after next_visit_id (stable even as records improve)')
+    parser.add_argument('--obligation-id', type=int, help='Explicitly repair one visually empty filmstrip, including stale person metadata')
     args = parser.parse_args()
     print(json.dumps(run(args.root, apply=args.apply, limit=args.limit, offset=args.offset,
-                         use_context=args.use_context, after_visit_id=args.after_visit_id), indent=2))
+                         use_context=args.use_context, after_visit_id=args.after_visit_id, obligation_id=args.obligation_id), indent=2))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import time
 from datetime import timedelta
 
+import pytest
 from PIL import Image
 from test_sequences import jpeg
 
@@ -92,7 +93,8 @@ def test_use_render_boxes_people_and_dish_and_does_not_accuse(monkeypatch):
     assert 'not confirmed users' in text
 
 
-def test_use_backfill_preserves_human_names_membership_expiry_and_resume(store, media, monkeypatch):
+@pytest.mark.parametrize('stale_person', [False, True])
+def test_use_backfill_preserves_human_names_membership_expiry_and_resume(store, media, monkeypatch, stale_person):
     now = utcnow()
     person = store.add_resident('Test Resident')['id']
     items = [store.create_obligation(None, [{'kind': 'cup', 'quantity': 1}], box=BOX,
@@ -101,8 +103,8 @@ def test_use_backfill_preserves_human_names_membership_expiry_and_resume(store, 
     at = now.timestamp()
     old = {'obligation_ids': [i['id'] for i in items], 'canonical_obligation_ids': [items[0]['id']],
            'duplicate_of': {str(items[1]['id']): items[0]['id']}, 'dish_boxes': {str(i['id']): BOX for i in items},
-           'window': {'before': at, 'after': at+10, 'arrival_recorded': False, 'first_visible_at': at},
-           'frames': [{'at': at, 'person_boxes': []}, {'at': at+10, 'person_boxes': []}]}
+           'window': {'before': at, 'after': at+10, 'arrival_recorded': stale_person, 'first_visible_at': at},
+           'frames': [{'at': at, 'person_boxes': [CLEAR] if stale_person else []}, {'at': at+10, 'person_boxes': []}]}
     for vid in ('a', 'b'):
         eid = 'arrival-'+vid
         with store.conn:
@@ -116,7 +118,10 @@ def test_use_backfill_preserves_human_names_membership_expiry_and_resume(store, 
         return list(store.conn.execute('SELECT * FROM obligations')), list(store.conn.execute('SELECT * FROM arrival_visit_members'))
     before = state()
     dump = list(store.conn.iterdump())
-    dry = run(store.root, use_context=True, limit=1)
+    if stale_person:
+        assert run(store.root, use_context=True)['actions'] == []
+    target = items[0]['id'] if stale_person else None
+    dry = run(store.root, use_context=True, limit=1, obligation_id=target)
     assert dry['next_visit_id'] == 'a' and list(store.conn.iterdump()) == dump
     frames = [{'at': at-100, 'person_boxes': [CLEAR], 'jpeg': jpeg((80, 90, 120)),
                'use_visit': {'start': at-100, 'end': at-10, 'observations': 70}},
@@ -124,15 +129,15 @@ def test_use_backfill_preserves_human_names_membership_expiry_and_resume(store, 
     monkeypatch.setattr(filmstrip, 'plan', lambda *a, **kw: {'window': old['window'], 'box': BOX, 'frames': frames})
     monkeypatch.setattr(filmstrip, 'display_frames', lambda *a, **kw: frames)
     saved = store.evidence('arrival-a')
-    result = run(store.root, use_context=True, apply=True, limit=1)
+    result = run(store.root, use_context=True, apply=True, limit=1, obligation_id=target)
     assert result['updated'][0]['target'] == 'a' and state() == before
     after = store.evidence('arrival-a')
     assert after['expires_at'] == saved['expires_at'] and after['id'] == saved['id']
     meta = json.loads(after['capture'])
     assert meta['obligation_ids'] == old['obligation_ids'] and meta['duplicate_of'] == old['duplicate_of']
-    assert meta['window']['arrival_recorded'] is False and meta['frames'][0]['person_boxes']
+    assert meta['window']['arrival_recorded'] is stale_person and meta['frames'][0]['person_boxes']
     assert Image.open(io.BytesIO(media.safe_path(after['filename']).read_bytes())).width == 1080
-    assert run(store.root, use_context=True, after_visit_id=result['next_visit_id'])['actions'] == [{'kind': 'filmstrip', 'target': 'b'}]
+    assert run(store.root, use_context=True, after_visit_id=result['next_visit_id'], obligation_id=target)['actions'] == [{'kind': 'filmstrip', 'target': 'b'}]
 
 
 def test_stable_stay_frame_beats_moving_clear_box():
@@ -180,3 +185,19 @@ def test_supported_arrival_stays_unchanged_but_fleeting_box_gets_context(tmp_pat
     extended = filmstrip.with_use_context(History(earlier), found, 210, segments)
     assert extended['window'] == found['window']
     assert any(f.get('use_visit') and f['use_visit']['start'] == 0 for f in extended['frames'])
+
+
+def test_recorded_arrival_drops_empty_who_panel(monkeypatch):
+    from wash_dishes import evidence_image
+    labels = []
+    monkeypatch.setattr(evidence_image, 'render', lambda title, subtitle, panels, notes:
+                        labels.extend(p['label'] for p in panels) or b'image')
+    background = jpeg((60, 80, 100))
+    frames = [{'at': 100, 'jpeg': background, 'person_boxes': [CLEAR]},
+              {'at': 110, 'jpeg': background, 'person_boxes': []}]
+    filmstrip.render({'box': BOX, 'location': 'Counter'}, frames)
+    assert labels == ['Dish detail']
+    labels.clear()
+    frames[0]['jpeg'] = jpeg((160, 180, 200))
+    filmstrip.render({'box': BOX, 'location': 'Counter'}, frames)
+    assert 'Who was at the counter' in labels
