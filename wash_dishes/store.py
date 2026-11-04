@@ -165,6 +165,10 @@ class Store:
                 visit_id TEXT NOT NULL REFERENCES arrival_visits(id));
             CREATE INDEX IF NOT EXISTS arrival_members_visit ON arrival_visit_members(visit_id);
             CREATE INDEX IF NOT EXISTS events_kind_time ON events(event,created_at);
+            -- Deadline scans ask for the latest movement/reopen per obligation.
+            -- An event-kind-only index makes accumulated global history turn
+            -- each camera tick into a multi-second correlated scan.
+            CREATE INDEX IF NOT EXISTS events_obligation_kind ON events(obligation_id,event);
             CREATE TABLE IF NOT EXISTS evidence_sequences(
                 obligation_id INTEGER PRIMARY KEY REFERENCES obligations(id),
                 fingerprint TEXT NOT NULL, image_id TEXT REFERENCES evidence(id),
@@ -706,7 +710,8 @@ class Store:
         and a person reopening the record keeps it open.
         """
         rows = self.conn.execute("""SELECT o.id, e.created_at picked_at FROM obligations o
-            JOIN events e ON e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id AND event IN ('dish_picked_up','dish_moved'))
+            JOIN events e ON e.obligation_id=o.id
+                AND e.id=(SELECT max(id) FROM events WHERE obligation_id=o.id AND event IN ('dish_picked_up','dish_moved'))
             WHERE o.archived_at IS NULL AND o.lifecycle='open' AND o.timing_known=1 AND e.event='dish_picked_up' AND e.created_at<o.due_at AND e.created_at<=?
             AND NOT EXISTS (SELECT 1 FROM events r WHERE r.obligation_id=o.id AND r.event='reopen' AND r.id>e.id)""",
             (stamp(now - CARRY_WINDOW),)).fetchall()
