@@ -159,3 +159,18 @@ def test_changed_deadline_cannot_publish_a_stale_story(store,media,monkeypatch):
     assert result['status']=='retry' and not result['evidence_id']
     assert not store.obligation(dish['id'])['evidence']
     assert not list(media.root.glob('media/dish-story*'))
+
+
+def test_fragment_inside_larger_dish_cannot_supply_arrival_reference():
+    history = History()
+    for f in history.observations:
+        f['detections'].append({'kind':'pan','score':.9,'box':[.35,.55,.2,.2]})
+    assert 'fragment' in select(history)
+
+
+def test_partial_occlusion_does_not_make_an_existing_dish_absent():
+    ref = dish_story.patch(image(True),BOX)
+    before = ref.copy()
+    before[:, :24] = 30
+    assert dish_story.partly_visible(before,ref)
+    assert not dish_story.partly_visible(dish_story.patch(image(False),BOX),ref)

@@ -26,7 +26,7 @@ def overlap(a, b, pad=.012):
 
 def people(frame, box, *, covering=False):
     return [d['box'] for d in frame['detections'] if d['kind'] == 'person'
-            and d.get('score', 1) >= .25
+            and d.get('score', 1) >= .2
             and (overlap(box, d['box']) if covering else putdown._reach(box, d['box']) <= .08)]
 
 
@@ -82,6 +82,30 @@ def comparison(a, b):
     return {'difference': difference, 'correlation': corr, 'texture': texture,
             'same': difference <= .16 and corr >= .72 and texture >= 5,
             'different': difference >= .28 and corr < .65}
+
+
+def partly_visible(before, reference):
+    """An occluded dish is still present if distinctive parts remain in place.
+
+    Whole-crop comparison can change when a pot blocks half a glass. Three
+    textured matching tiles veto absence; this is not an identity score.
+    """
+    import cv2
+    import numpy as np
+    a,b = [cv2.cvtColor(p,cv2.COLOR_BGR2GRAY).astype(np.float32) for p in (before,reference)]
+    matches = 0
+    for y in (4,24,44):
+        for x in (4,24,44):
+            tile = b[y:y+16,x:x+16]
+            if tile.std()<8:
+                continue
+            search = a[max(0,y-4):min(64,y+20),max(0,x-4):min(64,x+20)]
+            score = float(cv2.matchTemplate(search,tile,cv2.TM_CCOEFF_NORMED).max())
+            # NCC is insensitive to brightness; reject low-contrast background
+            # texture matching a strongly outlined rim merely by spatial shape.
+            if score>=.92 and search.std() >= tile.std()*.6:
+                matches += 1
+    return matches >= 3
 
 
 def select(journal, buffer: Path, item: dict, *, now=None, deadline=None, decode=None, pose=None):
@@ -147,8 +171,20 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
             putdown._check_deadline(deadline)
             result['pose'] = pose(result['jpeg'], box, result['person_boxes'])
             result['covered'] |= any(overlap(box,p) for p in result['pose']['person_boxes'])
+        if result and not result.get('pose',{}).get('available'):
+            support = list(journal.frames(result['at']-3,result['at']+3))
+            dense = (len(support)>=4 and support[0]['at']<=result['at']-2.5
+                     and support[-1]['at']>=result['at']+2.5
+                     and all(b['at']-a['at']<=3 for a,b in zip(support,support[1:])))
+            # Without exact-frame person boxes, a sparse non-person reading is
+            # insufficient to call a comparison clear. DURING remains context.
+            result['covered'] |= not dense
         return result
-    reference = photo(reference_views[0])
+    reference_frame = reference_views[0]
+    if any(d['kind'] != 'person' and putdown._overlap(box,d['box']) >= .85
+           and d['box'][2]*d['box'][3] >= 2.5*box[2]*box[3] for d in reference_frame['detections']):
+        return 'The reference box is a fragment inside another dish; arrival is not isolated.'
+    reference = photo(reference_frame)
     if not reference or reference['covered']:
         return 'The reference dish view is unavailable or covered.'
     # Verify AFTER first. Searching an arrival is wasted work if the spot is gone.
@@ -181,7 +217,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
         if not before or before['covered']:
             continue
         change = comparison(reference['patch'], before['patch'])
-        if not change['different']:
+        if not change['different'] or partly_visible(before['patch'],reference['patch']):
             continue
         # A rotated, shifted or partly covered existing dish is not an empty
         # BEFORE. This veto searches one box-width around the final spot; it
