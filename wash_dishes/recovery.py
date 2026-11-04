@@ -46,41 +46,56 @@ class EvidenceRecovery:
     def __init__(self, store, media, dataset):
         self.store, self.media, self.dataset = store, media, dataset
         self.attempts = {}
+        self._labels = {}
 
     def refresh(self, limit: int = 2) -> int:
         paths = list(self.dataset.labels.glob('*.json'))
-        version = (len(paths), max((p.stat().st_mtime_ns for p in paths if p.exists()), default=0),
+        infos = {}
+        for path in paths:
+            try:
+                infos[path] = path.stat()
+            except FileNotFoundError:
+                pass
+        self._labels = {p: cached for p, cached in self._labels.items() if p in infos}
+        version = (len(paths), max((info.st_mtime_ns for info in infos.values()), default=0),
                    self.media.capture_status().get('last_activity_photo_at'))
         now = time.monotonic()
         items = [i for i in self.store.obligations() if i['lifecycle'] == 'open' and i['box']]
-        self.attempts = {key:value for key,value in self.attempts.items() if key in {i['id'] for i in items}}
+        ids = {i['id'] for i in items}
+        self.attempts = {key:value for key,value in self.attempts.items() if key in ids}
         pending = []
         for item in items:
-            detail = self.store.obligation(item['id'])
             prior, attempted = self.attempts.get(item['id'], (None, float('-inf')))
             if prior == version or now-attempted < 60:
                 continue
+            detail = self.store.obligation(item['id'])
             stages = {e['capture'].get('stage') for e in detail['evidence']}
             if 'leaving' in stages and not {'before', 'using'} <= stages:
                 pending.append((detail, stages))
         pending.sort(key=lambda p: self.attempts.get(p[0]['id'], (None, float('-inf')))[1])
         if not pending:
             return 0
-        labels = []
-        for path in paths:
-            try:
-                label = json.loads(path.read_text())
-                if self.dataset.image(label['id']).is_file():
-                    labels.append(label)
-            except (OSError, ValueError, KeyError, LookupError):
-                continue
+        labels = None
         recovered = 0
         for item, stages in pending[:limit]:
             self.attempts[item['id']] = (version, now)
             if self._journal(item, stages, items):
                 recovered += 1
                 continue
-            before, using = earlier_candidates(item, labels)
+            if labels is None:
+                labels = self._saved_labels(infos)
+            end = parse_stamp(item['created_at'])
+            start = end - timedelta(hours=6 if not item['timing_known'] else .5)
+            retained = []
+            for label in labels:
+                if not start <= parse_stamp(label['created_at']) < end:
+                    continue
+                try:
+                    if self.dataset.image(label['id']).is_file():
+                        retained.append(label)
+                except (OSError, ValueError, KeyError, LookupError):
+                    continue
+            before, using = earlier_candidates(item, retained)
             if using and not self._unique_target(item, using['recovered_dish'], items):
                 continue
             saved = []
@@ -102,6 +117,29 @@ class EvidenceRecovery:
             if saved or not any(e['event'] == 'saved_capture_search' for e in item['events']):
                 self.store.event('saved_capture_search', 'Earlier saved captures checked; no name, responsibility or clock inferred.', item['id'], {'recovered':saved})
         return recovered
+
+    def _saved_labels(self, infos):
+        """Cache parsing, never file availability or the outcome of a search.
+
+        ctime and inode also invalidate rewrites/replacements with restored mtime.
+        Photos are rechecked for each eligible window, so deleted originals cannot
+        become recovery candidates from the cache.
+        """
+        labels = []
+        for path, info in infos.items():
+            version = (info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino)
+            cached = self._labels.get(path)
+            try:
+                if cached is None or cached[0] != version:
+                    cached = (version, json.loads(path.read_text()))
+                    self._labels[path] = cached
+                label = cached[1]
+                # Match the dataset's validation before considering its time range.
+                self.dataset._check_id(label['id'])
+                labels.append(label)
+            except (OSError, ValueError, KeyError, LookupError):
+                continue
+        return labels
 
     @staticmethod
     def _unique_target(item, dish, items):

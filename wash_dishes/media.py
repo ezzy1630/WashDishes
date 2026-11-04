@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -81,7 +82,9 @@ class Media:
 
     def safe_path(self, filename: str) -> Path:
         path = self.media / filename
-        if Path(filename).name != filename or path.is_symlink() or path.resolve().parent != self.media.resolve():
+        # A single non-special basename stays in media without resolving every
+        # ancestor twice. Reject the final symlink even when its target is inside.
+        if filename in ("", ".", "..") or Path(filename).name != filename or path.is_symlink():
             raise ValueError("Invalid evidence path.")
         return path
 
@@ -211,12 +214,33 @@ class Media:
                     path.unlink(missing_ok=True)
                     removed += 1
             if removed:
-                self.store.event("storage_cleanup", f"Removed {removed} expired or over-budget recording files")
+                self._audit_cleanup(removed, now)
             # Keep compact metadata for a year, retaining any open obligation and its audit trail.
             with self.store.lock, self.store.conn:
                 old = stamp(now - timedelta(days=365))
                 self.store.conn.execute("DELETE FROM events WHERE created_at<? AND (obligation_id IS NULL OR obligation_id IN (SELECT id FROM obligations WHERE lifecycle IN ('resolved','dismissed') AND created_at<?))", (old, old))
             return self.status() | {"removed_files": removed}
+
+    def _audit_cleanup(self, removed: int, now: datetime) -> None:
+        # Rolling footage really expires each minute. Keep every run's time and
+        # count, but use one hourly audit row instead of an unbounded heartbeat.
+        hour = stamp(now.replace(minute=0, second=0, microsecond=0))
+        with self.store.lock, self.store.conn:
+            row = self.store.conn.execute("""SELECT id,data FROM events
+                WHERE obligation_id IS NULL AND event='storage_cleanup' AND created_at>=? AND created_at<=?
+                ORDER BY id DESC LIMIT 1""", (hour, stamp(now))).fetchone()
+            data = json.loads(row['data']) if row else {}
+            if 'runs' not in data:
+                row = None  # Preserve pre-aggregation audit rows as originally recorded.
+                data = {'removed_files': 0, 'runs': []}
+            data['removed_files'] += removed
+            data['runs'].append({'at': stamp(now), 'removed_files': removed})
+            description = f"Removed {data['removed_files']} expired or over-budget recording files"
+            if row:
+                self.store.conn.execute('UPDATE events SET description=?,data=? WHERE id=?',
+                                        (description, json.dumps(data), row['id']))
+            else:
+                self.store._event(None, 'storage_cleanup', description, data, now)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
