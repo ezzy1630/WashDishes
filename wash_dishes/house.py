@@ -840,6 +840,8 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
         with house.media_budget.admit('ip:' + client_identity(request)):
             return house.media_file(evidence_id, exp, sig)
 
+    from .house_footage import install as install_footage
+    install_footage(router, house, ReadBudget)
     app.include_router(router)
     operator = APIRouter(prefix='/api/league', dependencies=[Depends(authenticated)])
 
