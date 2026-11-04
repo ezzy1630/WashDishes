@@ -204,7 +204,8 @@ def test_supported_arrival_stays_unchanged_but_fleeting_box_gets_context(tmp_pat
              'frames': [{'at': 200, 'person_boxes': [CLEAR]}, {'at': 210, 'person_boxes': []}]}
     sustained = [observation(t, [CLEAR]) for t in range(190, 208)]
     segments = [(0, 220, tmp_path/'retained.ts')]
-    assert filmstrip.with_use_context(History(sustained), found, 210, segments) == found
+    supported = filmstrip.with_use_context(History(sustained), found, 210, segments)
+    assert supported['window'] == found['window'] and supported['frames'] == found['frames']
     earlier = [observation(t, [CLEAR]) for t in range(100)] + [observation(200, [CLEAR])]
     extended = filmstrip.with_use_context(History(earlier), found, 210, segments)
     assert extended['window'] == found['window']
@@ -225,6 +226,21 @@ def test_recorded_arrival_drops_empty_who_panel(monkeypatch):
     frames[0]['jpeg'] = jpeg((160, 180, 200))
     filmstrip.render({'box': BOX, 'location': 'Counter'}, frames)
     assert 'Who was at the counter' in labels
+
+
+def test_empty_decoded_arrival_searches_earlier_people(tmp_path, monkeypatch):
+    with Journal(tmp_path/'journal.db') as journal:
+        for at in range(10, 111):
+            journal.record(at, observation(at, [CLEAR])['detections'])
+        journal.record(200, observation(200, [CLEAR])['detections'])
+        journal.record(210, [])
+        found = {'box': BOX, 'use_anchor': 210, 'window': {'before': 200, 'after': 210, 'arrival_recorded': True},
+                 'frames': [{'at': 200, 'person_boxes': [CLEAR]}, {'at': 210, 'person_boxes': []}]}
+        monkeypatch.setattr(filmstrip, 'footage_segments', lambda _: [(0, 220, tmp_path/'fake.ts')])
+        monkeypatch.setattr(filmstrip, '_photo_at', lambda _, at: (at, jpeg((10, 20, 180) if at < 200 else (70, 80, 90))))
+        frames = filmstrip.display_frames(journal, tmp_path, found, [BOX], deadline=time.monotonic()+30)
+    assert any(f.get('use_visit') and f['person_boxes'] for f in frames)
+    assert not any(f['person_boxes'] for f in frames if not f.get('use_visit'))
 
 
 def test_sparse_passes_do_not_become_a_sustained_stay():

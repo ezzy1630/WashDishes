@@ -108,6 +108,7 @@ def use_frame_rank(frame: dict, boxes: list) -> tuple:
 
 def with_use_context(journal, found: dict, anchor: float, segments) -> dict:
     """Extend the same plan only when its arrival frames have no nearby person."""
+    found = found | {'use_anchor': anchor}
     for frame in found['frames']:
         if not frame.get('person_boxes'):
             continue
@@ -668,13 +669,13 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
     return visual.render('Dishes to check',subtitle,panels,notes)
 
 
-def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline: float) -> list[dict]:
+def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline: float, _segments=None) -> list[dict]:
     """Decode a bounded pool throughout the arrival, then rank pixels, not times.
 
     Keep the original endpoints, plus explicitly labeled nearby-visit context.
     Visit membership and identity teaching never follow a proximity guess.
     """
-    segments = footage_segments(buffer)
+    segments = _segments if _segments is not None else footage_segments(buffer)
     if isinstance(segments, _Footage):
         segments.deadline = deadline
     candidates = list(found['frames'])
@@ -722,24 +723,37 @@ def display_frames(journal, buffer: Path, found: dict, boxes: list, *, deadline:
     if not frames or any(not any(abs(f['at']-endpoint['at']) <= .75 for f in frames)
                          for endpoint in (endpoints[0],endpoints[-1])):
         return []
-    return _select_display_frames(journal, frames, boxes)
+    selected = _select_display_frames(journal, frames, boxes)
+    if ('use_anchor' in found and not any(f.get('use_visit') for f in found['frames'])
+            and not any(f['person_boxes'] for f in selected) and time.monotonic() < deadline):
+        # Journal boxes can survive after somebody leaves. Once decoded pixels
+        # veto every arrival person, spend only the remaining budget on earlier
+        # visits. Reuse the endpoint decode cache and the same segment grouping.
+        empty = found | {'frames': [f | {'person_boxes': []} for f in found['frames']]}
+        earlier = with_use_context(journal, empty, found['use_anchor'], segments)
+        if any(f.get('use_visit') for f in earlier['frames']):
+            return display_frames(journal, buffer, earlier, boxes, deadline=deadline, _segments=segments) or selected
+    return selected
 
 
 def _select_display_frames(journal, frames: list[dict], boxes: list) -> list[dict]:
     """Rank decoded pixels, also reusable when re-rendering archived sources."""
     from .evidence_image import distinct_people
     arrival_frames = [f for f in frames if not f.get('use_visit')]
-    selected = [arrival_frames[0],arrival_frames[-1],*distinct_people(arrival_frames)]
     from .evidence_image import person_changed, person_quality
     reference = arrival_frames[-1]
     nearby = list(journal.frames(reference['at']-.75, reference['at']+.75))
     observation = min(nearby, key=lambda f: abs(f['at']-reference['at'])) if nearby else None
     reference_people = [d['box'] for d in observation['detections'] if d['kind'] == 'person'] if observation else []
+    def visible(frame):
+        return [p for p in frame['person_boxes'] if any(putdown.box_iou(p, q) >= .15 for q in reference_people)
+                or person_changed(frame['jpeg'], reference['jpeg'], p)]
+    arrival_frames = [f | {'person_boxes': visible(f)} for f in arrival_frames]
+    selected = [arrival_frames[0],arrival_frames[-1],*distinct_people(arrival_frames)]
     visits = {}
     for frame in frames:
         if frame.get('use_visit') and frame['person_boxes']:
-            people = [p for p in frame['person_boxes'] if any(putdown.box_iou(p, q) >= .15 for q in reference_people)
-                      or person_changed(frame['jpeg'], reference['jpeg'], p)]
+            people = visible(frame)
             if people:
                 visits.setdefault(frame['use_visit']['start'], []).append(frame | {'person_boxes': people})
     for visit in visits.values():
