@@ -440,7 +440,14 @@ class House:
                 formatted[oid]['filmstrip_url'] = url
                 formatted[oid].update({f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, url).items()})
             member_signals = [(signals or {}).get(oid, {}) for oid in group['dish_ids']]
-            rating = review_evidence.rate(group.get('capture', {}), has_filmstrip=bool(url),
+            rating_capture = group.get('capture', {})
+            if filmstrip and filmstrip['label'] == 'dish story':
+                capture = filmstrip['capture']
+                capture = json.loads(capture) if isinstance(capture,str) else capture
+                # Rate the people actually shown, without rewriting arrival or
+                # membership metadata (or claiming that proximity proves use).
+                rating_capture = rating_capture | {'frames': capture.get('frames', [])}
+            rating = review_evidence.rate(rating_capture, has_filmstrip=bool(url),
                 has_photo=any(formatted[oid]['photo_url'] for oid in group['dish_ids']),
                 dish_confident=all(s.get('dish_confident', False) for s in member_signals),
                 remembered_near_match=any(s.get('remembered_near_match', False) for s in member_signals),

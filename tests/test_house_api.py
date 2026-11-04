@@ -1094,11 +1094,13 @@ def test_fixed_spot_story_leads_single_dish_visit_without_changing_names_or_memb
     old_id = stored_visit(client, [item], visit_id='story-visit')
     before = dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone())
     members = [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]
-    store.add_evidence(item['id'], 'test-story', 'test-story.jpg', 'filmstrip', 'dish story')
+    store.add_evidence(item['id'], 'test-story', 'test-story.jpg', 'filmstrip', 'dish story',
+                       capture={'frames':[{'person_boxes':[[.3,.2,.2,.7]]}]})
     data = client.get('/house/api/week').json()
     assert '/house/media/test-story?' in data['visits'][0]['filmstrip_url']
     assert '/house/media/test-story?' in data['dishes'][0]['filmstrip_url']
     assert data['visits'][0]['id'] == 'story-visit'
+    assert data['visits'][0]['reason'] is None  # No stale 'No one in the photos'.
     assert data['visits'][0]['arrival_seen'] is False
     assert dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone()) == before
     assert [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')] == members

@@ -180,3 +180,37 @@ def test_taken_away_before_deadline_gets_no_story_even_if_similar_dish_returns()
     data = item() | {'lifecycle':'cleared'}
     assert 'before its deadline' in dish_story.select(History(),None,data,now=239,
                                                    decode=lambda t:(t,image(t>=45)))
+
+
+def test_backfill_is_read_only_by_default_and_resumes_without_touching_names(store,monkeypatch):
+    from wash_dishes import backfill_stories
+    now = datetime.now(timezone.utc)
+    items = [store.create_obligation(None,[{'kind':'pan','quantity':1}],candidate=True,source='vision',
+                                    at=now-timedelta(hours=3),box=BOX) for _ in range(3)]
+    resident = store.add_resident('Synthetic reviewer')
+    store.action(items[0]['id'],'confirm',resident_id=resident['id'])
+    import json
+    member_ids = [i['id'] for i in items]
+    capture = {'visit_id':'preserved-visit','obligation_ids':member_ids,
+               'canonical_obligation_ids':member_ids,'duplicate_of':{},'frames':[],
+               'window':{'arrival_recorded':False}}
+    with store.conn:
+        store.conn.execute('INSERT INTO arrival_visits VALUES(?,?,?,?)',
+                           ('preserved-visit',None,stamp(now),json.dumps(capture)))
+        store.conn.executemany('INSERT INTO arrival_visit_members VALUES(?,?)',
+                               [(oid,'preserved-visit') for oid in member_ids])
+    before = [tuple(r) for r in store.conn.execute('SELECT * FROM obligations ORDER BY id')]
+    membership = [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]
+    schema = list(store.conn.execute('SELECT sql FROM sqlite_master ORDER BY name'))
+    dry = backfill_stories.run(store.root,limit=1,now=now)
+    assert dry['dry_run'] and dry['ids']==[items[0]['id']] and dry['next_after_id']==items[0]['id']
+    assert list(store.conn.execute('SELECT sql FROM sqlite_master ORDER BY name'))==schema
+    monkeypatch.setattr(backfill_stories.os,'nice',lambda n:None)
+    monkeypatch.setattr(dish_story,'select',lambda *a,**kw:'Arrival unknown: no verified change.')
+    first = backfill_stories.run(store.root,apply=True,limit=1,now=now)
+    second = backfill_stories.run(store.root,apply=True,limit=1,after_id=first['next_after_id'],now=now)
+    assert first['results'][0]['obligation_id']==items[0]['id']
+    assert second['results'][0]['obligation_id']==items[1]['id']
+    assert [tuple(r) for r in store.conn.execute('SELECT * FROM obligations ORDER BY id')]==before
+    assert [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]==membership
+    assert store.obligation(items[0]['id'])['resident_id']==resident['id']
