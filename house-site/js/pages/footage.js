@@ -19,9 +19,22 @@ export function footagePage() {
   let alive = true, sequence = 0, timezone = "UTC", busy = false;
   /** @type {Index|null} */ let index = null;
   /** @type {Chunk|null} */ let current = null;
-  const video = h("video", { controls: true, playsinline: true, preload: "metadata",
+  const video = h("video", { playsinline: true, preload: "metadata",
     "aria-label": "Recorded kitchen footage", crossorigin: "anonymous" });
   video.muted = true;
+  // WebKit's native controls inject blob icons/inline styles rejected by the
+  // site's strict CSP. Keep controls in our DOM and external stylesheet.
+  const play = button("Play", () => {
+    if (!video.paused) video.pause();
+    else void video.play().catch(() => { status.textContent = "Could not play. Open this moment again to refresh its link."; });
+  }, "secondary");
+  const seek = h("input", { type: "range", min: 0, max: 1, step: 0.1, value: 0,
+    "aria-label": "Seek within this recording" });
+  const elapsed = h("span", { class: "help footage-elapsed" }, "0:00 / 0:00");
+  play.disabled = seek.disabled = true;
+  seek.addEventListener("input", () => { video.currentTime = Number(seek.value); });
+  video.addEventListener("play", () => { play.textContent = "Pause"; });
+  video.addEventListener("pause", () => { play.textContent = "Play"; });
   const clock = h("p", { class: "footage-clock" }, "Choose a recording"),
     status = h("p", { class: "help footage-status", role: "status" }, "Loading recordings…"),
     panel = h("section", { class: "footage-controls", "aria-label": "Browse recordings" }),
@@ -35,7 +48,8 @@ export function footagePage() {
   previous.disabled = next.disabled = true;
   const refresh = button("Refresh recordings", () => void refreshIndex(), "quiet");
   const root = h("div", { class: "footage-page" }, heading("Kitchen footage", "Browse the recordings kept by the kitchen camera."),
-    video, clock, status, h("div", { class: "footage-chunks" }, previous, next), panel,
+    video, h("div", { class: "footage-transport" }, play, seek, elapsed), clock, status,
+    h("div", { class: "footage-chunks" }, previous, next), panel,
     h("p", { class: "help" }, "Recorded only · No audio · Clock times are approximate. New footage appears after a segment finishes. Older recordings roll off automatically."), refresh);
   dispose = () => { alive = false; sequence++; video.pause(); video.removeAttribute("src"); video.load(); };
 
@@ -45,7 +59,13 @@ export function footagePage() {
       hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(new Date(at * 1000));
   }
   function clockUpdate() {
-    if (current) clock.textContent = timeLabel(current.start + video.currentTime);
+    if (current) {
+      clock.textContent = timeLabel(current.start + video.currentTime);
+      seek.value = String(video.currentTime);
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const short = (/** @type {number} */ seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+      elapsed.textContent = `${short(video.currentTime)} / ${short(duration)}`;
+    }
   }
   video.addEventListener("timeupdate", clockUpdate);
   video.addEventListener("seeked", clockUpdate);
@@ -56,11 +76,12 @@ export function footagePage() {
   video.addEventListener("play", () => {
     if (current && current.expires <= Date.now() / 1000 + 5) void load(current.start + video.currentTime, true);
   });
-  /** @param {number} at @param {boolean} [play] @param {boolean} [fromStart] */
-  async function load(at, play = false, fromStart = false) {
+  /** @param {number} at @param {boolean} [autoplay] @param {boolean} [fromStart] */
+  async function load(at, autoplay = false, fromStart = false) {
     const request = ++sequence;
     busy = true;
     video.pause();
+    play.disabled = seek.disabled = true;
     status.textContent = "Opening recording…";
     previous.disabled = next.disabled = true;
     try {
@@ -74,8 +95,10 @@ export function footagePage() {
       video.onloadedmetadata = () => {
         if (request !== sequence) return;
         video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.1));
+        seek.max = String(video.duration);
+        play.disabled = seek.disabled = false;
         clockUpdate();
-        if (play) void video.play().catch(() => { status.textContent = "Tap play to continue."; });
+        if (autoplay) void video.play().catch(() => { status.textContent = "Tap play to continue."; });
       };
       video.src = src;
       video.load();
