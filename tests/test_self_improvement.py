@@ -200,3 +200,41 @@ def test_dataset_keeps_review_frames_ahead_of_plain_ones_under_budget(store):
     dataset.enforce_budget()
     remaining = {i["id"] for i in dataset._labels()}
     assert plain not in remaining and (reviewed in remaining or not remaining)
+
+
+def test_single_process_training_and_validation_keep_full_batch_and_resolution(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from wash_dishes import model_setup
+    from wash_dishes.vision import KINDS
+
+    models = tmp_path / 'models'
+    models.mkdir()
+    base, best = models / 'base.pt', tmp_path / 'best.pt'
+    (models / model_setup.DETECTOR_NAME).write_bytes(b'current')
+    best.write_bytes(b'candidate')
+    calls = []
+
+    class YOLO:
+        names = KINDS
+        trainer = SimpleNamespace(best=best)
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def train(self, **kwargs):
+            calls.append(('train', kwargs))
+
+        def val(self, **kwargs):
+            calls.append(('val', kwargs))
+            return SimpleNamespace(box=SimpleNamespace(map50=.8, map=.6))
+
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace())
+    monkeypatch.setattr(model_setup, '_download', lambda *args, **kwargs: base)
+    monkeypatch.setattr(model_setup, '_import_yolo_offline', lambda *args: YOLO)
+    result = model_setup.train_detector(tmp_path, tmp_path / 'data.yaml', epochs=40, workers=0, device='cpu')
+    assert [kind for kind, _ in calls] == ['train', 'val', 'val']
+    assert all(args['workers'] == 0 and args['imgsz'] == 1280 and args['batch'] == 4 for _, args in calls)
+    assert calls[0][1]['epochs'] == 40
+    assert Path(result['model']).read_bytes() == b'candidate'

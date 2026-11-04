@@ -15,18 +15,21 @@ import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from datetime import timedelta
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.routing import APIRoute
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import house_verdicts, house_visits, league, review_evidence, review_objects
 from .house_auth import HouseConfig, JWTVerifier, SupabaseAdmin
+from .house_images import Thumbnails
 from .house_schema import slug_for
 from .store import parse_stamp, stamp, utcnow
 
@@ -162,6 +165,12 @@ class HouseBoundary:
     """Tunnel headers cannot reach the operator app; CORS is scoped to /house/."""
     def __init__(self, app, site_origin: str, tunnel_port: int):
         self.app, self.site_origin, self.tunnel_port = app, site_origin, tunnel_port
+        self.json_app = GZipMiddleware(app, minimum_size=1024, compresslevel=1)
+        # Admission happens on the event loop, before auth/handlers can consume
+        # sync workers or wait on the camera's Store.lock. Ten housemates fit;
+        # excess work is bounded independently of FastAPI's shared thread pool.
+        self.workers = asyncio.Semaphore(2)
+        self.waiting = 0
 
     async def __call__(self, scope, receive, send):
         if scope['type'] not in ('http', 'websocket'):
@@ -179,8 +188,16 @@ class HouseBoundary:
         if origin and (not self.site_origin or origin != self.site_origin):
             return await JSONResponse({'detail': 'This house app origin is not allowed.'}, status_code=403)(scope, receive, send)
 
+        worker_held = False
+
         async def house_send(message):
+            nonlocal worker_held
             if message['type'] == 'http.response.start':
+                # Bound handler work, not the client's download speed. File I/O
+                # streams after this; a slow phone must not occupy an API slot.
+                if worker_held:
+                    self.workers.release()
+                    worker_held = False
                 extra = [(b'cache-control', b'private, no-store')]
                 if origin:
                     extra += [(b'access-control-allow-origin', origin.encode()), (b'vary', b'Origin'),
@@ -194,7 +211,41 @@ class HouseBoundary:
                 return await JSONResponse({'detail': 'That house request is not allowed.'}, status_code=403)(scope, receive, house_send)
             return await Response(status_code=204, headers={'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
                 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range', 'Access-Control-Max-Age': '600'})(scope, receive, house_send)
-        return await self.app(scope, receive, house_send)
+        # Viewer count must never refuse footage. Clip preparation runs at low
+        # priority outside this gate, which only protects the database lock.
+        if scope['path'].startswith(('/house/footage/', '/house/api/footage')):
+            return await self.app(scope, receive, house_send)
+        if self.waiting >= 20:
+            return await JSONResponse({'detail': 'The house is busy. Try again shortly.'}, status_code=429)(scope, receive, house_send)
+        self.waiting += 1
+        try:
+            await asyncio.wait_for(self.workers.acquire(), timeout=2)
+        except asyncio.TimeoutError:
+            return await JSONResponse({'detail': 'The house is busy. Try again shortly.'}, status_code=429)(scope, receive, house_send)
+        finally:
+            self.waiting -= 1
+        worker_held = True
+        try:
+            compress = scope['method'] == 'GET' and scope['path'] in ('/house/api/week', '/house/api/learning')
+            target = self.json_app if compress else self.app
+            return await target(scope, receive, house_send)
+        finally:
+            if worker_held:
+                self.workers.release()
+
+
+class HouseRoute(APIRoute):
+    def __init__(self, *args, endpoint, **kwargs):
+        @wraps(endpoint)
+        def work(*a, **kw):
+            try:
+                # Linux priorities are per native thread. Camera/inference
+                # threads are independent and retain normal priority.
+                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+            except (AttributeError, OSError):
+                pass
+            return endpoint(*a, **kw)
+        super().__init__(*args, endpoint=work, **kwargs)
 
 
 class House:
@@ -208,6 +259,7 @@ class House:
         self.media_budget = ReadBudget(per_identity=120, total=600, concurrent=8, per_concurrent=8)
         self.media_visibility: OrderedDict[str, bool] = OrderedDict()
         self.media_revision = None
+        self.thumbnails = Thumbnails()
         self.join_lock = threading.Lock()
         path = store.root / 'house-media.key'
         try:
@@ -270,13 +322,19 @@ class House:
     def evidence_for(self, ids: list[int]) -> list[dict]:
         if not ids:
             return []
+        # Resolve ids first: an OR with kind makes SQLite scan every snapshot
+        # before checking week membership. The outer lookup uses evidence's key.
+        members = json.dumps(ids)
         return [dict(r) for r in self.store.conn.execute(
-            f"""SELECT * FROM evidence WHERE kind IN ('snapshot','filmstrip') AND (
-                obligation_id IN ({','.join('?' for _ in ids)}) OR id IN (
-                    SELECT v.evidence_id FROM arrival_visits v JOIN arrival_visit_members m ON m.visit_id=v.id
-                    WHERE m.obligation_id IN ({','.join('?' for _ in ids)})) OR (kind='filmstrip' AND label='arrival'
-                AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids')
-                    WHERE value IN ({','.join('?' for _ in ids)})))) ORDER BY created_at,id""", [*ids, *ids, *ids])]
+            """SELECT * FROM evidence WHERE id IN (
+                SELECT id FROM evidence WHERE kind IN ('snapshot','filmstrip')
+                    AND obligation_id IN (SELECT value FROM json_each(?))
+                UNION SELECT v.evidence_id FROM arrival_visits v JOIN arrival_visit_members m ON m.visit_id=v.id
+                    WHERE m.obligation_id IN (SELECT value FROM json_each(?))
+                UNION SELECT id FROM evidence WHERE kind='filmstrip' AND label='arrival'
+                    AND EXISTS (SELECT 1 FROM json_each(evidence.capture,'$.obligation_ids')
+                        WHERE value IN (SELECT value FROM json_each(?)))) ORDER BY created_at,id""",
+            (members, members, members)) if r['kind'] in ('snapshot', 'filmstrip')]
 
     def image_size(self, evidence, url) -> dict:
         if not evidence or not url:
@@ -735,7 +793,7 @@ class House:
                 self.store._event(None, 'house_account_ready', f"House sign-in saved for {resident['name']}.", {'resident_id': resident['id']})
         return {'login': slug}
 
-    def media_file(self, evidence_id: str, exp: int, sig: str):
+    def media_file(self, evidence_id: str, exp: int, sig: str, *, thumbnail: bool = False):
         now = utcnow()
         expected = hmac.new(self.media_key, f'{evidence_id}:{exp}'.encode(), hashlib.sha256).hexdigest()
         if exp <= int(now.timestamp()) or exp > int(now.timestamp()) + 1800 or not hmac.compare_digest(expected, sig):
@@ -785,6 +843,14 @@ class House:
         path = self.media.safe_path(evidence['filename'])
         if not path.is_file():
             raise HTTPException(404, 'This photo is no longer kept.')
+        if thumbnail and evidence['kind'] == 'snapshot':
+            # Full-resolution arrival panels remain readable; only later-photo
+            # previews shrink. Tapping the preview still opens the original.
+            try:
+                return Response(self.thumbnails.image(path), media_type='image/jpeg',
+                                headers={'Cache-Control': 'private, no-store'})
+            except (OSError, ValueError):
+                pass  # A disposable preview failure must not hide retained evidence.
         return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'private, no-store'})
 
 
@@ -792,7 +858,7 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     house = House(app.state.store, app.state.media, config)
     app.state.house = house
     app.add_middleware(HouseBoundary, site_origin=house.config.site_origin, tunnel_port=app.state.house_tunnel_port)
-    router = APIRouter(prefix='/house')
+    router = APIRouter(prefix='/house', route_class=HouseRoute)
 
     @router.get('/api/me')
     def me(resident=Depends(house.resident)):
@@ -801,7 +867,9 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     @router.get('/api/week')
     def week(start: str | None = None, resident=Depends(house.resident)):
         with house.week_budget.admit(f"user:{resident['id']}"):
-            return house.week(start, resident)
+            # The house projection already contains JSON primitives. Avoid
+            # walking/copying this entire nested graph in jsonable_encoder too.
+            return JSONResponse(house.week(start, resident))
 
     @router.post('/api/dishes/{oid}/name')
     def name(oid: int, body: Name, resident=Depends(house.resident)):
@@ -839,9 +907,10 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
         return house.join(body)
 
     @router.get('/media/{evidence_id}')
-    def media(evidence_id: str, exp: int, sig: str, request: Request):
+    def media(evidence_id: str, exp: int, sig: str, request: Request,
+              w: int | None = Query(default=None, ge=640, le=640)):
         with house.media_budget.admit('ip:' + client_identity(request)):
-            return house.media_file(evidence_id, exp, sig)
+            return house.media_file(evidence_id, exp, sig, thumbnail=w is not None)
 
     from .house_footage import install as install_footage
     install_footage(router, house)

@@ -6,7 +6,7 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from .remembered import EMBEDDING_SIZE, SIMILARITY_THRESHOLD, similarity, unit_embedding
+from .remembered import EMBEDDING_SIZE, SIMILARITY_THRESHOLD, saved_embedding, similarity
 
 
 def rate(capture: dict, *, has_filmstrip: bool, has_photo: bool, dish_confident: bool,
@@ -62,7 +62,7 @@ def kitchen_probe(root: Path) -> dict | None:
 def signals(embedding: str | None, probe: dict | None, memories: list[dict], area: dict | None) -> dict:
     """Pure scoring of saved features with the existing probe and recurrence cutoff."""
     try:
-        vector = unit_embedding(json.loads(embedding)) if embedding else None
+        vector = saved_embedding(embedding) if embedding else None
     except (ValueError, TypeError):
         vector = None
     if vector is None:

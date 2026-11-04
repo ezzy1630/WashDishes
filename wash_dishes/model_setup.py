@@ -156,7 +156,8 @@ def _prepare_world(root: Path, world: Path, name: str) -> Path:
         temporary.unlink(missing_ok=True)
 
 
-def train_detector(root: Path, data_yaml: Path, *, epochs: int = 80, imgsz: int = 1280, batch: int = 4, device: str | None = None) -> dict:
+def train_detector(root: Path, data_yaml: Path, *, epochs: int = 80, imgsz: int = 1280, batch: int = 4,
+                   device: str | None = None, workers: int = 2) -> dict:
     """Fine-tune COCO-pretrained YOLO26s on this kitchen's labeled frames, then compare on held-out frames.
 
     The result is saved beside the current detector; switch to it in Setup only if it scores better.
@@ -171,7 +172,7 @@ def train_detector(root: Path, data_yaml: Path, *, epochs: int = 80, imgsz: int 
     # rate, and still in the third with the bias rate alone; without both it trained cleanly (2026-10-13). CUDA keeps the defaults.
     apple = {"amp": False, "warmup_bias_lr": 0.0} if device == "mps" else {}
     model.train(data=str(data_yaml), epochs=epochs, imgsz=imgsz, batch=batch, device=device, project=str((Path(root) / "training").resolve()),
-                name="kitchen", exist_ok=True, patience=20, close_mosaic=10, plots=False, verbose=False, workers=2, **apple)
+                name="kitchen", exist_ok=True, patience=20, close_mosaic=10, plots=False, verbose=False, workers=workers, **apple)
     best = Path(model.trainer.best)
     tuned = YOLO(str(best), task="detect")
     names = tuned.names.values() if isinstance(tuned.names, dict) else tuned.names
@@ -180,7 +181,8 @@ def train_detector(root: Path, data_yaml: Path, *, epochs: int = 80, imgsz: int 
     scores = {}
     for label, path in (("tuned", best), ("current", models / DETECTOR_NAME)):
         if path.is_file():
-            metrics = YOLO(str(path), task="detect").val(data=str(data_yaml), imgsz=imgsz, batch=batch, device=device, split="val", plots=False, verbose=False)
+            metrics = YOLO(str(path), task="detect").val(data=str(data_yaml), imgsz=imgsz, batch=batch, device=device,
+                                                       split="val", plots=False, verbose=False, workers=workers)
             scores[label] = {"map50": round(float(metrics.box.map50), 4), "map50_95": round(float(metrics.box.map), 4)}
     target = models / TUNED_NAME
     os.replace(best, target)

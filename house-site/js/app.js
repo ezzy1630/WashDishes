@@ -291,13 +291,12 @@ async function refresh(initial = false) {
   const requestEpoch = epoch,
     selected = state.selected;
   try {
-    if (!state.me || initial) {
-      const identity = await getMe();
-      if (requestEpoch !== epoch) return;
-      state.me = identity;
-    }
-    const data = await getWeek(selected);
+    const [identity, data] = await Promise.all([
+      !state.me || initial ? getMe() : Promise.resolve(state.me),
+      getWeek(selected),
+    ]);
     if (requestEpoch !== epoch || selected !== state.selected) return;
+    state.me = identity;
     state.data = data;
     state.offline = false;
     state.lastLoaded = Date.now();

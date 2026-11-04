@@ -1086,3 +1086,108 @@ def test_household_object_answer_teaches_review_and_undo_restores_it(house_clien
     assert tier() == expected
     store.undo_dish_correction(original['id'], 'operator')
     assert tier() == 'fair'
+
+
+def test_snapshot_thumbnail_preserves_original_and_rechecks_visibility(house_client):
+    from io import BytesIO
+
+    from PIL import Image
+
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    output = BytesIO()
+    Image.new('RGB', (2304, 1296), '#448866').save(output, 'JPEG')
+    original = output.getvalue()
+    eid = client.app.state.media.save_snapshot(item['id'], original, 'Dish left unattended')
+    url = client.get('/house/api/week').json()['dishes'][0]['photo_url']
+    path = urlsplit(url).path + '?' + urlsplit(url).query
+    client.headers.pop('Authorization')
+    small = client.get(path + '&w=640')
+    assert small.status_code == 200
+    assert small.headers['cache-control'] == 'private, no-store'
+    assert Image.open(BytesIO(small.content)).size == (640, 360)
+    assert len(small.content) < len(original)
+    assert client.get(path).content == original
+    assert client.get(path + '&w=640').content == small.content
+    assert not (store.root / 'house-thumbnails').exists()
+    assert client.get(path + '&w=10000').status_code == 400
+    assert client.get(path.replace('sig=', 'sig=invalid') + '&w=640').status_code == 403
+    # A warm derived file must not outlive the source's authorization or expiry.
+    with store.lock, store.conn:
+        store.conn.execute('UPDATE evidence SET expired=1 WHERE id=?', (eid,))
+    assert client.get(path + '&w=640').status_code == 404
+
+
+def test_thumbnail_cache_tracks_replaced_sources_and_is_bounded(tmp_path, monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from wash_dishes import house_images
+
+    monkeypatch.setattr(house_images, 'MAX_FILES', 2)
+    cache = house_images.Thumbnails()
+    source = tmp_path / 'source.jpg'
+    outputs = []
+    for size in [(1280, 720), (1600, 1200), (1920, 960)]:
+        Image.new('RGB', size, '#884466').save(source, 'JPEG')
+        outputs.append(cache.image(source))
+    assert [Image.open(BytesIO(data)).size for data in outputs] == [(640, 360), (640, 480), (640, 320)]
+    assert len(cache.cache) == 2
+    assert sum(map(len, cache.cache.values())) <= house_images.MAX_BYTES
+    assert Image.open(source).size == (1920, 960)
+
+
+def test_house_admission_bounds_auth_work_before_it_enters_sync_workers(house_client, monkeypatch):
+    client, house = house_client, house_client.app.state.house
+    entered, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    running = 0
+    peak = 0
+    original = house.verifier.subject
+
+    def blocked(token):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+            if running == 2:
+                entered.set()
+        try:
+            assert release.wait(5)
+            return original(token)
+        finally:
+            with lock:
+                running -= 1
+
+    monkeypatch.setattr(house.verifier, 'subject', blocked)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        requests = [pool.submit(client.get, '/house/api/me') for _ in range(10)]
+        try:
+            assert entered.wait(3)
+            time.sleep(.1)
+            with lock:
+                assert peak == 2
+        finally:
+            release.set()
+        assert [r.result().status_code for r in requests] == [200] * 10
+    assert peak == 2
+
+
+def test_week_gzip_negotiation_preserves_json_and_private_policy(house_client):
+    import gzip
+
+    client = house_client
+    for _ in range(5):
+        late(client)
+    plain = client.get('/house/api/week', headers={'Accept-Encoding': 'identity'})
+    with client.stream('GET', '/house/api/week', headers={'Accept-Encoding': 'gzip'}) as zipped:
+        compressed = b''.join(zipped.iter_raw())
+    assert plain.status_code == zipped.status_code == 200
+    assert 'content-encoding' not in plain.headers
+    assert zipped.headers['content-encoding'] == 'gzip'
+    assert zipped.headers['cache-control'] == 'private, no-store'
+    assert 'accept-encoding' in zipped.headers['vary'].lower()
+    # No photos in this fixture, so signatures cannot tick between the reads.
+    assert plain.json() == json.loads(gzip.decompress(compressed))
+    assert len(compressed) < len(plain.content)

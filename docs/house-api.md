@@ -287,6 +287,22 @@ HMAC-SHA256 over `id:exp` with root `house-media.key` (0600), at most 30 minutes
 and no later than evidence expiry. ID/expiry tampering fails. A visible live or
 frozen week's still image, or a shared filmstrip with a visible member, is required.
 Expired/deleted media never resurrect. `Cache-Control: private, no-store`.
+
+An optional `w=640` requests a snapshot preview with the same signed authority.
+No other width is accepted. It preserves aspect ratio, never enlarges a small
+source, and leaves filmstrips and the original URL unchanged. Previews cache only
+in RAM (128 entries, at most 8 MiB); every request still checks signature, current
+visibility and retention before reading that cache. No derivative files extend
+photo retention. Clients reserve the original aspect ratio and zoom the original.
+
+House requests admit at most two handlers and twenty asynchronous waiters, with
+a two-second admission timeout, before authentication can occupy sync workers or
+wait on the camera lock. A response releases its slot before streaming to a slow
+phone. House sync handlers run at nice 10 on Linux; camera threads retain their
+own priorities. Existing per-account read/media budgets also apply. Week and
+teaching-feed GETs negotiate gzip at level 1. Small account reads and JPEG
+responses bypass compression. No household JSON or signed-media response is
+publicly cacheable.
 Errors: `{"detail":"plain sentence"}`; 400 invalid input, 401 sign-in, 403 forbidden,
 404 absent/ineligible, 409 closed/conflicting, 429 rate limit, 503 auth unavailable.
 

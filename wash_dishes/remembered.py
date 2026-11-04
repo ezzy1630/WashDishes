@@ -1,8 +1,10 @@
 """Near-exact recurrence matching on the verifier's existing contextual CLIP features."""
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Sequence
+from functools import lru_cache
 
 # Measured on Lane D's labelled photos and Lane G's replay crops. Midpoint between
 # the largest incompatible/dirty match (.940419) and next same-object match (.941272).
@@ -19,6 +21,16 @@ def unit_embedding(values: Sequence[float]) -> list[float]:
     if length == 0:
         raise ValueError('Expected nonzero CLIP features.')
     return [v / length for v in values]
+
+
+@lru_cache(maxsize=256)
+def saved_embedding(value: str) -> tuple[float, ...]:
+    """Validate/normalize retained features once per exact value, in bounded RAM.
+
+    House review reads the same features for multiple hints and housemates.
+    Content keys also invalidate same-sized in-place corrections immediately.
+    """
+    return tuple(unit_embedding(json.loads(value)))
 
 
 def similarity(left: Sequence[float], right: Sequence[float]) -> float:

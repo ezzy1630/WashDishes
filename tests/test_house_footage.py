@@ -1,4 +1,6 @@
+import asyncio
 import os
+import asyncio
 import subprocess
 import threading
 import time
@@ -150,3 +152,30 @@ def test_aborted_transfer_releases_shared_file_pin(tmp_path):
 
     anyio.run(transfer)
     assert released == [True]
+
+
+def test_full_api_gate_never_refuses_footage():
+    """Ten viewers preparing clips must not be turned away by the page-read gate."""
+    from wash_dishes.house import HouseBoundary
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async def status(boundary, path):
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {'type': 'http', 'method': 'GET', 'path': path, 'headers': [], 'server': ('127.0.0.1', 8788)}
+        await boundary(scope, None, send)
+        return sent[0]['status']
+
+    async def run():
+        boundary = HouseBoundary(app, 'https://site.example', 8788)
+        boundary.workers = asyncio.Semaphore(0)
+        return [await status(boundary, path) for path in
+                ('/house/footage/abc.mp4', '/house/api/footage', '/house/api/footage/chunk', '/house/api/week')]
+
+    assert asyncio.run(run()) == [200, 200, 200, 429]
