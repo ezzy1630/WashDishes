@@ -662,7 +662,7 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
         notes.append('Arrival timing is uncertain; check these views before naming.')
     if use:
         notes.append('Yellow: dish spot. Blue: people nearby, not confirmed users.')
-    notes.append('Only name someone if you know they used these dishes' if use or already_at is not None else 'Only name someone if you know they left these dishes')
+    notes.append('Only name someone if you know they used these dishes' if use or already_at is not None or not any(f['person_boxes'] for f in arrival_frames) else 'Only name someone if you know they left these dishes')
     subtitle = f"{day:%b %-d} · {collage.place(item['location'])}"
     if use:
         subtitle += ' · Arrival not recorded.' if already_at is not None else ' · Nearby visits; use unconfirmed.'
