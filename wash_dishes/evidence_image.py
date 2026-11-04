@@ -204,7 +204,7 @@ def person_changed(picture: bytes, reference: bytes, box: list) -> bool:
     """
     x, y, w, h = box
     head = crop(picture, (x, y, min(1, x+w), min(1, y+min(h,w*.8)))).convert('L').resize((24, 24))
-    if sum(v > 230 for v in head.tobytes()) > .35 * 24 * 24:
+    if sum(v > 230 for v in head.tobytes()) > .25 * 24 * 24:
         return False
     bounds = (x, y, min(1, x+w), min(1, y+min(h,w*2)))
     before = crop(picture, bounds).convert('L').resize((32, 48))

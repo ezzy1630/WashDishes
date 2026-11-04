@@ -189,6 +189,9 @@ def test_exposure_change_and_glare_cannot_supply_a_person():
     assert not person_changed(brighter, reference, [0, 0, 1, 1])
     glare = Image.new('RGB', (160, 240), (255, 255, 255))
     assert not person_changed(encoded(glare), reference, [0, 0, 1, 1])
+    partial_glare = image.copy()
+    ImageDraw.Draw(partial_glare).rectangle((0, 0, 159, 64), fill='white')
+    assert not person_changed(encoded(partial_glare), reference, [0, 0, 1, 1])
 
 
 def test_supported_arrival_stays_unchanged_but_fleeting_box_gets_context(tmp_path):
