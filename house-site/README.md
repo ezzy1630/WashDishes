@@ -8,6 +8,12 @@ Fill the three marked public values in `config.js`. Use a **Supabase publishable
 
 When the lead is authorized to deploy, the Vercel project root is `house-site`, with no build command. `vercel.json` rewrites `/join`, `/name`, `/mine`, and `/past` to the SPA and applies restrictive CSP, no-referrer, frame denial, MIME protection, and disabled camera/microphone/location/payment access. The versioned Supabase bundle can be cached immutably; the public config and app documents are not stored. `dev/` is excluded by `.vercelignore`. No infrastructure has been created or deployed by this lane.
 
+Fonts cache for one day. Unversioned JS, CSS and the mark revalidate before reuse;
+HTML and public config remain `no-store`. Initial account and week reads run in
+parallel. Snapshot previews request `w=640`; the Jetson keeps a bounded RAM cache,
+and photo zoom uses the original signed URL. Filmstrips keep their full resolution.
+Private API data and signed photos remain `private, no-store`.
+
 The API must allow the website's exact origin through CORS, including `Authorization` and `Content-Type` headers and OPTIONS preflights. Images must be signed absolute HTTPS URLs on `HOUSE_API_ORIGIN` or `SUPABASE_URL`, matching the two CSP image origins. Photos load without a bearer header; API requests carry the fresh Supabase access token. Sign-in accepts a typed name (case-insensitive ASCII slugging matching the server) and remembers the last successful name on this device. Auth maps the slug to `<slug>@highest-house.ezzyrappeport.com`; the UI never displays an email address. Join and reset both use `/join#<token>` and `POST /house/api/join`, followed by password sign-in. The fragment is cleared after successful redemption. Sign-out clears this browser's session.
 
 ## Visit contract
