@@ -1128,3 +1128,17 @@ def test_backfilled_story_can_display_on_closed_week_without_rewriting_frozen_sc
     assert '/house/media/backfilled-story?' in after['visits'][0]['filmstrip_url']
     assert after['standings']==before['standings'] and not after['visits'][0]['can_name']
     assert store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',(start,)).fetchone()[0]==frozen
+
+
+def test_story_does_not_reuse_identity_guess_from_different_arrival_photos(house_client,monkeypatch):
+    from wash_dishes import house_visits
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    stored_visit(client,[item],visit_id='old-arrival-identity')
+    monkeypatch.setattr(store,'identity_display_gate',lambda:{'active':True,'threshold':.5})
+    monkeypatch.setattr(house_visits,'identity_capture',lambda *a:{
+        'identity':{'cues':{}},'created_at':stamp(),'obligation_id':item['id']})
+    monkeypatch.setattr(store,'suggest_identity',lambda *a,**kw:(client.people[1]['id'],.99,[],{'basis':'Appearance'}))
+    assert client.get('/house/api/week').json()['visits'][0]['guess']['resident_id']==client.people[1]['id']
+    store.add_evidence(item['id'],'different-story','different-story.jpg','filmstrip','dish story')
+    assert client.get('/house/api/week').json()['visits'][0]['guess'] is None

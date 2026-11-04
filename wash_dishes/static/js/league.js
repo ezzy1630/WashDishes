@@ -104,7 +104,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
         ? 'Name who used or left these dishes. Being nearby isn’t enough.' : 'Arrival not recorded. Only name someone if you know.'));
       if (visit.can_settle) {
         controls.append(h('p', {}, `${visit.dispute?.by?.name || visit.resident?.name || 'The named person'} disputes this name. Points are paused.`),
-          visit.dispute?.note ? h('p', { class: 'tx2' }, visit.dispute.note) : null,
+          visit.dispute?.note ? h('p', { class: 'tx2' }, visit.dispute.note) : '',
           h('div', { class: 'row-actions' }, ...[['them', 'It was them'], ['not_them', 'Not them']].map(([decision, text]) =>
             h('button', { type: 'button', class: 'btn', onclick: () => answer(visit, 'settle', { decision }, text) }, text))));
       } else if (visit.can_name) {
@@ -112,7 +112,7 @@ export function leaguePanel({ onChanged = () => {} } = {}) {
           h('div', { class: 'name-chips', role: 'group', 'aria-label': 'Name the person responsible' },
             nameChips(data.standings.map(p => ({ id: p.resident_id, name: p.name })), { selected: visit.resident?.id, guess: visit.guess?.resident_id,
               choose: person => answer(visit, 'name', { resident_id: person.id }, `Named as ${person.name}`) })),
-          visit.guess && !visit.resident ? h('p', { class: 'send-guess' }, guessSentence(visit.guess.name, visit.guess.basis)) : null);
+          visit.guess && !visit.resident ? h('p', { class: 'send-guess' }, guessSentence(visit.guess.name, visit.guess.basis)) : '');
       }
       const others = data.visits.filter(v => v.id !== visit.id && !pending.has(v.id));
       const picker = h('div', { class: 'league-duplicate', hidden: true });

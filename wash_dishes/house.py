@@ -449,6 +449,9 @@ class House:
             member_signals = [(signals or {}).get(oid, {}) for oid in group['dish_ids']]
             rating_capture = group.get('capture', {})
             if filmstrip and filmstrip['label'] == 'dish story':
+                # An identity guess belongs to its original arrival anchor, not
+                # different visitors selected by the independent spot story.
+                guess = None
                 capture = filmstrip['capture']
                 capture = json.loads(capture) if isinstance(capture,str) else capture
                 # Rate the people actually shown, without rewriting arrival or
