@@ -6,7 +6,7 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from .remembered import EMBEDDING_SIZE, similarity, unit_embedding
+from .remembered import EMBEDDING_SIZE, saved_embedding, similarity
 
 
 @lru_cache(maxsize=4)
@@ -45,7 +45,7 @@ def signals(embedding: str | None, model: dict | None) -> dict:
     if not model or not embedding:
         return result
     try:
-        vector = unit_embedding(json.loads(embedding))
+        vector = saved_embedding(embedding)
     except (ValueError, TypeError):
         return result
     logit = similarity(vector, model['weights']) + model['bias']
