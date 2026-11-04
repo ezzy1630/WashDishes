@@ -14,7 +14,7 @@ export class HouseError extends Error {
     this.status = status;
   }
 }
-/** @param {string} path @param {{public?:boolean, body?:unknown}} [options] @returns {Promise<unknown>} */
+/** @param {string} path @param {{public?:boolean, body?:unknown, signal?:AbortSignal}} [options] @returns {Promise<unknown>} */
 async function request(path, options = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (!options.public) {
@@ -24,7 +24,12 @@ async function request(path, options = {}) {
   }
   if (options.body !== undefined)
     headers.set("Content-Type", "application/json");
-  let response;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timeout = setTimeout(abort, 15000);
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
+  let response, data;
   try {
     response = await fetch(`${origin}/house/api${path}`, {
       method: options.body === undefined ? "GET" : "POST",
@@ -35,12 +40,15 @@ async function request(path, options = {}) {
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",
-      signal: AbortSignal.timeout(15000),
+      signal: controller.signal,
     });
+    data = await response.json().catch(() => null);
   } catch {
     throw new HouseError("Dish Watch is offline right now", 0);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
   }
-  const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail =
       data &&
@@ -66,6 +74,10 @@ async function parsed(response, parser) {
   }
 }
 export const getMe = () => parsed(request("/me"), parse.me);
+export const getFootage = () => parsed(request("/footage"), parse.footage);
+/** @param {number} at @param {AbortSignal} [signal] */
+export const getFootageChunk = (at, signal) =>
+  parsed(request(`/footage/chunk?at=${encodeURIComponent(at)}`, { signal }), parse.footageChunk);
 /** @param {string} [start] */
 export const getWeek = (start = "") =>
   parsed(

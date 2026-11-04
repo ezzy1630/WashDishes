@@ -1,4 +1,5 @@
 import { button, date, field, h, photo, tag, mediaSize } from "../ui.js";
+import { watchFootage } from "./footage.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
 /** @param {{verdict: Visit["verdict"]}} visit */
@@ -154,6 +155,7 @@ export function record(dish, settle, context) {
       false,
       mediaSize(dish, Boolean(dish.filmstrip_url)),
     ),
+    watchFootage(dish, context),
     dish.filmstrip_url && dish.photo_url
       ? h(
           "details",

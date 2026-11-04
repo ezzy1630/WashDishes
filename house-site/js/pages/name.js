@@ -13,8 +13,9 @@ import {
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
 import { verdictText } from "./visit.js";
-/** @param {Week} data */
-function reviewedVisits(data) {
+import { watchFootage } from "./footage.js";
+/** @param {Week} data @param {import('../types.js').ScreenContext} context */
+function reviewedVisits(data, context) {
   const reviewed = data.visits.filter((v) => v.resident || v.verdict);
   const history = data.verdicts;
   return reviewed.length + history.length
@@ -58,6 +59,7 @@ function reviewedVisits(data) {
                   true,
                   mediaSize(visit, Boolean(visit.filmstrip_url)),
                 ),
+                watchFootage(visit, context),
               ),
             ),
           ),
@@ -237,7 +239,7 @@ export function namePage(context) {
             : `+${data.weak_count} with weak evidence`,
         )
       : null;
-  const reviewed = reviewedVisits(data);
+  const reviewed = reviewedVisits(data, context);
   if (!visit)
     return h(
       "div",
@@ -320,6 +322,7 @@ export function namePage(context) {
           false,
           mediaSize(visit),
         ),
+        watchFootage(visit, context),
         h(
           "div",
           { class: "later-photo" },
