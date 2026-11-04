@@ -5,8 +5,6 @@ import re
 import subprocess
 import time
 
-from . import putdown
-
 
 def motion_samples(segments, start, end, box, *, deadline):
     """Decode tiny grey crops at 2 fps; encode full photos only for proposals.
@@ -16,11 +14,14 @@ def motion_samples(segments, start, end, box, *, deadline):
     """
     import numpy as np
     x,y,w,h = box
-    previous = None
     samples = []
-    for a,b,path in segments:
-        if b < start or a > end:
-            continue
+    # A budget-limited scan must not only see the beginning of a long visit.
+    # Visit both ends, then recursively fill the largest temporal gaps.
+    candidates = [(a,b,path) for a,b,path in segments if b >= start and a <= end]
+    order = scan_order(len(candidates))
+    for index in order:
+        a,b,path = candidates[index]
+        previous = None
         if time.monotonic()>=deadline:
             break
         lo,hi = max(0,start-a),min(b,end)-a
@@ -44,7 +45,22 @@ def motion_samples(segments, start, end, box, *, deadline):
                 score = float(delta.mean())*min(1,(1-fraction)/.5)
                 samples.append({'at':min(b,a+pts),'motion':score,'changed_fraction':fraction})
             previous = patch
-    return samples
+    return sorted(samples,key=lambda s:s['at'])
+
+
+def scan_order(count):
+    """Deterministic coarse-to-fine temporal coverage for an interruptible scan."""
+    if not count:
+        return []
+    order = [0] if count == 1 else [0,count-1]
+    gaps = [(0,count-1)]
+    while gaps:
+        left,right = gaps.pop(0)
+        middle = (left+right)//2
+        if left < middle < right:
+            order.append(middle)
+            gaps.extend([(left,middle),(middle,right)])
+    return order
 
 
 def proposal_times(samples, start, end, *, count=12):

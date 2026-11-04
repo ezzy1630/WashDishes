@@ -101,6 +101,20 @@ def partly_visible(before, reference):
     import cv2
     import numpy as np
     a,b = [cv2.cvtColor(p,cv2.COLOR_BGR2GRAY).astype(np.float32) for p in (before,reference)]
+    # Solid-colour objects have too little texture for NCC tiles. A substantial
+    # part of the same saturated colour already in the box vetoes an empty
+    # BEFORE, even when a cup shifted slightly or is partly hidden.
+    hsv_before,hsv_reference = [cv2.cvtColor(p,cv2.COLOR_BGR2HSV) for p in (before,reference)]
+    lab_before,lab_reference = [cv2.cvtColor(p.astype(np.float32)/255,cv2.COLOR_BGR2LAB) for p in (before,reference)]
+    for hue in range(0,180,15):
+        def colour_fraction(hsv,lab):
+            distance = np.minimum(np.abs(hsv[...,0].astype(float)-hue),180-np.abs(hsv[...,0].astype(float)-hue))
+            # Exclude the warm wood/granite background; it cannot be a
+            # foreground-presence cue for a grey knife or white plate.
+            distinctive = (np.abs(lab[...,1])>25)|(lab[...,2]<-20)
+            return float(((distance<=10)&(hsv[...,1]>=100)&(hsv[...,2]>=40)&distinctive).mean())
+        if colour_fraction(hsv_reference,lab_reference)>=.2 and colour_fraction(hsv_before,lab_before)>=.08:
+            return True
     matches = 0
     for y in (4,24,44):
         for x in (4,24,44):
@@ -245,12 +259,14 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
         # never supplies cross-spot identity or a positive arrival claim.
         if filmstrip._already_visible(before['jpeg'],reference['jpeg'],box):
             continue
-        # Decode short 2-fps bursts across the visit, not just journal instants.
-        # Four bursts bound work even during a long cooking visit.
+        # Scan tiny 2-fps crops across the visit, then decode bounded proposals.
         pool = during_candidates(segments, visit, journal, box, deadline=deadline) if decode is None else visit
         decoded = [p for f in pool if (p := photo(f)) and p['person_boxes']]
         for p in decoded:
-            p['dish_visible'] = not p['covered'] and comparison(reference['patch'], p['patch'])['same']
+            # A person's rectangular box includes the space around an arm.
+            # In DURING only, an unchanged target crop can remain visible inside
+            # that rectangle. BEFORE/AFTER still require clear body-free views.
+            p['dish_visible'] = comparison(reference['patch'], p['patch'])['same']
         # Wrists and local changes rank views; neither is an assertion of use.
         for a,b in zip(decoded,decoded[1:]):
             b['spot_motion'] = comparison(a['patch'],b['patch'])['difference']
@@ -258,10 +274,16 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
         if len(decoded) < 2:
             continue
         first = decoded[0]
-        second = next((p for p in decoded[1:] if abs(p['at']-first['at']) >= 4), None)
+        alternatives = [p for p in decoded[1:] if abs(p['at']-first['at']) >= 4]
+        second = max(alternatives,key=story_use.rank,default=None)
         if not second:
             continue
         during = sorted([first, second], key=lambda p: p['at'])
+        if not any(p['dish_visible'] for p in decoded):
+            # No candidate in this visit verifies the target. Keep the nearby-
+            # person fallback. Handling itself may change the selected crop,
+            # so do not replace a contact nominee with a quiet walking frame.
+            continue
         return {'version': VERSION, 'box': box, 'obligation_id': item['id'],
                 'reference_at': reference['at'], 'visit': {'start': start, 'end': finish},
                 'before_comparison': change, 'after_comparison': after['comparison'],
@@ -274,7 +296,7 @@ def during_candidates(segments, visit, journal, box, *, deadline):
     """Cheap dense crop scan, then at most twelve full photos for exact checks."""
     start, end = visit[0]['at'], visit[-1]['at']
     # Reserve most of the remaining worker budget for full photos and pose.
-    # If scanning is incomplete, the proposals still cover the decoded interval.
+    # An incomplete scan samples across the visit rather than only its start.
     scan_deadline = min(deadline-15,time.monotonic()+8)
     samples = []
     if scan_deadline > time.monotonic():

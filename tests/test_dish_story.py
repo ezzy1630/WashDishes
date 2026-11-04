@@ -255,3 +255,45 @@ def test_motion_proposals_keep_temporal_coverage_and_are_bounded():
     assert all(any(lo<=at<lo+25 for at in proposed) for lo in (0,25,50,75))
     assert rank({'pose':{'wrists':[[.4,.5,.9]]}}) > rank({'pose':{'wrists':[[.4,.5,.4]]},'spot_motion':100})
     assert rank({'pose':{'wrists':[[.4,.5,.4]]}}) > rank({'dish_visible':True,'spot_motion':100})
+
+
+def test_solid_colour_partial_cup_cannot_be_an_empty_before():
+    import numpy as np
+    before = np.full((64,64,3),80,dtype=np.uint8)
+    reference = before.copy()
+    reference[8:58,10:54] = [20,20,180]
+    before[10:58,:10] = [20,20,180]
+    assert dish_story.partly_visible(before,reference)
+
+
+def test_warm_work_surface_is_not_a_coloured_foreground_object():
+    import numpy as np
+    before = np.full((64,64,3),[40,100,160],dtype=np.uint8)
+    reference = before.copy()
+    reference[25:40,10:55] = [180,180,180]
+    assert not dish_story.partly_visible(before,reference)
+
+
+def test_during_crop_can_be_visible_inside_person_rectangle():
+    story = select(History(covered=True))
+    assert isinstance(story,dict)
+    assert any(f['dish_visible'] for f in story['frames'][1:3])
+
+
+def test_two_hidden_during_panels_do_not_get_promoted_to_story():
+    history = History(covered=True)
+    def decode(at):
+        # A dish arrives while someone covers the target, but no during view
+        # ever shows it. Clear before/reference/after alone are insufficient.
+        return at, image(at>=65)
+    result = dish_story.select(history,None,item(),now=239,decode=decode)
+    assert isinstance(result,str) and 'Arrival unknown' in result
+
+
+def test_interrupted_motion_scan_covers_visit_ends_before_filling_gaps():
+    from wash_dishes.story_use import scan_order
+    order = scan_order(50)
+    assert order[:3] == [0,49,24]
+    assert sorted(order) == list(range(50))
+    assert scan_order(0) == []
+    assert scan_order(1) == [0]
