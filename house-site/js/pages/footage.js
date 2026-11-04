@@ -16,7 +16,7 @@ export function watchFootage(visit, context) {
 /** One shared recorded player, entered from navigation or any dish picture. */
 export function footagePage() {
   stopFootage();
-  let alive = true, timezone = "UTC";
+  let alive = true, timezone = "UTC", dragging = false;
   /** @type {Index|null} */ let index = null;
   const clock = h("p", { class: "footage-clock" }, "Choose a recording"),
     status = h("p", { class: "help footage-status", role: "status" }, "Loading recordings…"),
@@ -34,7 +34,7 @@ export function footagePage() {
     status: (text) => { status.textContent = text; },
     clock: (at) => { clock.textContent = timeLabel(at); },
     changed: (chunk, at) => {
-      slider.value = String(at); chosen.textContent = timeLabel(at);
+      if (!dragging) { slider.value = String(at); chosen.textContent = timeLabel(at); }
       previous.disabled = chunk.previous === null; next.disabled = chunk.next === null;
       showMoments(at);
     },
@@ -59,8 +59,15 @@ export function footagePage() {
       h("p", { class: "help" }, "Presence is sampled from detections, so some visits will be missing. It does not identify whose dishes these are."),
       ...nearest.map((m) => button(`${m.label} · ${timeLabel(m.at)}`, () => void load(m.at), "quiet")));
   }
-  slider.addEventListener("input", () => { chosen.textContent = timeLabel(Number(slider.value)); });
-  slider.addEventListener("change", () => void load(Number(slider.value)));
+  slider.addEventListener("input", () => {
+    dragging = true;
+    chosen.textContent = `Jump to ${timeLabel(Number(slider.value))}`;
+  });
+  slider.addEventListener("change", () => {
+    dragging = false;
+    void load(Number(slider.value), player.playing);
+  });
+  slider.addEventListener("blur", () => { dragging = false; });
   const form = h("form", { class: "footage-jump", onsubmit: (/** @type {SubmitEvent} */ e) => {
     e.preventDefault();
     const at = new Date(jump.value).getTime() / 1000;

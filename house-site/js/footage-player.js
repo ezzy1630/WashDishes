@@ -240,5 +240,8 @@ export function recordedPlayer(callbacks) {
     for (const slot of slots) slot.release();
     slots.clear();
   }
-  return { element, load, stop, get current() { return active?.chunk || null; } };
+  return { element, load, stop,
+    get current() { return active?.chunk || null; },
+    get playing() { return Boolean(active && !active.video.paused); },
+  };
 }
