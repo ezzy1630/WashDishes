@@ -222,3 +222,36 @@ def test_decoded_after_must_itself_be_past_deadline():
     result = dish_story.select(history,None,item(),now=180,
                               decode=lambda t:(t-.5,image(t>=45)))
     assert 'post-deadline' in result
+
+
+def test_colour_cast_can_match_only_with_strong_spatial_agreement():
+    import cv2
+    import numpy as np
+    original = dish_story.patch(image(True), BOX)
+    lab = cv2.cvtColor(original.astype(np.float32)/255, cv2.COLOR_BGR2LAB)
+    lab += np.array([0, 7, 7], dtype=np.float32)
+    shifted = np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)*255, 0, 255).astype(np.uint8)
+    match = dish_story.comparison(original, shifted)
+    assert match['difference'] > .16
+    assert match['correlation'] >= .9 and match['same']
+    assert not match['different']
+    assert not dish_story.comparison(original, dish_story.patch(image(False), BOX))['same']
+
+
+def test_later_return_cannot_rescue_dish_gone_at_deadline():
+    history = History()
+    history.observations += [{'at': float(t), 'detections': []} for t in range(240, 4001)]
+    def decode(at):
+        return at, image(45 <= at < 180 or at >= 3000)
+    result = dish_story.select(history, None, item(), now=4000, decode=decode)
+    assert isinstance(result, str) and 'post-deadline' in result
+
+
+def test_motion_proposals_keep_temporal_coverage_and_are_bounded():
+    from wash_dishes.story_use import proposal_times, rank
+    samples = [{'at':float(t),'motion':100 if t<15 else 1} for t in range(100)]
+    proposed = proposal_times(samples,0,99)
+    assert len(proposed)<=12
+    assert all(any(lo<=at<lo+25 for at in proposed) for lo in (0,25,50,75))
+    assert rank({'pose':{'wrists':[[.4,.5,.9]]}}) > rank({'pose':{'wrists':[[.4,.5,.4]]},'spot_motion':100})
+    assert rank({'pose':{'wrists':[[.4,.5,.4]]}}) > rank({'dish_visible':True,'spot_motion':100})

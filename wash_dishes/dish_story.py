@@ -9,10 +9,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import collage, evidence_image, filmstrip, putdown
+from . import collage, evidence_image, filmstrip, putdown, story_use
 from .store import parse_stamp
 
-VERSION = 1
+VERSION = 2
 BUDGET = 45
 LOOKBACK = 6 * 3600
 TIMEOUT = 'Story search reached its bounded time budget; retry pending.'
@@ -34,12 +34,12 @@ def visits(frames, box):
     found, current = [], []
     previous = None
     for frame in frames:
-        if previous is not None and frame['at']-previous > 30:
+        if previous is not None and frame['at']-previous > 90:
             if current:
                 found.append(current)
             current = []
         if people(frame, box):
-            if current and frame['at']-current[-1]['at'] > 15:
+            if current and frame['at']-current[-1]['at'] > 90:
                 found.append(current)
                 current = []
             current.append(frame)
@@ -79,8 +79,16 @@ def comparison(a, b):
     corr = float(cv2.matchTemplate(ga, gb[2:-2, 2:-2], cv2.TM_CCOEFF_NORMED).max())
     # Flat crops cannot establish a dish shape, even if both are equally dark.
     texture = min(float(ga.std()), float(gb.std()))
+    # White balance changes shift a/b as well as brightness. Keep the original
+    # appearance gate, plus a stricter shape gate for an affine light change.
+    # A changed mean colour alone must never establish a new arrival.
+    ca, cb = [v-v.mean(axis=(0,1)) for v in (la,lb)]
+    ca[...,0] *= float(np.clip(cb[...,0].std()/max(ca[...,0].std(),1e-3),.5,2))
+    light_difference = float(np.abs(ca-cb).mean()/20)
     return {'difference': difference, 'correlation': corr, 'texture': texture,
-            'same': difference <= .16 and corr >= .72 and texture >= 5,
+            'light_difference': light_difference,
+            'same': texture >= 5 and ((difference <= .16 and corr >= .72)
+                                       or (light_difference <= .22 and corr >= .9)),
             'different': difference >= .28 and corr < .65}
 
 
@@ -173,6 +181,8 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
             putdown._check_deadline(deadline)
             result['pose'] = pose(result['jpeg'], box, result['person_boxes'])
             result['covered'] |= any(overlap(box,p) for p in result['pose']['person_boxes'])
+            if result['pose'].get('person_boxes'):
+                result['person_boxes'] = [p for p in result['pose']['person_boxes'] if putdown._reach(box,p)<=.08]
         if result and not result.get('pose',{}).get('available'):
             support = list(journal.frames(result['at']-3,result['at']+3))
             dense = (len(support)>=4 and support[0]['at']<=result['at']-2.5
@@ -190,14 +200,23 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
     if not reference or reference['covered']:
         return 'The reference dish view is unavailable or covered.'
     # Verify AFTER first. Searching an arrival is wasted work if the spot is gone.
-    later = [f for f in journal.frames(due, min(end, due+1800)) if not people(f, box, covering=True)]
+    later = [f for f in journal.frames(due, min(end, due+6*3600)) if not people(f, box, covering=True)]
+    # Search across lighting changes and short occlusions, rather than only four
+    # instants in the first half hour. The same wall-clock budget bounds decoding.
+    early = [f for f in later if f['at'] <= due+1800]
+    targets = [early[round(q*(len(early)-1))] for q in (0,.33,.66,1)] if early else []
+    for offset in (3600,7200,14400,21600):
+        if due+offset <= end and later:
+            targets.append(min(later,key=lambda f:abs(f['at']-(due+offset))))
     after = None
-    for fraction in (0, .33, .66, 1):
-        if not later:
-            break
-        candidate = photo(later[round(fraction*(len(later)-1))])
+    for frame in {f['at']:f for f in targets}.values():
+        candidate = photo(frame)
         if candidate and candidate['at'] >= due and not candidate['covered']:
             score = comparison(reference['patch'], candidate['patch'])
+            # A later return to the same spot must not rescue a dish that was
+            # already measurably gone/changed at a clear deadline observation.
+            if score['different']:
+                return 'No clear post-deadline view verifies the reference dish at this spot; an earlier clear view changed.'
             if score['same']:
                 after = candidate | {'comparison': score}
                 break
@@ -235,8 +254,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
         # Wrists and local changes rank views; neither is an assertion of use.
         for a,b in zip(decoded,decoded[1:]):
             b['spot_motion'] = comparison(a['patch'],b['patch'])['difference']
-        decoded.sort(key=lambda p: (bool(p.get('pose',{}).get('wrists')), p['dish_visible'],
-                                    p.get('spot_motion',0), len(p['person_boxes'])), reverse=True)
+        decoded.sort(key=story_use.rank,reverse=True)
         if len(decoded) < 2:
             continue
         first = decoded[0]
@@ -253,10 +271,18 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
 
 
 def during_candidates(segments, visit, journal, box, *, deadline):
-    """At most four short bursts, 2 fps. Cache bytes for selection's exact check."""
+    """Cheap dense crop scan, then at most twelve full photos for exact checks."""
     start, end = visit[0]['at'], visit[-1]['at']
-    times = sorted({min(end,max(start,start+q*(end-start)+offset))
-                    for q in (.1,.35,.65,.9) for offset in (-1,-.5,0,.5,1)})
+    # Reserve most of the remaining worker budget for full photos and pose.
+    # If scanning is incomplete, the proposals still cover the decoded interval.
+    scan_deadline = min(deadline-15,time.monotonic()+8)
+    samples = []
+    if scan_deadline > time.monotonic():
+        try:
+            samples = story_use.motion_samples(segments,start,end,box,deadline=scan_deadline)
+        except putdown._SearchTimeout:
+            pass
+    times = story_use.proposal_times(samples,start,end)
     segments.targets = times
     out = []
     for at in times:
@@ -265,9 +291,9 @@ def during_candidates(segments, visit, journal, box, *, deadline):
         if not got:
             continue
         actual,jpeg = got
-        nearby = list(journal.frames(actual-8,actual+8))
+        nearby = list(journal.frames(actual-45,actual+45))
         nearest = min(nearby,key=lambda f:abs(f['at']-actual),default=None)
-        if nearest and abs(nearest['at']-actual) <= 8 and people(nearest,box):
+        if nearest and abs(nearest['at']-actual) <= 45 and people(nearest,box):
             out.append({'at':actual,'jpeg':jpeg,'detections':nearest['detections']})
     return sorted({round(f['at'],3):f for f in out}.values(),key=lambda f:f['at'])
 
