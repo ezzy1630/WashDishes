@@ -30,24 +30,6 @@ def people(frame, box, *, covering=False):
             and (overlap(box, d['box']) if covering else putdown._reach(box, d['box']) <= .08)]
 
 
-def clear_views(frames, box):
-    """Six observed clear seconds, including either side of the decode instant.
-
-    Receipt timestamps approximate camera time. An isolated non-person reading or
-    journal gap cannot turn an occluding body into an absent dish.
-    """
-    run = []
-    for frame in frames:
-        if people(frame, box, covering=True) or (run and frame['at']-run[-1]['at'] > 3):
-            run = []
-        if not people(frame, box, covering=True):
-            run.append(frame)
-            while run and frame['at']-run[0]['at'] > 9:
-                run.pop(0)
-            if len(run) >= 4 and 6 <= frame['at']-run[0]['at'] <= 9:
-                yield min(run, key=lambda f: abs(f['at']-(run[0]['at']+frame['at'])/2))
-
-
 def visits(frames, box):
     found, current = [], []
     previous = None
@@ -112,6 +94,7 @@ def select(journal, buffer: Path, item: dict, *, now=None, deadline=None, decode
 
 
 def _select(journal, buffer, item, *, now, deadline, decode, pose):
+    item = item | {'due_at': item.get('followup_at') or item.get('due_at')}
     box = item.get('box')
     if not box or not item.get('due_at'):
         return 'No fixed dish box or deadline.'
@@ -199,6 +182,11 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
             continue
         change = comparison(reference['patch'], before['patch'])
         if not change['different']:
+            continue
+        # A rotated, shifted or partly covered existing dish is not an empty
+        # BEFORE. This veto searches one box-width around the final spot; it
+        # never supplies cross-spot identity or a positive arrival claim.
+        if filmstrip._already_visible(before['jpeg'],reference['jpeg'],box):
             continue
         # Decode short 2-fps bursts across the visit, not just journal instants.
         # Four bursts bound work even during a long cooking visit.

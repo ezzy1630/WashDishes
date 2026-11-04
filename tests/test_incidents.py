@@ -181,3 +181,20 @@ def test_notification_partial_failure_does_not_repeat_acknowledged_destination(s
     n.poll()
     assert [u for u, _ in sent] == ['https://ntfy.example/house', 'https://ntfy.example/person']
     assert all(f'https://kitchen.example/#/incident/{item["id"]}' in message for _, message in sent)
+
+
+def test_story_is_visible_without_relaxing_share_checks_or_counting_an_offense(authenticated):
+    from datetime import timedelta
+
+    from wash_dishes.store import utcnow
+    c = authenticated
+    store = c.app.state.store
+    item = store.create_obligation(None,[{'kind':'pan','quantity':1}],candidate=True,source='vision',
+                                   at=utcnow()-timedelta(hours=3),box=[.3,.6,.1,.1])
+    store.add_evidence(item['id'],'story-test','story.jpg','filmstrip','dish story')
+    detail = c.get(f"/api/incidents/{item['id']}").json()
+    assert detail['story_url']=='/api/evidence/story-test'
+    assert not detail['share_ready'] and not detail['record']['overdue_verified']
+    cards = c.get('/api/incidents?filter=photos').json()
+    assert cards['total']==1 and cards['items'][0]['story_url']==detail['story_url']
+    assert c.get('/api/incidents?filter=late').json()['total']==0

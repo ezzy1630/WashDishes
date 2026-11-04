@@ -50,6 +50,8 @@ class Stories:
                 if prior and (prior['status'] != 'retry' or parse_stamp(prior['attempted_at'])+RETRY > now):
                     return dict(prior)
                 item = self.store.obligation(oid)
+                # Untimed startup inventory still has an observation-based followup.
+                item = item | {'due_at': item.get('followup_at') or item.get('due_at')}
             if not item.get('due_at') or parse_stamp(item['due_at']) > now:
                 return {'obligation_id': oid, 'status': 'pending', 'reason': 'Deadline has not passed.'}
             if item.get('archived_at') or item['lifecycle'] in ('dismissed','disputed','cleared'):
@@ -59,7 +61,7 @@ class Stories:
                                       deadline=started+budget-1, pose=self.pose)
             eid = None
             reason = found if isinstance(found, str) else None
-            # A just-passed deadline may not yet have six clear journal seconds.
+            # A just-passed deadline may not have a usable clear frame yet.
             transient = reason == dish_story.TIMEOUT or (reason and now < parse_stamp(item['due_at'])+timedelta(minutes=30))
             status = 'retry' if transient else 'unavailable' if reason else 'saved'
             if not reason:
@@ -69,20 +71,35 @@ class Stories:
                 atomic_write(self.media.safe_path(filename), picture)
                 try:
                     with self.store.lock, self.store.conn:
-                        self.store.conn.execute('''INSERT INTO evidence
-                            (id,obligation_id,filename,kind,created_at,expires_at,label,capture)
-                            VALUES(?,?,?,'filmstrip',?,?,'dish story',?)''',
-                            (eid, oid, filename, stamp(now), stamp(now+KEEP), json.dumps(dish_story.metadata(found))))
+                        current = self.store.obligation(oid)
+                        if (current['box'] != item['box'] or current['followup_at'] != item['due_at']
+                                or current.get('archived_at') or current['lifecycle'] in ('dismissed','disputed','cleared')):
+                            reason = 'Dish box, deadline or eligibility changed during search; retry pending.'
+                            eid, status = None, 'retry'
+                        else:
+                            self.store.conn.execute('''INSERT INTO evidence
+                                (id,obligation_id,filename,kind,created_at,expires_at,label,capture)
+                                VALUES(?,?,?,'filmstrip',?,?,'dish story',?)''',
+                                (eid, oid, filename, stamp(now), stamp(now+KEEP), json.dumps(dish_story.metadata(found))))
+                        # Evidence and its terminal job are one transaction, including
+                        # after a crash. Recovery cannot collide with an orphan row.
+                        self._record(oid, status, now, reason, eid)
+                    if not eid:
+                        self.media.safe_path(filename).unlink(missing_ok=True)
                 except Exception:
                     self.media.safe_path(filename).unlink(missing_ok=True)
                     raise
-            with self.store.lock, self.store.conn:
-                self.store.conn.execute('''INSERT INTO dish_story_jobs VALUES(?,?,?,?,?)
-                    ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,
-                    attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id''',
-                    (oid, status, stamp(now), reason, eid))
+            else:
+                with self.store.lock, self.store.conn:
+                    self._record(oid, status, now, reason, eid)
             return {'obligation_id': oid, 'status': status, 'reason': reason, 'evidence_id': eid,
                     'seconds': round(time.monotonic()-started, 3)}
+
+    def _record(self, oid, status, now, reason, eid):
+        self.store.conn.execute('''INSERT INTO dish_story_jobs VALUES(?,?,?,?,?)
+            ON CONFLICT(obligation_id) DO UPDATE SET status=excluded.status,
+            attempted_at=excluded.attempted_at,reason=excluded.reason,evidence_id=excluded.evidence_id''',
+            (oid, status, stamp(now), reason, eid))
 
     def run_once(self, *, now=None):
         now = now or utcnow()

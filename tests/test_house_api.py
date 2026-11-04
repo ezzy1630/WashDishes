@@ -1086,3 +1086,23 @@ def test_household_object_answer_teaches_review_and_undo_restores_it(house_clien
     assert tier() == expected
     store.undo_dish_correction(original['id'], 'operator')
     assert tier() == 'fair'
+
+
+def test_fixed_spot_story_leads_single_dish_visit_without_changing_names_or_membership(house_client):
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    old_id = stored_visit(client, [item], visit_id='story-visit')
+    before = dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone())
+    members = [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]
+    store.add_evidence(item['id'], 'test-story', 'test-story.jpg', 'filmstrip', 'dish story')
+    data = client.get('/house/api/week').json()
+    assert '/house/media/test-story?' in data['visits'][0]['filmstrip_url']
+    assert '/house/media/test-story?' in data['dishes'][0]['filmstrip_url']
+    assert data['visits'][0]['id'] == 'story-visit'
+    assert data['visits'][0]['arrival_seen'] is False
+    assert dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone()) == before
+    assert [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')] == members
+    with store.conn:
+        store.conn.execute("UPDATE evidence SET expired=1 WHERE id='test-story'")
+    fallback = client.get('/house/api/week').json()
+    assert old_id in fallback['visits'][0]['filmstrip_url']

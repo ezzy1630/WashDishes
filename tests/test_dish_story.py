@@ -80,9 +80,10 @@ def test_lighting_shift_alone_is_not_an_arrival():
     assert not dish_story.comparison(a,b)['different']
 
 
-def test_journal_gap_cannot_supply_clear_observation():
-    frames = [{'at': t, 'detections': []} for t in (0,1,2,20,21,22)]
-    assert not list(dish_story.clear_views(frames, BOX))
+def test_journal_gap_does_not_invent_a_visit_or_before():
+    history = History()
+    history.observations = [f for f in history.observations if not 19<=f['at']<=61]
+    assert 'Arrival unknown' in select(history)
 
 
 def test_jobs_preserve_names_membership_and_proof_checks(store, media, monkeypatch):
@@ -117,3 +118,44 @@ def test_no_evidence_row_for_unverified_after(store,media,monkeypatch):
     monkeypatch.setattr(dish_story,'select',lambda *a,**kw:'No clear post-deadline view verifies the reference dish at this spot.')
     assert worker.generate(dish['id'],now=now)['status']=='unavailable'
     assert not store.obligation(dish['id'])['evidence']
+
+
+def test_wrists_rank_actual_target_contact_without_asserting_use(monkeypatch):
+    def pose(jpeg, box, people):
+        return {'available':True,'person_boxes':[], 'wrists':[[.44,.63,.9]] if jpeg==image(True) else []}
+    story = dish_story.select(History(),None,item(),now=239,
+                             decode=lambda t:(t,image(t>=45)),pose=pose)
+    assert isinstance(story,dict)
+    assert story['frames'][1]['pose']['wrists'] and story['frames'][2]['pose']['wrists']
+    captured = []
+    monkeypatch.setattr(dish_story.evidence_image,'render',lambda title,sub,panels,notes:captured.extend(panels))
+    dish_story.render(item(),story)
+    assert all('using' not in p['label'].lower() and 'cooking' not in p['label'].lower() for p in captured)
+
+
+def test_untimed_baseline_uses_observation_followup_and_does_not_stall_queue(store,media,monkeypatch):
+    now = datetime.now(timezone.utc)
+    dish = store.create_obligation(None,[{'kind':'pan','quantity':1}],candidate=True,source='baseline',
+                                   at=now-timedelta(hours=3),box=BOX,timing_known=False)
+    assert dish['due_at'] is None and dish['followup_at']
+    worker = Stories(store,media,History())
+    monkeypatch.setattr(dish_story,'select',lambda *a,**kw:'Arrival unknown: no change.')
+    assert worker.run_once(now=now)==dish['id']
+    assert worker.candidates(now=now)==[]
+
+
+def test_changed_deadline_cannot_publish_a_stale_story(store,media,monkeypatch):
+    now = datetime.now(timezone.utc)
+    dish = store.create_obligation(None,[{'kind':'pan','quantity':1}],candidate=True,source='vision',
+                                   at=now-timedelta(hours=3),box=BOX)
+    worker = Stories(store,media,History())
+    found = select()
+    def changed(*a,**kw):
+        with store.conn:
+            store.conn.execute('UPDATE obligations SET due_at=? WHERE id=?',(stamp(now+timedelta(hours=2)),dish['id']))
+        return found
+    monkeypatch.setattr(dish_story,'select',changed)
+    result = worker.generate(dish['id'],now=now)
+    assert result['status']=='retry' and not result['evidence_id']
+    assert not store.obligation(dish['id'])['evidence']
+    assert not list(media.root.glob('media/dish-story*'))

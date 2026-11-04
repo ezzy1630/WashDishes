@@ -79,7 +79,10 @@ class Incidents:
             sequence = None
         identified = (sequence or {}).get('visible_person_id') if sequence and not sequence.get('stale') else None
         share_ready, blocked = readiness(item, sequence, decision)
-        return {'share_ready': share_ready, 'share_reason': blocked,
+        story = next((e for e in reversed(item['evidence']) if e['label'] == 'dish story'
+                      and not e['expired'] and parse_stamp(e['expires_at']) > utcnow()), None)
+        return {'story_url': story['url'] if story else None,
+                'share_ready': share_ready, 'share_reason': blocked,
                 'share_url': f'/api/sequences/{oid}/share' if share_ready else None, 'record': item, 'revision': self._revision(item), 'sequence': sequence, 'decision': decision,
                 'identified_person_id': identified,
                 'outcome': 'clean' if decision.get('condition') == 'clean' else outcome(item),
@@ -124,7 +127,7 @@ class Incidents:
                     card.update(share_ready=False, share_url=None, share_reason='Archived')
                     continue
                 detail = self.detail(card['id'])
-                card.update({k:detail[k] for k in ('share_ready', 'share_url', 'share_reason')})
+                card.update({k:detail[k] for k in ('share_ready', 'share_url', 'share_reason', 'story_url')})
                 card['visible_person'] = (detail['sequence'] or {}).get('visible_person')
                 if card['share_ready']:
                     stages = detail['sequence']['stages']
@@ -142,13 +145,13 @@ class Incidents:
         counts = {'attention': sum(c['status'] == 'attention' for c in cards),
                   'late': sum(c['late'] for c in cards), 'out': sum(c['active'] for c in cards),
                   'all': sum(not c['archived'] for c in cards), 'archive': sum(c['archived'] for c in cards),
-                  'photos': sum(c.get('share_ready', False) for c in cards),
-                  'tracking': sum(c['active'] and not c.get('share_ready', False) for c in cards)}
+                  'photos': sum(bool(c.get('share_ready') or c.get('story_url')) for c in cards),
+                  'tracking': sum(c['active'] and not (c.get('share_ready') or c.get('story_url')) for c in cards)}
         cards = [c for c in cards if c['archived'] == (filter == 'archive')]
         if filter == 'photos':
-            cards = [c for c in cards if c.get('share_ready')]
+            cards = [c for c in cards if c.get('share_ready') or c.get('story_url')]
         elif filter == 'tracking':
-            cards = [c for c in cards if c['active'] and not c.get('share_ready')]
+            cards = [c for c in cards if c['active'] and not (c.get('share_ready') or c.get('story_url'))]
         elif filter == 'attention':
             cards = [c for c in cards if c['status'] == 'attention']
         elif filter == 'late':
