@@ -26,6 +26,8 @@ def migrate(conn) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS residents_auth ON residents(auth_user_id) WHERE auth_user_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS residents_slug ON residents(auth_slug) WHERE auth_slug IS NOT NULL;
         CREATE INDEX IF NOT EXISTS evidence_arrival ON evidence(kind,label,created_at);
+        CREATE INDEX IF NOT EXISTS evidence_obligation_kind ON evidence(obligation_id,kind,label,created_at);
+        CREATE INDEX IF NOT EXISTS events_obligation_kind ON events(obligation_id,event);
         CREATE TABLE IF NOT EXISTS house_join_tokens(
             token_hash TEXT PRIMARY KEY, resident_id INTEGER NOT NULL REFERENCES residents(id),
             expires_at TEXT NOT NULL, used_at TEXT);
