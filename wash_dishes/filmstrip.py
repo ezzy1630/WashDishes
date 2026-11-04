@@ -643,7 +643,7 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
         panels.append({'jpeg':frame['jpeg'], 'label':f'Near this spot for {duration}, until {until}',
                        'time':f'Candidate visit {index} · frame at {clock(frame["at"])}',
                        'at':frame['at'], 'boxes':boxes, 'person_boxes':heads, 'people':True})
-    if already_at is None:
+    if already_at is None and not use:
         for frame in visual.distinct_people([f for f in frames if not f.get('use_visit')]):
             # A journal box can lag behind somebody leaving. Do not give an
             # unchanged patch of counter a "Who was at the counter" panel.

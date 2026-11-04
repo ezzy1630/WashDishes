@@ -228,6 +228,20 @@ def test_recorded_arrival_drops_empty_who_panel(monkeypatch):
     assert 'Who was at the counter' in labels
 
 
+def test_nearby_candidates_replace_legacy_counter_panels(monkeypatch):
+    from wash_dishes import evidence_image
+    labels = []
+    monkeypatch.setattr(evidence_image, 'render', lambda title, subtitle, panels, notes:
+                        labels.extend(p['label'] for p in panels) or b'image')
+    frames = [{'at': 100, 'jpeg': jpeg((30, 40, 50)), 'person_boxes': [CLEAR],
+               'use_visit': {'start': 0, 'end': 100, 'observations': 90}},
+              {'at': 200, 'jpeg': jpeg((40, 60, 80)), 'person_boxes': [CLEAR]},
+              {'at': 210, 'jpeg': jpeg((60, 80, 100)), 'person_boxes': []}]
+    filmstrip.render({'box': BOX, 'location': 'Counter'}, frames)
+    assert any(label.startswith('Near this spot') for label in labels)
+    assert 'Who was at the counter' not in labels
+
+
 def test_empty_decoded_arrival_searches_earlier_people(tmp_path, monkeypatch):
     with Journal(tmp_path/'journal.db') as journal:
         for at in range(10, 111):
