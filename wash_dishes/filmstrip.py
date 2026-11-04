@@ -37,24 +37,29 @@ def use_frames(frames, box: list[float], anchor: float) -> list[dict]:
     per visit for pixel ranking after grouped decoding, rather than decoding hours.
     """
     visits, current = [], []
+    previous_at, previous_near = None, False
     for frame in frames:
         if not anchor - USE_LOOKBACK <= frame['at'] <= anchor:
             continue
         people = [d['box'] for d in frame['detections'] if d['kind'] == 'person'
                   and putdown._reach(box, d['box']) < .08]
+        # Count adjacent camera observations, including a slow camera cadence.
+        # Empty observations interrupt supported presence even when a short gap
+        # still joins the visit. A stopped camera cannot establish a long stay.
+        covered = frame['at'] - previous_at if previous_near and previous_at is not None else 0
+        covered = covered if 0 <= covered < 90 else 0
+        previous_at, previous_near = frame['at'], bool(people)
         if not people:
             continue
         if current and frame['at'] - current[-1]['at'] >= 90:
             visits.append(current)
             current = []
-        current.append({'at': frame['at'], 'person_boxes': people})
+        current.append({'at': frame['at'], 'person_boxes': people, 'covered_seconds': covered})
     if current:
         visits.append(current)
 
     def observed_seconds(visit):
-        # A gap may connect a visit, but is not observed presence. Without this,
-        # three pass-through detections can masquerade as a two-minute stay.
-        return sum(min(2.5, b['at']-a['at']) for a, b in zip(visit, visit[1:]))
+        return sum(f['covered_seconds'] for f in visit)
 
     def rank(visit):
         duration = observed_seconds(visit)
@@ -88,7 +93,8 @@ def use_frames(frames, box: list[float], anchor: float) -> list[dict]:
                 picks.append(frame)
                 if len(picks) == 3:
                     break
-        selected.extend(f | {'use_visit': context, 'use_order': order} for order, f in enumerate(picks))
+        selected.extend({k: v for k, v in f.items() if k != 'covered_seconds'} |
+                        {'use_visit': context, 'use_order': order} for order, f in enumerate(picks))
     return sorted(selected, key=lambda f: f['at'])
 
 
@@ -515,7 +521,12 @@ def _missing_plan(journal, buffer, item, *, deadline, segments=None, reference=N
     if not available:
         return 'No retained footage covers the first recorded sighting.'
     first = max(anchor,available[0][0])
-    last = min(anchor+30,available[-1][1]-.5)
+    covered_until = available[0][1]
+    for start, end, _ in available[1:]:
+        if start > covered_until:
+            break
+        covered_until = max(covered_until, end)
+    last = min(anchor+30,covered_until-.5)
     if last-first<3:
         return 'Insufficient retained footage to show distinct already-present views.'
     window = {'before':first,'after':last,'source':'already_present','arrival_recorded':False,
@@ -650,7 +661,7 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
         notes.append('Arrival timing is uncertain; check these views before naming.')
     if use:
         notes.append('Yellow: dish spot. Blue: people nearby, not confirmed users.')
-    notes.append('Only name someone if you know they used these dishes' if use else 'Only name someone if you know they left these dishes')
+    notes.append('Only name someone if you know they used these dishes' if use or already_at is not None else 'Only name someone if you know they left these dishes')
     subtitle = f"{day:%b %-d} · {collage.place(item['location'])}"
     if use:
         subtitle += ' · Arrival not recorded.' if already_at is not None else ' · Nearby visits; use unconfirmed.'

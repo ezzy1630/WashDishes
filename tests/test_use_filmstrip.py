@@ -2,7 +2,7 @@
 import io
 import json
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from PIL import Image
@@ -207,9 +207,30 @@ def test_recorded_arrival_drops_empty_who_panel(monkeypatch):
 
 def test_sparse_passes_do_not_become_a_sustained_stay():
     observations = [observation(t, [CLEAR]) for t in range(121)]
-    observations += [observation(t, [CLEAR]) for t in (300, 350, 400)]
+    observations += [observation(t, [CLEAR] if t in (300, 350, 400) else []) for t in range(300, 401)]
     chosen = filmstrip.use_frames(observations, BOX, 500)
     assert {f['use_visit']['start'] for f in chosen} == {0}
+
+
+def test_slow_camera_cadence_does_not_turn_a_long_stay_into_a_pass():
+    observations = [observation(t, [CLEAR]) for t in range(0, 661, 33)]
+    observations += [observation(t, [CLEAR]) for t in (800, 900, 1000)]
+    chosen = filmstrip.use_frames(observations, BOX, 1100)
+    assert {f['use_visit']['start'] for f in chosen} == {0}
+    assert chosen[0]['use_visit']['observed_seconds'] == 660
+
+
+def test_already_present_views_stop_at_a_recording_gap(tmp_path):
+    class EmptyJournal:
+        def frames(self, start, end):
+            return iter(())
+    segments = [(0, 10, tmp_path/'a.ts'), (10, 20, tmp_path/'b.ts'), (40, 50, tmp_path/'c.ts')]
+    found = filmstrip._missing_plan(EmptyJournal(), tmp_path, {'box': BOX, 'created_at': stamp(
+        datetime.fromtimestamp(5, timezone.utc))},
+        deadline=time.monotonic()+30, segments=segments, reference=(5, jpeg((60, 80, 100))))
+    assert found['window']['after'] == 19.5
+    assert all(5 <= f['at'] < 20 for f in found['frames'])
+    assert not any(f['person_boxes'] for f in found['frames'])
 
 
 def test_recorder_restart_does_not_stretch_its_first_segment(tmp_path):
