@@ -25,10 +25,12 @@ def observation(at, people=()):
 
 def test_long_stays_beat_recent_pass_throughs_and_are_distinct():
     frames = [observation(t, [CLEAR]) for t in range(100, 701)]
-    frames += [observation(t, [CLEAR]) for t in (800, 900, 1000)]
-    selected = filmstrip.use_frames(frames, BOX, 1100)
+    frames += [observation(t, [CLEAR]) for a, b in ((800, 901), (1000, 1101), (1200, 1261)) for t in range(a, b)]
+    frames += [observation(t, [CLEAR]) for t in (1400, 1500, 1600)]
+    selected = filmstrip.use_frames(frames, BOX, 1700)
     visits = {f['use_visit']['start'] for f in selected}
-    assert visits == {100, 900, 1000}  # Long stay survives the three-visit cap.
+    assert len(visits) == 3 and {100, 1200} <= visits
+    assert all(v < 1400 for v in visits)  # A pass-through cannot displace a sustained visit.
     assert len(selected) <= 9
     assert all(f['person_boxes'] == [CLEAR] for f in selected)
 
@@ -201,3 +203,10 @@ def test_recorded_arrival_drops_empty_who_panel(monkeypatch):
     frames[0]['jpeg'] = jpeg((160, 180, 200))
     filmstrip.render({'box': BOX, 'location': 'Counter'}, frames)
     assert 'Who was at the counter' in labels
+
+
+def test_sparse_passes_do_not_become_a_sustained_stay():
+    observations = [observation(t, [CLEAR]) for t in range(121)]
+    observations += [observation(t, [CLEAR]) for t in (300, 350, 400)]
+    chosen = filmstrip.use_frames(observations, BOX, 500)
+    assert {f['use_visit']['start'] for f in chosen} == {0}

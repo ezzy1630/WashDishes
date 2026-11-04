@@ -50,15 +50,22 @@ def use_frames(frames, box: list[float], anchor: float) -> list[dict]:
     if current:
         visits.append(current)
 
+    def observed_seconds(visit):
+        # A gap may connect a visit, but is not observed presence. Without this,
+        # three pass-through detections can masquerade as a two-minute stay.
+        return sum(min(2.5, b['at']-a['at']) for a, b in zip(visit, visit[1:]))
+
     def rank(visit):
-        duration = visit[-1]['at'] - visit[0]['at']
+        duration = observed_seconds(visit)
         # Recency matters within each class; a twenty-minute stay can beat a
         # one-minute stay a few minutes later, but not one six hours later.
         return (duration >= 60, visit[-1]['at'] + min(duration, 30 * 60))
 
     selected = []
-    for priority, visit in enumerate(sorted(visits, key=rank, reverse=True)[:3]):
-        context = {'start': visit[0]['at'], 'end': visit[-1]['at'], 'observations': len(visit), 'priority': priority}
+    sustained = [v for v in visits if observed_seconds(v) >= 60]
+    for priority, visit in enumerate(sorted(sustained or visits, key=rank, reverse=True)[:3]):
+        context = {'start': visit[0]['at'], 'end': visit[-1]['at'], 'observations': len(visit), 'priority': priority,
+                   'observed_seconds': observed_seconds(visit)}
         times = [f['at'] for f in visit]
         for frame in visit:
             neighbors = []
@@ -588,7 +595,7 @@ def render(item: dict, frames: list[dict], *, boxes: list[list[float]] | None = 
     use = [f for f in frames if f.get('use_visit') and f.get('person_boxes')]
     for index, frame in enumerate(use, 1):
         visit = frame['use_visit']
-        seconds = visit['end'] - visit['start']
+        seconds = visit.get('observed_seconds', visit['end'] - visit['start'])
         duration = f'{int(seconds // 60)} min' if seconds >= 60 else 'under 1 min'
         local_end = datetime.fromtimestamp(visit['end'],timezone.utc).astimezone(day.tzinfo)
         until = local_end.strftime(('%b %-d · ' if local_end.date() != day.date() else '') + '%-I:%M %p')
