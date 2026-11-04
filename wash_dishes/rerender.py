@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import io
 import json
 import sqlite3
@@ -66,16 +67,20 @@ def targets(conn, *, now=None):
     ]
 
 
-def inventory(root: Path, *, now=None):
+def inventory(root: Path, *, now=None, use_context=False, after_visit_id=''):
     # The selected root must already exist. Dry runs never create a DB/settings.
     with sqlite3.connect((root / "history.db").resolve().as_uri() + "?mode=ro", uri=True) as conn:
         ids = targets(conn, now=now)
         visits = []
         for vid, eid, metadata in conn.execute(
-            "SELECT id,evidence_id,metadata FROM arrival_visits WHERE evidence_id IS NOT NULL"
+            "SELECT id,evidence_id,metadata FROM arrival_visits WHERE evidence_id IS NOT NULL AND id>? ORDER BY id",
+            (after_visit_id,),
         ):
             meta = json.loads(metadata)
-            if not set(meta["obligation_ids"]).intersection(ids):
+            if use_context:
+                if any(f.get('person_boxes') for f in meta.get('frames', [])):
+                    continue
+            elif not set(meta["obligation_ids"]).intersection(ids):
                 continue
             row = conn.execute(
                 "SELECT filename,expired,expires_at FROM evidence WHERE id=?", (eid,)
@@ -86,14 +91,18 @@ def inventory(root: Path, *, now=None):
         sequences = [
             r[0] for r in conn.execute("SELECT obligation_id FROM evidence_sequences") if r[0] in ids
         ]
-    return {"obligation_ids": ids, "visits": visits, "sequences": sequences}
+        if use_context:
+            ids = sorted({oid for visit in visits for oid in visit['metadata']['obligation_ids']})
+    return {"obligation_ids": ids, "visits": visits, "sequences": [] if use_context else sequences}
 
 
-def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
+def run(root: Path, *, apply=False, limit=100, offset=0, now=None, use_context=False, after_visit_id=''):
     if limit < 1 or offset < 0:
         raise ValueError("Limit must be positive and offset nonnegative.")
     root = root.resolve()
-    plan = inventory(root, now=now)
+    if use_context and offset:
+        raise ValueError('Use --after-visit-id, not --offset, for a resumable use-context pass.')
+    plan = inventory(root, now=now, use_context=use_context, after_visit_id=after_visit_id)
     actions = [{"kind": "filmstrip", "target": v["visit_id"]} for v in plan["visits"]] + [
         {"kind": "sequence", "target": oid} for oid in plan["sequences"]
     ]
@@ -109,8 +118,22 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
         "updated": [],
         "skipped": [],
     }
+    if use_context:
+        result['next_visit_id'] = actions[-1]['target'] if actions and len(actions) < total else None
     if not apply:
         return result
+    if use_context:
+        with (root / '.filmstrip.lock').open('a') as claim:
+            try:
+                fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                result.update(busy=True, next_visit_id=after_visit_id)
+                return result
+            return _apply(root, plan, actions, result, now=now, use_context=True)
+    return _apply(root, plan, actions, result, now=now, use_context=False)
+
+
+def _apply(root, plan, actions, result, *, now, use_context):
     # Only explicit --apply opens the existing root for mutation. No runtime,
     # models, replay, identity callback or new visit membership is constructed.
     store = Store(root)
@@ -131,20 +154,31 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
                 continue
             boxes = [meta["dish_boxes"][str(oid)] for oid in meta["canonical_obligation_ids"]]
             journal = ReadJournal(root / "journal.db", meta["frames"])
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + (30 if use_context else 60)
+            item = store.obligation(meta["canonical_obligation_ids"][0])
+            found = {"window": meta["window"], "frames": meta["frames"]}
+            if use_context:
+                found = filmstrip.plan(journal, media.buffer, item, deadline=deadline-10)
+                if isinstance(found, str) or not any(f.get('person_boxes') for f in found['frames']):
+                    result['skipped'].append(action | {'reason': found if isinstance(found, str) else
+                                                       'No person within reach in the retained six-hour lookback.'})
+                    continue
             frames = filmstrip.display_frames(
                 journal,
                 media.buffer,
-                {"window": meta["window"], "frames": meta["frames"]},
+                found,
                 boxes,
-                deadline=deadline,
+                deadline=deadline-2 if use_context else deadline,
             )
             # Do not substitute a partial window or a nearby visitor for missing
             # original endpoints. Keep the old image when its sources have expired.
+            endpoints = [f for f in found['frames'] if not f.get('use_visit')]
+            decoded_endpoints = [f for f in frames if not f.get('use_visit')]
             if (
                 not frames
-                or abs(frames[0]["at"] - meta["frames"][0]["at"]) > 0.75
-                or abs(frames[-1]["at"] - meta["frames"][-1]["at"]) > 0.75
+                or not decoded_endpoints
+                or abs(decoded_endpoints[0]["at"] - endpoints[0]["at"]) > 0.75
+                or abs(decoded_endpoints[-1]["at"] - endpoints[-1]["at"]) > 0.75
             ):
                 result["skipped"].append(
                     action | {"reason": "Arrival rerender reached its time budget; original image retained."
@@ -154,8 +188,10 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
                               "decoded_endpoints": [frames[0]["at"], frames[-1]["at"]] if frames else []}
                 )
                 continue
-            item = store.obligation(meta["canonical_obligation_ids"][0])
-            window = meta["window"]
+            if use_context and not any(f.get('person_boxes') for f in frames):
+                result['skipped'].append(action | {'reason': 'Nearby-person frames could not be decoded; original retained.'})
+                continue
+            window = found['window']
             data = filmstrip.render(
                 item,
                 frames,
@@ -170,6 +206,7 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
             meta.update(
                 render_version=evidence_image.VERSION,
                 layout="stacked",
+                window=window,
                 frames=[{k: v for k, v in f.items() if k != "jpeg"} for f in frames],
             )
             # Read back before replacing; a concurrent membership/identity edit
@@ -180,6 +217,11 @@ def run(root: Path, *, apply=False, limit=100, offset=0, now=None):
                 ).fetchone()
                 if not current or json.loads(current[0]) != visit["metadata"]:
                     result["skipped"].append(action | {"reason": "Visit changed while rendering."})
+                    continue
+                evidence = store.conn.execute('SELECT expired,expires_at FROM evidence WHERE id=?',
+                                              (visit['evidence_id'],)).fetchone()
+                if not evidence or evidence['expired'] or parse_stamp(evidence['expires_at']) <= (now or utcnow()):
+                    result['skipped'].append(action | {'reason': 'Evidence expired while rendering.'})
                     continue
                 atomic_write(media.safe_path(visit["filename"]), data)
                 store.conn.execute(
@@ -204,8 +246,11 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=100, help="Maximum derived images this invocation")
     parser.add_argument("--offset", type=int, default=0, help="Continue at this action offset")
+    parser.add_argument('--use-context', action='store_true', help='Backfill saved no-person filmstrips from retained nearby visits; 30 seconds each')
+    parser.add_argument('--after-visit-id', default='', help='Resume use-context pass after next_visit_id (stable even as records improve)')
     args = parser.parse_args()
-    print(json.dumps(run(args.root, apply=args.apply, limit=args.limit, offset=args.offset), indent=2))
+    print(json.dumps(run(args.root, apply=args.apply, limit=args.limit, offset=args.offset,
+                         use_context=args.use_context, after_visit_id=args.after_visit_id), indent=2))
 
 
 if __name__ == "__main__":
