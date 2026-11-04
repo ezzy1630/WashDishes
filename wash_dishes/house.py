@@ -221,7 +221,8 @@ class HouseBoundary:
             self.waiting -= 1
         worker_held = True
         try:
-            target = self.json_app if scope['path'].startswith('/house/api/') and scope['method'] == 'GET' else self.app
+            compress = scope['method'] == 'GET' and scope['path'] in ('/house/api/week', '/house/api/learning')
+            target = self.json_app if compress else self.app
             return await target(scope, receive, house_send)
         finally:
             if worker_held:

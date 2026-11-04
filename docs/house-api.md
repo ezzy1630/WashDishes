@@ -299,9 +299,10 @@ House requests admit at most two handlers and twenty asynchronous waiters, with
 a two-second admission timeout, before authentication can occupy sync workers or
 wait on the camera lock. A response releases its slot before streaming to a slow
 phone. House sync handlers run at nice 10 on Linux; camera threads retain their
-own priorities. Existing per-account read/media budgets also apply. GET JSON over
-1 KiB negotiates gzip at level 1; JPEG responses are never recompressed by that
-middleware. No household JSON or signed-media response is publicly cacheable.
+own priorities. Existing per-account read/media budgets also apply. Week and
+teaching-feed GETs negotiate gzip at level 1. Small account reads and JPEG
+responses bypass compression. No household JSON or signed-media response is
+publicly cacheable.
 Errors: `{"detail":"plain sentence"}`; 400 invalid input, 401 sign-in, 403 forbidden,
 404 absent/ineligible, 409 closed/conflicting, 429 rate limit, 503 auth unavailable.
 
