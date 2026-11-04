@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
@@ -56,7 +57,10 @@ class Playback(FileResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await run_in_threadpool(self.release)
+            # A disconnect cancels the response's scope. Cleanup must still run
+            # or its cached file stays pinned after the viewer has gone away.
+            with CancelScope(shield=True):
+                await run_in_threadpool(self.release)
 
 
 @dataclass

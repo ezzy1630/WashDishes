@@ -125,3 +125,28 @@ def test_ten_simultaneous_viewers_share_remux_without_count_admission(recordings
         assert list(pool.map(watch, range(10))) == [206] * 10
     assert len(calls) == 1
     assert '-an' in calls[0] and calls[0][calls[0].index('-c:v') + 1] == 'copy'
+
+
+def test_aborted_transfer_releases_shared_file_pin(tmp_path):
+    import anyio
+
+    from wash_dishes.house_footage import Playback
+
+    path = tmp_path / 'chunk.mp4'
+    path.write_bytes(b'recorded-video')
+    released = []
+    response = Playback(path, lambda: released.append(True))
+
+    async def transfer():
+        with anyio.CancelScope() as disconnect:
+            async def send(message):
+                disconnect.cancel()
+                await anyio.lowlevel.checkpoint()
+
+            async def receive():
+                return {'type': 'http.disconnect'}
+
+            await response({'type': 'http', 'method': 'GET', 'headers': [], 'asgi': {'spec_version': '2.4'}}, receive, send)
+
+    anyio.run(transfer)
+    assert released == [True]
