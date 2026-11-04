@@ -115,6 +115,9 @@ export function recordedPlayer(callbacks) {
       if (slot.expires <= now() + 15) { video.pause(); void resume(); return; }
       play.textContent = "Pause";
     });
+    video.addEventListener("playing", () => {
+      if (active === slot && !ahead) prepareNext(slot);
+    });
     video.addEventListener("pause", () => { if (active === slot) play.textContent = "Play"; });
     video.addEventListener("ended", () => { if (active === slot) void advance(slot); });
     video.src = src; video.load();
@@ -136,7 +139,7 @@ export function recordedPlayer(callbacks) {
       : "Scrub the player, or choose another moment below.";
     callbacks.status(message);
     callbacks.changed(slot.chunk, slot.chunk.start + offset);
-    prepareNext(slot);
+    cancelAhead();
     if (autoplay) {
       const selected = generation;
       void start(slot, selected, message).catch((error) => {
@@ -147,7 +150,9 @@ export function recordedPlayer(callbacks) {
   }
   /** @param {Slot} slot @param {number} selected @param {string} message */
   async function start(slot, selected, message) {
-    if (slot.video.duration - slot.video.currentTime < 4 && ahead) {
+    const nearEnd = slot.video.duration - slot.video.currentTime < 4;
+    if (nearEnd && !ahead && slot.chunk.next !== null) prepareNext(slot);
+    if (nearEnd && ahead) {
       // Exact time jumps can land just before a boundary. Buffer before motion
       // starts rather than playing a fraction of a second and then freezing.
       callbacks.status("Preparing the next recording…");
@@ -225,7 +230,6 @@ export function recordedPlayer(callbacks) {
       }
       slot.chunk = fresh;
       if (ahead) void ahead.promise.then((next) => { next.check = null; }).catch(() => {});
-      else prepareNext(slot);
       callbacks.changed(fresh, at);
       play.disabled = false;
       await start(slot, selected, "Scrub the player, or choose another moment below.");
