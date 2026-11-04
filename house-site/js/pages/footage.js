@@ -1,8 +1,8 @@
-import { getFootage, getFootageChunk } from "../api.js";
-import { button, field, h, heading, imageURL } from "../ui.js";
+import { getFootage } from "../api.js";
+import { recordedPlayer } from "../footage-player.js";
+import { button, field, h, heading } from "../ui.js";
 
 /** @typedef {Awaited<ReturnType<typeof getFootage>>} Index */
-/** @typedef {Awaited<ReturnType<typeof getFootageChunk>>} Chunk */
 /** @type {(()=>void)|null} */
 let dispose = null;
 export function stopFootage() { dispose?.(); dispose = null; }
@@ -16,106 +16,40 @@ export function watchFootage(visit, context) {
 /** One shared recorded player, entered from navigation or any dish picture. */
 export function footagePage() {
   stopFootage();
-  let alive = true, sequence = 0, timezone = "UTC", busy = false;
+  let alive = true, timezone = "UTC";
   /** @type {Index|null} */ let index = null;
-  /** @type {Chunk|null} */ let current = null;
-  const video = h("video", { playsinline: true, preload: "metadata",
-    "aria-label": "Recorded kitchen footage", crossorigin: "anonymous" });
-  video.muted = true;
-  // WebKit's native controls inject blob icons/inline styles rejected by the
-  // site's strict CSP. Keep controls in our DOM and external stylesheet.
-  const play = button("Play", () => {
-    if (!video.paused) video.pause();
-    else void video.play().catch(() => { status.textContent = "Could not play. Open this moment again to refresh its link."; });
-  }, "secondary");
-  const seek = h("input", { type: "range", min: 0, max: 1, step: 0.1, value: 0,
-    "aria-label": "Seek within this recording" });
-  const elapsed = h("span", { class: "help footage-elapsed" }, "0:00 / 0:00");
-  play.disabled = seek.disabled = true;
-  seek.addEventListener("input", () => { video.currentTime = Number(seek.value); });
-  video.addEventListener("play", () => { play.textContent = "Pause"; });
-  video.addEventListener("pause", () => { play.textContent = "Play"; });
   const clock = h("p", { class: "footage-clock" }, "Choose a recording"),
     status = h("p", { class: "help footage-status", role: "status" }, "Loading recordings…"),
     panel = h("section", { class: "footage-controls", "aria-label": "Browse recordings" }),
     moments = h("div", { class: "footage-moments" }),
     timeline = h("div", { class: "footage-timeline" }),
     slider = h("input", { type: "range", step: 1, "aria-label": "Recording time" }),
-    chosen = h("p", { class: "help" }),
+    chosen = h("output", { class: "help footage-chosen", "aria-live": "off" }),
     jump = h("input", { type: "datetime-local", name: "footage-time", required: true, step: 1 }),
-    previous = button("Previous chunk", () => { if (current?.previous != null) void load(current.previous, false, true); }, "secondary"),
-    next = button("Next chunk", () => { if (current?.next != null) void load(current.next, false, true); }, "secondary");
+    previous = button("Previous chunk", () => { if (player.current?.previous != null) void load(player.current.previous, false, true); }, "secondary"),
+    next = button("Next chunk", () => { if (player.current?.next != null) void load(player.current.next, false, true); }, "secondary");
   previous.disabled = next.disabled = true;
   const refresh = button("Refresh recordings", () => void refreshIndex(), "quiet");
+  const player = recordedPlayer({
+    status: (text) => { status.textContent = text; },
+    clock: (at) => { clock.textContent = timeLabel(at); },
+    changed: (chunk, at) => {
+      slider.value = String(at); chosen.textContent = timeLabel(at);
+      previous.disabled = chunk.previous === null; next.disabled = chunk.next === null;
+      showMoments(at);
+    },
+  });
+  const load = player.load;
   const root = h("div", { class: "footage-page" }, heading("Kitchen footage", "Browse the recordings kept by the kitchen camera."),
-    video, h("div", { class: "footage-transport" }, play, seek, elapsed), clock, status,
+    player.element, clock, status,
     h("div", { class: "footage-chunks" }, previous, next), panel,
     h("p", { class: "help" }, "Recorded only · No audio · Clock times are approximate. New footage appears after a segment finishes. Older recordings roll off automatically."), refresh);
-  dispose = () => { alive = false; sequence++; video.pause(); video.removeAttribute("src"); video.load(); };
+  dispose = () => { alive = false; player.stop(); };
 
   /** @param {number} at */
   function timeLabel(at) {
     return new Intl.DateTimeFormat("en-US", { timeZone: timezone, month: "short", day: "numeric",
       hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(new Date(at * 1000));
-  }
-  function clockUpdate() {
-    if (current) {
-      clock.textContent = timeLabel(current.start + video.currentTime);
-      seek.value = String(video.currentTime);
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const short = (/** @type {number} */ seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
-      elapsed.textContent = `${short(video.currentTime)} / ${short(duration)}`;
-    }
-  }
-  video.addEventListener("timeupdate", clockUpdate);
-  video.addEventListener("seeked", clockUpdate);
-  video.addEventListener("ended", () => { if (current?.next != null) void load(current.next, true, true); });
-  video.addEventListener("error", () => {
-    if (alive && current) status.textContent = "Playback stopped. Open the moment again to refresh its link, or try the next chunk.";
-  });
-  video.addEventListener("play", () => {
-    if (current && current.expires <= Date.now() / 1000 + 5) void load(current.start + video.currentTime, true);
-  });
-  /** @param {number} at @param {boolean} [autoplay] @param {boolean} [fromStart] */
-  async function load(at, autoplay = false, fromStart = false) {
-    const request = ++sequence;
-    busy = true;
-    video.pause();
-    play.disabled = seek.disabled = true;
-    status.textContent = "Opening recording…";
-    previous.disabled = next.disabled = true;
-    try {
-      const chunk = await getFootageChunk(at);
-      if (!alive || request !== sequence) return;
-      const src = imageURL(chunk.url);
-      if (!src) throw new Error("This recording address is unavailable.");
-      current = chunk;
-      const offset = fromStart ? 0 : chunk.offset;
-      if (fromStart) at = chunk.start;
-      video.onloadedmetadata = () => {
-        if (request !== sequence) return;
-        video.currentTime = Math.min(offset, Math.max(0, video.duration - 0.1));
-        seek.max = String(video.duration);
-        play.disabled = seek.disabled = false;
-        clockUpdate();
-        if (autoplay) void video.play().catch(() => { status.textContent = "Tap play to continue."; });
-      };
-      video.src = src;
-      video.load();
-      slider.value = String(at);
-      chosen.textContent = timeLabel(at);
-      clock.textContent = timeLabel(chunk.start + offset);
-      status.textContent = "Scrub the player, or choose another moment below.";
-      previous.disabled = chunk.previous === null;
-      next.disabled = chunk.next === null;
-      showMoments(at);
-    } catch (error) {
-      if (alive && request === sequence) {
-        status.textContent = error instanceof Error ? error.message : "Could not open this recording.";
-        previous.disabled = current?.previous == null;
-        next.disabled = current?.next == null;
-      }
-    } finally { if (request === sequence) busy = false; }
   }
   /** @param {number} at */
   function showMoments(at) {
@@ -145,32 +79,39 @@ export function footagePage() {
       const start = data.ranges[0].start, end = data.ranges[data.ranges.length - 1].end;
       slider.min = String(Math.ceil(start)); slider.max = String(Math.floor(end));
       const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      svg.setAttribute("viewBox", "0 0 1000 34");
+      svg.setAttribute("viewBox", "0 0 1000 44");
       svg.setAttribute("preserveAspectRatio", "none");
       svg.setAttribute("aria-hidden", "true");
       for (const range of data.ranges) {
         const rect = document.createElementNS(svg.namespaceURI, "rect");
         rect.setAttribute("x", String((range.start - start) / (end - start) * 1000));
         rect.setAttribute("width", String((range.end - range.start) / (end - start) * 1000));
-        rect.setAttribute("height", "26"); rect.setAttribute("y", "4"); svg.append(rect);
+        rect.setAttribute("height", "12"); rect.setAttribute("y", "24"); svg.append(rect);
       }
+      // At phone width each lane has at most one one-pixel mark per ~5 px.
+      // Density cannot cover the recording/gap band beneath it.
+      const bins = new Set();
       for (const moment of data.moments) {
-        const line = document.createElementNS(svg.namespaceURI, "line");
-        const x = String((moment.at - start) / (end - start) * 1000);
-        for (const [k, v] of Object.entries({ x1: x, x2: x, y1: "0", y2: "34", class: moment.kind })) line.setAttribute(k, v);
-        svg.append(line);
+        const bin = Math.max(0, Math.min(71, Math.floor((moment.at - start) / (end - start) * 72)));
+        const key = `${moment.kind}:${bin}`;
+        if (bins.has(key)) continue;
+        bins.add(key);
+        const mark = document.createElementNS(svg.namespaceURI, "rect");
+        for (const [k, v] of Object.entries({ x: String(bin / 72 * 1000 + 5), width: "3", height: "6",
+          y: moment.kind === "dish" ? "2" : "12", class: moment.kind })) mark.setAttribute(k, v);
+        svg.append(mark);
       }
       timeline.replaceChildren(svg, slider);
       panel.replaceChildren(h("h2", {}, "Retained recordings"),
         h("p", { class: "help" }, `${timeLabel(start)} – ${timeLabel(end)}`), timeline,
-        h("p", { class: "help footage-key" }, "Filled: recorded · Empty: gap · Blue: dish · Amber: person"),
+        h("p", { class: "help footage-key" }, "Bottom band: recorded · Empty: gap · Blue lane: dishes · Amber lane: people"),
         chosen, form, moments);
-      if (!current && !busy) {
+      if (!player.current) {
         const wanted = new URLSearchParams(location.search).get("at");
         const at = wanted === null ? end - 1 : Number(wanted);
         await load(at);
-      } else if (current) {
-        showMoments(current.start);
+      } else if (player.current) {
+        showMoments(player.current.start);
       }
     } catch (error) {
       if (alive) status.textContent = error instanceof Error ? error.message : "Could not load recordings.";

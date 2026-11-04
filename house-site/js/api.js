@@ -14,7 +14,7 @@ export class HouseError extends Error {
     this.status = status;
   }
 }
-/** @param {string} path @param {{public?:boolean, body?:unknown}} [options] @returns {Promise<unknown>} */
+/** @param {string} path @param {{public?:boolean, body?:unknown, signal?:AbortSignal}} [options] @returns {Promise<unknown>} */
 async function request(path, options = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (!options.public) {
@@ -35,7 +35,7 @@ async function request(path, options = {}) {
       cache: "no-store",
       credentials: "omit",
       referrerPolicy: "no-referrer",
-      signal: AbortSignal.timeout(15000),
+      signal: options.signal || AbortSignal.timeout(15000),
     });
   } catch {
     throw new HouseError("Dish Watch is offline right now", 0);
@@ -67,9 +67,9 @@ async function parsed(response, parser) {
 }
 export const getMe = () => parsed(request("/me"), parse.me);
 export const getFootage = () => parsed(request("/footage"), parse.footage);
-/** @param {number} at */
-export const getFootageChunk = (at) =>
-  parsed(request(`/footage/chunk?at=${encodeURIComponent(at)}`), parse.footageChunk);
+/** @param {number} at @param {AbortSignal} [signal] */
+export const getFootageChunk = (at, signal) =>
+  parsed(request(`/footage/chunk?at=${encodeURIComponent(at)}`, { signal }), parse.footageChunk);
 /** @param {string} [start] */
 export const getWeek = (start = "") =>
   parsed(
