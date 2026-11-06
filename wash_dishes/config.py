@@ -9,10 +9,10 @@ from urllib.parse import quote
 
 DEFAULT_SETTINGS = {
     "deadline_minutes": 120,
-    "buffer_hours": 50,
+    "buffer_hours": 96,
     "evidence_days": 7,
     "review_days": 30,
-    "storage_limit_gb": 20,
+    "storage_limit_gb": 150,
     "photo_days": 90,
     "analysis_fps": 4,
     "dataset_enabled": True,
@@ -97,7 +97,7 @@ def validate_settings(patch: dict) -> dict:
     unknown = set(patch) - set(DEFAULT_SETTINGS)
     if unknown:
         raise ValueError(f"Unknown setting: {sorted(unknown)[0]}")
-    bounds = {"deadline_minutes": (1, 1440), "buffer_hours": (0.1, 72), "evidence_days": (1, 90), "review_days": (1, 365), "storage_limit_gb": (0.1, 2000),
+    bounds = {"deadline_minutes": (1, 1440), "buffer_hours": (0.1, 96), "evidence_days": (1, 90), "review_days": (1, 365), "storage_limit_gb": (0.1, 2000),
               "photo_days": (1, 730), "analysis_fps": (1, 10), "dataset_limit_gb": (0, 100)}
     for key, (low, high) in bounds.items():
         if key in patch:

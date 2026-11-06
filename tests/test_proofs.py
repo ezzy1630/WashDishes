@@ -495,7 +495,7 @@ def test_search_eligibility_uses_configured_retention_instead_of_the_old_twenty_
         store.conn.execute('UPDATE obligations SET created_at=?,due_at=? WHERE id=?',
                            (stamp(at-timedelta(hours=30)), stamp(at-timedelta(hours=28)), item['id']))
     proofs = Proofs(store.root, store, media)
-    assert proofs.candidate(at)['id'] == item['id']  # default recording retention is 50 h
+    assert proofs.candidate(at)['id'] == item['id']  # default recording retention is 96 h
     store.set_settings({'buffer_hours': 24})
     assert proofs.candidate(at) is None
     assert proofs.progress(at)['checking'] == 0
