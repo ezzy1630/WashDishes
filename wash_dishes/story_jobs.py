@@ -11,7 +11,6 @@ from .media import atomic_write
 from .store import parse_stamp, stamp, utcnow
 from .story_pose import PoseRanker
 
-RETAINED = timedelta(hours=50)
 RETRY = timedelta(minutes=5)
 KEEP = timedelta(days=7)
 
@@ -28,6 +27,7 @@ class Stories:
 
     def candidates(self, *, now=None, after_id=0, limit=1):
         now = now or utcnow()
+        retained = timedelta(hours=self.store.settings()['buffer_hours'])
         with self.store.lock:
             return [r[0] for r in self.store.conn.execute('''SELECT o.id FROM obligations o
                 LEFT JOIN dish_story_jobs j ON j.obligation_id=o.id
@@ -36,7 +36,7 @@ class Stories:
                 AND o.created_at>=? AND o.due_at<=?
                 AND (j.obligation_id IS NULL OR (j.status='retry' AND j.attempted_at<=?))
                 ORDER BY o.id LIMIT ?''',
-                (after_id, stamp(now-RETAINED), stamp(now), stamp(now-RETRY), limit))]
+                (after_id, stamp(now-retained), stamp(now), stamp(now-RETRY), limit))]
 
     def generate(self, oid, *, now=None, budget=dish_story.BUDGET):
         now = now or utcnow()

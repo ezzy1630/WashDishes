@@ -10,6 +10,7 @@ import bisect
 import hashlib
 import hmac
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -19,8 +20,9 @@ import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
+from stat import S_ISREG
 
 from anyio import CancelScope
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -30,9 +32,23 @@ from starlette.concurrency import run_in_threadpool
 from . import league
 from .store import parse_stamp
 
+logger = logging.getLogger(__name__)
 LINK_SECONDS = 300
 MAX_BYTES = 32 * 1024 * 1024
+SETTLED_SECONDS = 120
 SEGMENT = re.compile(r'[0-9]{10,20}-[0-9]{6,10}\.ts\Z')
+
+
+def listing(root: Path) -> set[str]:
+    """Segment names, from a child process because os.listdir gives up the GIL
+    per entry: 15,000 names took 10 s beside one busy thread, and 0.008 s idle."""
+    with subprocess.Popen(['ls', '-f', str(root)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+        try:
+            output, _ = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            raise
+    return {name for name in output.decode(errors='replace').splitlines() if SEGMENT.fullmatch(name)}
 
 
 @dataclass(frozen=True)
@@ -42,7 +58,7 @@ class Segment:
     size: int
     modified: int
 
-    @property
+    @cached_property
     def id(self):
         return hashlib.sha256(f'{self.path.name}:{self.modified}:{self.size}'.encode()).hexdigest()[:32]
 
@@ -78,6 +94,7 @@ class Footage:
         self.cache: dict[str, Prepared] = {}
         self.index_lock = threading.Lock()
         self.scanned = 0.0
+        self.known: dict[str, Segment] = {}
         self.segments: list[Segment] = []
         self.by_id: dict[str, Segment] = {}
         self.moments_at = 0.0
@@ -88,16 +105,28 @@ class Footage:
             if time.monotonic() - self.scanned < 5:
                 return self.segments
             root = self.house.media.buffer.resolve()
-            found = []
-            for path in root.glob('*.ts'):
-                if not SEGMENT.fullmatch(path.name) or path.is_symlink():
+            names = listing(root)
+            # Each stat gives up the GIL, so a busy worker thread stretches a
+            # full scan from 0.3 s to seconds while viewers wait on this lock.
+            # Finished segments never change: read only new or possibly open files.
+            known = self.known
+            for name in known.keys() - names:
+                del known[name]
+            now = time.time()
+            newest = max(known, key=lambda name: known[name].end, default=None)
+            for name in names:
+                current = known.get(name)
+                if current is not None and name != newest and current.end < now - SETTLED_SECONDS:
                     continue
+                path = root / name
+                known.pop(name, None)
                 try:
-                    stat = path.stat()
-                    if path.is_file() and 0 < stat.st_size <= MAX_BYTES:
-                        found.append(Segment(path, stat.st_mtime, stat.st_size, stat.st_mtime_ns))
+                    stat = path.lstat()
                 except FileNotFoundError:
                     continue
+                if S_ISREG(stat.st_mode) and 0 < stat.st_size <= MAX_BYTES:
+                    known[name] = Segment(path, stat.st_mtime, stat.st_size, stat.st_mtime_ns)
+            found = list(known.values())
             found.sort(key=lambda s: (s.end, s.path.name))
             # The newest can still be open even if no packets arrived recently.
             # A grace period also avoids the writer's last flush/rotation race.
@@ -260,6 +289,7 @@ class Footage:
                 entry.result.set_exception(error)
             release()
             if isinstance(error, (OSError, subprocess.SubprocessError, TimeoutError)):
+                logger.warning('Could not prepare footage %s: %r', s.path.name, error)
                 raise HTTPException(503, 'Could not open this recording. Try again shortly.') from None
             raise
 

@@ -113,6 +113,37 @@ def test_retention_and_symlinks_rechecked_even_after_remux(recordings, tmp_path)
     assert client.get('/house/api/footage', params={'path': '../outside.ts'}).status_code == 400
 
 
+def test_rescan_reads_only_new_and_open_recordings(recordings, monkeypatch):
+    from pathlib import Path
+    client, footage, end, _ = recordings
+    buffer = client.app.state.media.buffer
+    settled = time.time() - 600
+    for i, path in enumerate(sorted(buffer.glob('*.ts'))):
+        os.utime(path, (settled + i, settled + i))
+    footage.scanned = 0
+    footage.inventory()
+    known = [p.name for p in sorted(buffer.glob('*.ts'))]
+    assert len(footage.known) == 4
+
+    read = []
+    lstat = Path.lstat
+    monkeypatch.setattr(Path, 'lstat', lambda self: read.append(self.name) or lstat(self))
+    # Writes to the newest file must still be seen; older ones are finished.
+    newest = buffer / known[-1]
+    newest.write_bytes(b'recorded-video-grown')
+    added = buffer / '1793747900984577979-000004.ts'
+    added.write_bytes(b'recorded-video')
+    os.utime(added, (settled + 60, settled + 60))
+    (buffer / known[0]).unlink()
+    footage.scanned = 0
+    footage.inventory()
+
+    assert sorted(read) == sorted([known[-1], added.name])
+    assert known[0] not in footage.known
+    assert footage.known[known[-1]].size == newest.stat().st_size
+    assert added.name in footage.known
+
+
 def test_ten_simultaneous_viewers_share_remux_without_count_admission(recordings):
     client, _, end, calls = recordings
     url = capability(client, end)

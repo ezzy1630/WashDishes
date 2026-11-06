@@ -1,6 +1,7 @@
 import io
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from PIL import Image, ImageDraw
 
 from wash_dishes import dish_story
@@ -297,3 +298,16 @@ def test_interrupted_motion_scan_covers_visit_ends_before_filling_gaps():
     assert sorted(order) == list(range(50))
     assert scan_order(0) == []
     assert scan_order(1) == [0]
+
+
+@pytest.mark.parametrize('hours, expected_ages', [(24, [12]), (96, [12, 48, 72])])
+def test_story_candidates_follow_configured_rolling_retention(store, media, hours, expected_ages):
+    now = datetime.now(timezone.utc)
+    store.set_settings({'buffer_hours': hours})
+    dishes = {
+        age: store.create_obligation(None, [{'kind': 'pan', 'quantity': 1}],
+                                     candidate=True, source='vision', at=now-timedelta(hours=age), box=BOX)
+        for age in (12, 48, 72, 97)
+    }
+    worker = Stories(store, media, History())
+    assert worker.candidates(now=now, limit=10) == [dishes[age]['id'] for age in expected_ages]
