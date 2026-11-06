@@ -291,10 +291,10 @@ async function refresh(initial = false) {
   const requestEpoch = epoch,
     selected = state.selected;
   try {
-    const [identity, data] = await Promise.all([
-      !state.me || initial ? getMe() : Promise.resolve(state.me),
-      getWeek(selected),
-    ]);
+    // The first authenticated read warms the server's signing-key cache. A
+    // parallel cold read deliberately returns 503 while that refresh is held.
+    const identity = !state.me || initial ? await getMe() : state.me;
+    const data = await getWeek(selected);
     if (requestEpoch !== epoch || selected !== state.selected) return;
     state.me = identity;
     state.data = data;
