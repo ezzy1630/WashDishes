@@ -12,6 +12,7 @@ export function recordedPlayer(callbacks) {
   /** @type {AbortController|null} */ let selecting = null;
   /** @type {AbortController|null} */ let preparing = null;
   /** @type {Set<Slot>} */ const slots = new Set();
+  /** @type {number|null} */ let selectedAt = null;
   const stage = h("div", { class: "footage-stage" });
   const play = button("Play", () => {
     if (active && !active.video.paused) active.video.pause();
@@ -20,9 +21,13 @@ export function recordedPlayer(callbacks) {
   const seek = h("input", { type: "range", min: 0, max: 1, step: 0.1, value: 0,
     "aria-label": "Seek within this recording" });
   const elapsed = h("span", { class: "help footage-elapsed" }, "0:00 / 0:00");
+  const retry = button("Retry recording", () => {
+    if (selectedAt !== null) void load(selectedAt);
+  }, "secondary");
+  retry.hidden = true;
   play.disabled = seek.disabled = true;
   seek.addEventListener("input", () => { if (active) active.video.currentTime = Number(seek.value); });
-  const element = h("div", {}, stage, h("div", { class: "footage-transport" }, play, seek, elapsed));
+  const element = h("div", {}, stage, h("div", { class: "footage-transport" }, play, seek, elapsed, retry));
   const now = () => Date.now() / 1000;
   /** @param {Chunk} chunk */
   const key = (chunk) => new URL(chunk.url).pathname;
@@ -39,6 +44,7 @@ export function recordedPlayer(callbacks) {
   function failed(error) {
     if (!alive) return;
     callbacks.status(error instanceof Error ? error.message : "Could not open this recording. Try another moment.");
+    retry.hidden = false; retry.disabled = false;
     play.disabled = !active;
     seek.disabled = !active;
   }
@@ -60,7 +66,7 @@ export function recordedPlayer(callbacks) {
   }
   /** @param {Chunk} chunk @returns {Slot} */
   function obtain(chunk) {
-    const existing = [...slots].find((s) => key(s.chunk) === key(chunk) && s.expires > now() + 20);
+    const existing = [...slots].find((s) => !s.video.error && key(s.chunk) === key(chunk) && s.expires > now() + 20);
     if (existing) { existing.chunk = chunk; existing.check = null; return existing; }
     for (const slot of slots) if (slot !== active && slot !== previous) {
       slot.release(); slots.delete(slot);
@@ -75,7 +81,7 @@ export function recordedPlayer(callbacks) {
     /** @type {()=>void} */ let cancelReady = () => {};
     /** @type {Promise<void>} */
     const ready = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("The next recording is taking too long. Try again.")), 15000);
+      const timeout = setTimeout(() => reject(new Error("This recording is taking too long. Retry it or choose another time.")), 15000);
       const finish = () => { clearTimeout(timeout); resolve(); };
       video.addEventListener("loadeddata", finish, { once: true });
       video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Could not load this recording. Try another moment.")); }, { once: true });
@@ -119,12 +125,18 @@ export function recordedPlayer(callbacks) {
       if (active === slot && !ahead) prepareNext(slot);
     });
     video.addEventListener("pause", () => { if (active === slot) play.textContent = "Play"; });
+    video.addEventListener("error", () => {
+      if (active === slot) {
+        selectedAt = slot.chunk.start + video.currentTime;
+        failed(new Error("This recording stopped loading. Retry it or choose another time."));
+      }
+    });
     video.addEventListener("ended", () => { if (active === slot) void advance(slot); });
     video.src = src; video.load();
     return slot;
   }
-  /** @param {Slot} slot @param {number} offset @param {boolean} autoplay */
-  function activate(slot, offset, autoplay) {
+  /** @param {Slot} slot @param {number} offset @param {boolean} autoplay @param {boolean} [adjacent] */
+  function activate(slot, offset, autoplay, adjacent = false) {
     const old = active;
     if (old !== slot) {
       if (old) { old.video.removeAttribute("data-active"); old.video.setAttribute("aria-hidden", "true"); old.video.pause(); }
@@ -133,8 +145,9 @@ export function recordedPlayer(callbacks) {
     slot.video.setAttribute("data-active", ""); slot.video.removeAttribute("aria-hidden");
     if (Math.abs(slot.video.currentTime - offset) > 0.05) slot.video.currentTime = offset;
     seek.max = String(slot.video.duration); play.disabled = seek.disabled = false;
+    retry.hidden = true;
     play.textContent = "Play"; update();
-    const gap = old && old !== slot ? slot.chunk.start - old.chunk.end : 0;
+    const gap = adjacent && old && old !== slot ? slot.chunk.start - old.chunk.end : 0;
     const message = gap > 2 ? `Recording gap · skipped ${short(gap)}. Resuming at the next recording.`
       : "Scrub the player, or choose another moment below.";
     callbacks.status(message);
@@ -184,6 +197,7 @@ export function recordedPlayer(callbacks) {
   /** @param {Slot} ended */
   async function advance(ended) {
     if (ended.chunk.next === null) { callbacks.status("End of the finished recordings. Refresh for newer footage."); return; }
+    selectedAt = ended.chunk.next;
     const selected = generation;
     try {
       if (!ahead) prepareNext(ended);
@@ -194,11 +208,12 @@ export function recordedPlayer(callbacks) {
       if (!slot.check) slot.check = validate(slot);
       await slot.check;
       if (!alive || generation !== selected || active !== ended) return;
-      activate(slot, 0, true);
+      activate(slot, 0, true, true);
     } catch (error) { if (alive && generation === selected) failed(error); }
   }
   /** @param {number} at @param {boolean} [autoplay] @param {boolean} [fromStart] */
   async function load(at, autoplay = false, fromStart = false) {
+    selectedAt = at; retry.disabled = true;
     const selected = ++generation;
     selecting?.abort(); selecting = new AbortController(); cancelAhead();
     active?.video.pause(); play.disabled = seek.disabled = true;
@@ -209,7 +224,7 @@ export function recordedPlayer(callbacks) {
       const slot = obtain(chunk);
       await slot.ready;
       if (!alive || selected !== generation) return;
-      activate(slot, fromStart ? 0 : chunk.offset, autoplay);
+      activate(slot, fromStart ? 0 : chunk.offset, autoplay, fromStart);
     } catch (error) { if (alive && selected === generation) failed(error); }
   }
   async function resume() {
@@ -218,6 +233,7 @@ export function recordedPlayer(callbacks) {
       await load(active.chunk.next, true, true); return;
     }
     const slot = active, at = slot.chunk.start + slot.video.currentTime;
+    selectedAt = at;
     const selected = ++generation;
     selecting?.abort(); selecting = new AbortController(); play.disabled = true;
     try {

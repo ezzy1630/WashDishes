@@ -1,11 +1,12 @@
 .footage-page { max-width: 900px; margin-inline: auto; }
 .footage-page video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #0b0c0e; border-radius: 6px; }
-.footage-transport { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.footage-transport { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .footage-transport button { min-width: 72px; min-height: 44px; }
+.footage-transport button[hidden] { display: none; }
 .footage-transport input { flex: 1; width: 0; min-width: 0; min-height: 44px; padding: 0; accent-color: var(--action); }
 .footage-elapsed { flex: none; font-variant-numeric: tabular-nums; }
 .footage-clock { margin-top: 12px; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.footage-status { min-height: 3em; margin-top: 4px; }
+.footage-status { min-height: 1.5em; margin: 4px 0 12px; }
 .footage-chunks { display: flex; gap: 12px; margin: 12px 0 24px; }
 .footage-chunks button { flex: 1; min-height: 44px; }
 .footage-controls { border-top: 1px solid var(--line); padding-top: 20px; margin-bottom: 24px; }
@@ -32,7 +33,7 @@
   .footage-jump button { justify-self: start; }
 }
 
-.footage-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #0b0c0e; border-radius: 6px; overflow: hidden; }
+.footage-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 42svh; background: #0b0c0e; border-radius: 6px; overflow: hidden; }
 .footage-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .footage-stage video:not([data-active]) { visibility: hidden; pointer-events: none; }
 .footage-timeline { height: 64px; }

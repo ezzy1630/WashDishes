@@ -41,7 +41,7 @@ export function footagePage() {
   });
   const load = player.load;
   const root = h("div", { class: "footage-page" }, heading("Kitchen footage", "Browse the recordings kept by the kitchen camera."),
-    player.element, clock, status,
+    status, player.element, clock,
     h("div", { class: "footage-chunks" }, previous, next), panel,
     h("p", { class: "help" }, "Recorded only · No audio · Clock times are approximate. New footage appears after a segment finishes. Older recordings roll off automatically."), refresh);
   dispose = () => { alive = false; player.stop(); };
