@@ -14,6 +14,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 
+from .config import DEFAULT_SETTINGS
 from .dish_story import BUDGET
 from .media import Media
 from .rerender import ReadJournal
@@ -28,10 +29,12 @@ def run(root, *, apply=False, after_id=0, limit=3, max_seconds=90, now=None):
     now = now or utcnow()
     # Dry runs never prepare a Store or change SQLite pragmas/schema.
     with sqlite3.connect((root/'history.db').as_uri()+'?mode=ro', uri=True) as conn:
+        saved = conn.execute("SELECT value FROM settings WHERE key='buffer_hours'").fetchone()
+        retained = timedelta(hours=json.loads(saved[0]) if saved else DEFAULT_SETTINGS['buffer_hours'])
         ids = [r[0] for r in conn.execute('''SELECT id FROM obligations WHERE id>?
             AND source IN ('vision','baseline') AND box IS NOT NULL AND archived_at IS NULL
             AND lifecycle NOT IN ('dismissed','disputed','cleared') AND due_at<=? AND created_at>=?
-            ORDER BY id LIMIT ?''', (after_id, stamp(now), stamp(now-timedelta(hours=50)), limit+1))]
+            ORDER BY id LIMIT ?''', (after_id, stamp(now), stamp(now-retained), limit+1))]
     result = {'root': str(root), 'dry_run': not apply, 'ids': ids[:limit], 'results': [],
               'next_after_id': ids[limit-1] if len(ids)>limit else None}
     if not apply:

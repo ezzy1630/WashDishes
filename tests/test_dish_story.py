@@ -302,6 +302,8 @@ def test_interrupted_motion_scan_covers_visit_ends_before_filling_gaps():
 
 @pytest.mark.parametrize('hours, expected_ages', [(24, [12]), (96, [12, 48, 72])])
 def test_story_candidates_follow_configured_rolling_retention(store, media, hours, expected_ages):
+    from wash_dishes import backfill_stories
+
     now = datetime.now(timezone.utc)
     store.set_settings({'buffer_hours': hours})
     dishes = {
@@ -311,3 +313,24 @@ def test_story_candidates_follow_configured_rolling_retention(store, media, hour
     }
     worker = Stories(store, media, History())
     assert worker.candidates(now=now, limit=10) == [dishes[age]['id'] for age in expected_ages]
+    assert backfill_stories.run(store.root, now=now, limit=10)['ids'] == [
+        dishes[age]['id'] for age in expected_ages]
+
+
+def test_post_deadline_journal_scan_stops_at_its_budget(monkeypatch):
+    elapsed = [0]
+    consumed = []
+
+    class SlowLaterHistory(History):
+        def frames(self, a, b):
+            for frame in super().frames(a, b):
+                if a == 180 and b == 239:
+                    elapsed[0] += 1
+                    consumed.append(frame['at'])
+                yield frame
+
+    monkeypatch.setattr(dish_story.time, 'monotonic', lambda: elapsed[0])
+    result = dish_story.select(SlowLaterHistory(), None, item(), now=239, deadline=5,
+                              decode=lambda at: (at, image(at >= 45)))
+    assert result == dish_story.TIMEOUT
+    assert len(consumed) <= 6, 'a slow later scan must stop before exhausting the six-hour range'

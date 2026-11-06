@@ -156,11 +156,12 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
     end = min(now, bounds[1])
     if end < due:
         return 'No post-deadline journal observation.'
-    frames = []
-    for index, frame in enumerate(journal.frames(max(bounds[0], anchor-LOOKBACK), min(end, anchor+600))):
-        if index % 256 == 0:
+    def observations(start, finish):
+        for frame in journal.frames(start, finish):
             putdown._check_deadline(deadline)
-        frames.append(frame)
+            yield frame
+
+    frames = list(observations(max(bounds[0], anchor-LOOKBACK), min(end, anchor+600)))
     # Clear JOURNAL instants locate candidates, including sparse journal periods.
     # Exact decoded photos are checked again; gaps never imply absence.
     clear = [f for f in frames if not people(f, box, covering=True)]
@@ -179,7 +180,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
                 cache[frame['at']] = None
             else:
                 at, jpeg = got
-                neighbors = list(journal.frames(at-3, at+3))
+                neighbors = list(observations(at-3, at+3))
                 nearest = min(neighbors, key=lambda f: abs(f['at']-at), default=None)
                 if nearest is None and 'jpeg' in frame:
                     nearest = frame
@@ -198,7 +199,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
             if result['pose'].get('person_boxes'):
                 result['person_boxes'] = [p for p in result['pose']['person_boxes'] if putdown._reach(box,p)<=.08]
         if result and not result.get('pose',{}).get('available'):
-            support = list(journal.frames(result['at']-3,result['at']+3))
+            support = list(observations(result['at']-3,result['at']+3))
             dense = (len(support)>=4 and support[0]['at']<=result['at']-2.5
                      and support[-1]['at']>=result['at']+2.5
                      and all(b['at']-a['at']<=3 for a,b in zip(support,support[1:])))
@@ -214,7 +215,7 @@ def _select(journal, buffer, item, *, now, deadline, decode, pose):
     if not reference or reference['covered']:
         return 'The reference dish view is unavailable or covered.'
     # Verify AFTER first. Searching an arrival is wasted work if the spot is gone.
-    later = [f for f in journal.frames(due, min(end, due+6*3600)) if not people(f, box, covering=True)]
+    later = [f for f in observations(due, min(end, due+6*3600)) if not people(f, box, covering=True)]
     # Search across lighting changes and short occlusions, rather than only four
     # instants in the first half hour. The same wall-clock budget bounds decoding.
     early = [f for f in later if f['at'] <= due+1800]
