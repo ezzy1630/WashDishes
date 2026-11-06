@@ -52,8 +52,8 @@ export function feedPage(main, route) {
     h('div', {class: 'home-grid'},
       h('section', {class: 'out-now', 'aria-labelledby': 'page-title'}, figure, outList),
       h('section', {class: 'ready', 'aria-labelledby': 'ready-title'},
-        h('h2', {id: 'ready-title'}, 'Ready to share'),
-        h('p', {class: 'section-note'}, 'Four camera views, with the dish in the same spot two hours after it was left out.'),
+        h('h2', {id: 'ready-title'}, 'Saved dish stories'),
+        h('p', {class: 'section-note'}, 'Before, activity and later views. Check what the photos show before naming anyone.'),
         ready, more))));
 
   function health() {
@@ -93,7 +93,7 @@ export function feedPage(main, route) {
 
   function outRow(c, n, inPicture) {
     const waiting = isFuture(c.followup_at);
-    const reason = c.share_ready ? 'Photo ready to share' : photoReason(c.share_reason, c.captured);
+    const reason = c.story_url ? 'Spot story available' : c.share_ready ? 'Photo ready to share' : photoReason(c.share_reason, c.captured);
     const note = [waiting ? `next photo ${time(c.followup_at)}` : null, !c.share_ready && c.followup_captured ? 'two-hour photo attached' : null, !waiting || !/two-hour/.test(reason) ? reason.toLowerCase() : null,
       frame && !inPicture ? 'not in this picture' : null].filter(Boolean).join(' · ');
     return h('li', {}, h('a', {class: 'now-row', href: `#/incident/${c.id}`},
@@ -106,12 +106,12 @@ export function feedPage(main, route) {
   function card(c) {
     return h('article', {class: 'share-card'},
       h('a', {class: 'share-picture', href: `#/incident/${c.id}`, 'aria-label': `Open ${dishTitle(c.title)} photo`},
-        h('img', {src: c.share_url, alt: `${dishTitle(c.title)}: earlier, handling, left out and later views`, loading: 'lazy',
+        h('img', {src: c.story_url || c.share_url, alt: `${dishTitle(c.title)}: saved camera views`, loading: 'lazy',
           onerror: e => e.target.replaceWith(h('p', {class: 'photo-error'}, 'Photo unavailable. Open to retry.'))})),
       h('div', {class: 'share-card-foot'},
         h('h3', {class: 'sr-only'}, `${dishTitle(c.title)}, ${c.location || 'Kitchen'}`),
         h('a', {class: 'btn quiet', href: `#/incident/${c.id}`}, 'Details'),
-        h('a', {class: 'btn primary', href: c.share_url, download: `dish-${c.id}.jpg`}, 'Download')));
+        h('a', {class: 'btn primary', href: c.story_url || c.share_url, download: `dish-${c.id}.jpg`}, 'Download')));
   }
 
   async function load(append = false) {

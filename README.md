@@ -203,6 +203,39 @@ The budget covers raw recordings and evidence, not the installed model assets or
 
 SQLite history and audit records persist across restarts. The rate denominator includes confirmed resolved outcomes or confirmed continuing overdue observations. Expired unverified deadlines are displayed separately and never treated as successful on-time outcomes. Compact audit events for closed records age out after a year; obligation summaries remain for historical totals. Back up the database using SQLite's backup API, not a plain copy of a running WAL database. Protect the data directory and household key.
 
+## Fixed-spot dish stories
+
+The existing proof worker alternates arrival context with a bounded, offline story
+search after a dish's deadline (45 seconds per dish, no extra worker). A story
+requires a clear changed BEFORE and a clear post-deadline crop matching the first
+sighting at the same box. Unknown arrivals and missing later matches retain the
+existing context. Photos never change names, visit membership, scoring or proof
+checks. DURING captions describe activity at the location, not cooking or ownership.
+
+The selector compares brightness-normalized Lab crops and spatial correlation. It
+decodes four short 2 fps bursts from the arrival visit. If an explicitly prepared
+`models/yolo26n-pose.pt` exists, CPU wrist keypoints rank the views; pose is optional,
+never downloads a checkpoint, and does not establish use. Dish movement across spots,
+look-alike replacements, non-person occlusions and strong localized glare remain
+limits. Separate moments do not prove uninterrupted presence.
+
+Retained stories appear before arrival strips on single-dish house visit/naming
+pages and the operator photo feed/detail. Multi-dish visits retain their group
+context; each dish's own page can show its story. To backfill an explicitly selected
+**offline data copy**, inspect first, then apply and resume with `next_after_id`:
+
+```sh
+.venv/bin/python -m wash_dishes.backfill_stories --root /explicit/offline/copy
+.venv/bin/python -m wash_dishes.backfill_stories --root /explicit/offline/copy --apply --limit 3 --max-seconds 90
+.venv/bin/python -m wash_dishes.backfill_stories --root /explicit/offline/copy --apply --after-id 123
+```
+
+Dry runs are read-only. Applied passes add only story evidence/images and resumable
+job rows; retained successful/unavailable jobs are idempotent. Transient jobs wait
+five minutes before retry; start a fresh pass at zero to revisit them. A cross-process
+claim prevents concurrent arrival/story decodes. This command does not start the
+service, load identity models, or rewrite the league.
+
 ## Check the build
 
 ```sh

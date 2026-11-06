@@ -23,6 +23,7 @@ from .putdown import JOURNAL_TOO_NEW, find_putdown, find_putdown_journal
 from .recovery import EvidenceRecovery
 from .sequences import SequenceCollection
 from .store import Store, parse_stamp, stamp, utcnow
+from .story_jobs import Stories
 from .tracing import TraceSearch
 from .vision import box_iou, merge_detections
 
@@ -49,6 +50,7 @@ class Runtime:
         # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
         self.journal = Journal(config.root / "journal.db")
         self.filmstrips = Filmstrips(store, media, self.journal, identify=self._identify_arrival)
+        self.stories = Stories(store, media, self.journal)
         self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
         self.camera = Camera(config.root, store, media, self.offer_frame)
@@ -207,13 +209,18 @@ class Runtime:
         except (AttributeError, OSError):
             pass
         next_cleanup = 0.0
+        story_turn = True
         while not self.stop_event.wait(20):
             try:
                 if time.monotonic() >= next_cleanup:
                     self.proofs.cleanup()
                     self.journal.prune(time.time(), self.store.settings()["buffer_hours"])
                     next_cleanup = time.monotonic() + 3600
-                self.filmstrips.run_once()
+                # Alternate bounded jobs so a retained-story backlog cannot starve
+                # arrival context or the existing proof checks. No extra thread.
+                if not story_turn or self.stories.run_once() is None:
+                    self.filmstrips.run_once()
+                story_turn = not story_turn
                 with self.lock:
                     seeing = self.store.settings()["vision_enabled"] and self.local_vision().status()["ready"]
                 # Every proof is checked before it is shown; without vision there is nothing to check with.

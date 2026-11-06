@@ -72,6 +72,8 @@ function advancedIncidentPage(main, route) {
         h('h1', {id: 'page-title', tabindex: '-1'}, `${o.resident_name && o.confidence === 'confirmed' ? o.resident_name + ' · ' : ''}${seq?.dishes || o.dishes.map(d => `${d.quantity} ${d.kind}`).join(', ')}`),
         h('p', {class: 'tx2'}, `#${o.id} · ${o.location || 'Kitchen'} · ${when(o.created_at)} · ${{removed: 'Removed; washing unknown', washed: 'Washing confirmed', out: 'Detected on a counter or in the sink', unknown: 'Continuity needs checking', clean: 'Clean dish'}[detail.outcome] || detail.outcome}${o.due_at ? ` · deadline ${when(o.due_at)}` : ` · two-hour photo ${when(o.followup_at)} (from an unattended view)`}`))),
       h('div', {class: 'incident-columns'}, h('section', {class: 'incident-evidence', 'aria-label': 'Incident evidence'},
+        detail.story_url ? h('a', {href: detail.story_url, target: '_blank', rel: 'noopener', class: 'full-collage'},
+          h('img', {src: detail.story_url, alt: 'Saved fixed-spot dish story; nearby activity does not establish use or ownership'})) : null,
         seq?.image_url ? h('div', {class: 'evidence-caption'},
           h('a', {class: 'btn primary', href: seq.image_url, download: `dish-${o.id}-four-stage.jpg`}, 'Download photo'),
           h('p', {class: 'tx2'}, 'Saves the four-frame collage as one image to attach in your house chat. Check the photos before assigning responsibility.')) : null,
@@ -101,7 +103,7 @@ export function incidentDetailPage(main, route) {
     try {
       const result=await api(`/api/incidents/${Number(route.sub)}`);
       if(!alive || editing) return;
-      const fresh=JSON.stringify([result.revision,result.sequence?.fingerprint,result.share_ready,result.share_reason]);
+      const fresh=JSON.stringify([result.revision,result.sequence?.fingerprint,result.share_ready,result.share_reason,result.story_url]);
       if(fresh===signature) return;
       signature=fresh;detail=result;render();
     } catch(e) {if(alive && !detail)fill(content,h('h1',{},'Could not load photos'),h('p',{role:'alert'},e.message),h('button',{class:'btn',onclick:load},'Try again'));}
@@ -147,7 +149,9 @@ export function incidentDetailPage(main, route) {
       h('header',{class:'page-head'},h('div',{},h('h1',{id:'page-title',tabindex:'-1'},title),
         h('p',{class:'tx2'},`${o.location || 'Kitchen'} · tracked since ${time(o.created_at)}`)),
         detail.share_ready ? h('a',{class:'btn primary',href:detail.share_url,download:`dish-${o.id}.jpg`},'Download photo') : null),
-      detail.share_ready ? h('img',{class:'share-full',src:detail.share_url,alt:'Earlier, handling, left out and two-hour follow-up photos'})
+      detail.story_url ? h('a',{href:detail.story_url,target:'_blank',rel:'noopener'},
+        h('img',{class:'share-full',src:detail.story_url,alt:'Before, two activity views and a verified later view at this dish spot'}))
+        : detail.share_ready ? h('img',{class:'share-full',src:detail.share_url,alt:'Earlier, handling, left out and two-hour follow-up photos'})
         : h('section',{class:'pending-view'},
           last ? h('figure',{},croppedView({src:last.url,alt:`Saved photo: ${last.title}`,marks:last.box ? [{box:last.box}] : [],minWidth:.42,aspect:1.6,anchor:.62}),
             h('figcaption',{class:'tx2'},`Saved photo from ${time(last.at)}, not a live view. Full scene under Original photos.`)) : null,

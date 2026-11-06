@@ -358,7 +358,9 @@ class House:
                        'note': item['dispute_note'], 'at': item['dispute_at'],
                        'settled_by': people.get(item['dispute_settled_by'])}
         media = [e for e in evidence if e['obligation_id'] == item['id']]
-        filmstrip = next((e for e in reversed(media) if e['kind'] == 'filmstrip' and e['label'] == 'arrival'), None)
+        filmstrip = next((e for e in reversed(media) if e['label'] == 'dish story' and not e['expired']
+                          and parse_stamp(e['expires_at']) > utcnow()), None)
+        filmstrip = filmstrip or next((e for e in reversed(media) if e['kind'] == 'filmstrip' and e['label'] == 'arrival'), None)
         photos = [e for e in reversed(media) if e['kind'] == 'snapshot' and not e['expired'] and parse_stamp(e['expires_at']) > utcnow()]
         # The site's “later photo” must be the matching deadline observation when retained.
         photo = next((e for e in photos if e['label'] == 'Matching dish still visible after the deadline'), None)
@@ -393,6 +395,13 @@ class House:
             closed = data['week']['closed']
             residents = data.get('residents') or self.store.residents()
             evidence = data.get('evidence', []) if closed else self.evidence_for([d['id'] for d in data['dishes']])
+            if closed:
+                # Backfill may add pictures after a week's decisions froze. Read
+                # only those independent story images; never rewrite the snapshot
+                # or import new membership, names, scores, or arrival metadata.
+                known = {e['id'] for e in evidence}
+                evidence = [*evidence, *(e for e in self.evidence_for([d['id'] for d in data['dishes']])
+                                        if e['label'] == 'dish story' and e['id'] not in known)]
             live = {r['id']: dict(r) for r in self.store.conn.execute(
                 'SELECT id,expired,expires_at,filename FROM evidence WHERE id IN (SELECT value FROM json_each(?))',
                 (json.dumps([e['id'] for e in evidence]),))}
@@ -481,16 +490,35 @@ class House:
                     guess = {'resident_id': person['id'], 'name': person['name'],
                              'basis': seen.get('basis') or 'Appearance suggestion; check the arrival photos.'}
             filmstrip = group['filmstrip']
+            canonical = [oid for oid in group['dish_ids'] if oid not in group['duplicate_of']]
+            if len(canonical) == 1:
+                story = next((e for e in reversed(evidence) if e['obligation_id'] == canonical[0]
+                              and e['label'] == 'dish story' and not e['expired']
+                              and parse_stamp(e['expires_at']) > utcnow()), None)
+                filmstrip = story or filmstrip
             # Refresh retention from live evidence; never fall back to a superseded strip.
             filmstrip = evidence_by_id.get(filmstrip['id']) if filmstrip else None
             url = None
             if filmstrip and not filmstrip['expired'] and parse_stamp(filmstrip['expires_at']) > utcnow():
                 url = self.signed_url(filmstrip) if actor else f"/api/evidence/{filmstrip['id']}"
             for oid in group['dish_ids']:
+                if len(canonical) > 1 and any(e['obligation_id'] == oid and e['label'] == 'dish story'
+                                             and not e['expired'] and parse_stamp(e['expires_at']) > utcnow() for e in evidence):
+                    continue
                 formatted[oid]['filmstrip_url'] = url
                 formatted[oid].update({f'filmstrip_{k}': v for k, v in self.image_size(filmstrip, url).items()})
             member_signals = [(signals or {}).get(oid, {}) for oid in group['dish_ids']]
-            rating = review_evidence.rate(group.get('capture', {}), has_filmstrip=bool(url),
+            rating_capture = group.get('capture', {})
+            if filmstrip and filmstrip['label'] == 'dish story':
+                # An identity guess belongs to its original arrival anchor, not
+                # different visitors selected by the independent spot story.
+                guess = None
+                capture = filmstrip['capture']
+                capture = json.loads(capture) if isinstance(capture,str) else capture
+                # Rate the people actually shown, without rewriting arrival or
+                # membership metadata (or claiming that proximity proves use).
+                rating_capture = rating_capture | {'frames': capture.get('frames', [])}
+            rating = review_evidence.rate(rating_capture, has_filmstrip=bool(url),
                 has_photo=any(formatted[oid]['photo_url'] for oid in group['dish_ids']),
                 dish_confident=all(s.get('dish_confident', False) for s in member_signals),
                 remembered_near_match=any(s.get('remembered_near_match', False) for s in member_signals),

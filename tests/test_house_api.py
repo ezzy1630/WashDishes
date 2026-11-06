@@ -1191,3 +1191,59 @@ def test_week_gzip_negotiation_preserves_json_and_private_policy(house_client):
     # No photos in this fixture, so signatures cannot tick between the reads.
     assert plain.json() == json.loads(gzip.decompress(compressed))
     assert len(compressed) < len(plain.content)
+
+
+def test_fixed_spot_story_leads_single_dish_visit_without_changing_names_or_membership(house_client):
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    old_id = stored_visit(client, [item], visit_id='story-visit')
+    before = dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone())
+    members = [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')]
+    store.add_evidence(item['id'], 'test-story', 'test-story.jpg', 'filmstrip', 'dish story',
+                       capture={'frames':[{'person_boxes':[[.3,.2,.2,.7]]}]})
+    data = client.get('/house/api/week').json()
+    assert '/house/media/test-story?' in data['visits'][0]['filmstrip_url']
+    assert '/house/media/test-story?' in data['dishes'][0]['filmstrip_url']
+    assert data['visits'][0]['id'] == 'story-visit'
+    assert data['visits'][0]['reason'] is None  # No stale 'No one in the photos'.
+    assert data['visits'][0]['arrival_seen'] is False
+    assert dict(store.conn.execute('SELECT * FROM obligations WHERE id=?',(item['id'],)).fetchone()) == before
+    assert [tuple(r) for r in store.conn.execute('SELECT * FROM arrival_visit_members')] == members
+    with store.conn:
+        store.conn.execute("UPDATE evidence SET expired=1 WHERE id='test-story'")
+    fallback = client.get('/house/api/week').json()
+    assert old_id in fallback['visits'][0]['filmstrip_url']
+
+
+def test_backfilled_story_can_display_on_closed_week_without_rewriting_frozen_scores(house_client):
+    client, store = house_client, house_client.app.state.store
+    old = utcnow()-timedelta(weeks=2)
+    league.close_weeks(store,now=old)
+    item = late(client)
+    stored_visit(client,[item],visit_id='frozen-story-visit')
+    store.action(item['id'],'confirm',resident_id=client.people[0]['id'])
+    with store.conn:
+        store.conn.execute('UPDATE obligations SET due_at=?,created_at=? WHERE id=?',
+                           (stamp(old),stamp(old-timedelta(hours=3)),item['id']))
+    start = league.week_bounds(now=old)['start']
+    before = client.get('/house/api/week',params={'start':start}).json()
+    frozen = store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',(start,)).fetchone()[0]
+    store.add_evidence(item['id'],'backfilled-story','backfilled-story.jpg','filmstrip','dish story')
+    after = client.get('/house/api/week',params={'start':start}).json()
+    assert '/house/media/backfilled-story?' in after['visits'][0]['filmstrip_url']
+    assert after['standings']==before['standings'] and not after['visits'][0]['can_name']
+    assert store.conn.execute('SELECT snapshot FROM league_weeks WHERE start=?',(start,)).fetchone()[0]==frozen
+
+
+def test_story_does_not_reuse_identity_guess_from_different_arrival_photos(house_client,monkeypatch):
+    from wash_dishes import house_visits
+    client, store = house_client, house_client.app.state.store
+    item = late(client)
+    stored_visit(client,[item],visit_id='old-arrival-identity')
+    monkeypatch.setattr(store,'identity_display_gate',lambda:{'active':True,'threshold':.5})
+    monkeypatch.setattr(house_visits,'identity_capture',lambda *a:{
+        'identity':{'cues':{}},'created_at':stamp(),'obligation_id':item['id']})
+    monkeypatch.setattr(store,'suggest_identity',lambda *a,**kw:(client.people[1]['id'],.99,[],{'basis':'Appearance'}))
+    assert client.get('/house/api/week').json()['visits'][0]['guess']['resident_id']==client.people[1]['id']
+    store.add_evidence(item['id'],'different-story','different-story.jpg','filmstrip','dish story')
+    assert client.get('/house/api/week').json()['visits'][0]['guess'] is None
