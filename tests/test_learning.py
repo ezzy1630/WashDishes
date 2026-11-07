@@ -269,3 +269,27 @@ def test_dish_questions_never_use_the_latest_person_crop(store):
         learning.seed(store)
         learning.capture_action(store,oid,'verdict',{'verdict':'not_dish'},None)
     assert all(r['evidence_id']!='person-later' for r in store.conn.execute("SELECT * FROM learning_questions WHERE task IN ('present','kind','missed')"))
+
+
+def test_teaching_seed_does_not_rescan_people_for_every_retained_photo(store):
+    item = store.create_obligation(None, [{'kind': 'pan', 'quantity': 1}])
+    at = stamp()
+    expires = stamp(utcnow()+timedelta(days=1))
+    with store.conn:
+        store.conn.executemany('INSERT INTO evidence(id,obligation_id,filename,kind,created_at,expires_at,label) VALUES(?,?,?,\'snapshot\',?,?,\'Person portrait\')',
+                              [(f'history-{i}', item['id'], f'history-{i}.jpg', at, expires) for i in range(1000)])
+        store.conn.executemany('INSERT INTO person_samples(obligation_id,created_at,embedding,evidence_id) VALUES(?,?,?,?)',
+                              [(item['id'], at, '[]', f'missing-{i}') for i in range(1000)])
+        store.conn.execute('INSERT INTO person_samples(obligation_id,created_at,embedding,evidence_id) VALUES(?,?,?,?)',
+                           (item['id'], at, '[]', 'history-999'))
+    steps = [0]
+    def bounded_work():
+        steps[0] += 1000
+        return int(steps[0] > 250000)
+    store.conn.set_progress_handler(bounded_work, 1000)
+    try:
+        with store.conn:
+            learning.seed(store)
+    finally:
+        store.conn.set_progress_handler(None, 0)
+    assert [r[0] for r in store.conn.execute("SELECT evidence_id FROM learning_questions WHERE task='identity'")] == ['history-999']

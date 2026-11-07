@@ -148,6 +148,9 @@ class Store:
                 track_key TEXT, original_resident_id INTEGER REFERENCES residents(id));
             CREATE INDEX IF NOT EXISTS obligations_due ON obligations(lifecycle,due_at);
             CREATE INDEX IF NOT EXISTS obligations_track ON obligations(track_key);
+            -- Teaching reads the newest camera records while holding the shared
+            -- store lock; an ordered lookup keeps old history out of that scan.
+            CREATE INDEX IF NOT EXISTS obligations_source_created ON obligations(source,created_at);
             CREATE TABLE IF NOT EXISTS events(
                 id INTEGER PRIMARY KEY, obligation_id INTEGER REFERENCES obligations(id),
                 created_at TEXT NOT NULL, event TEXT NOT NULL, description TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}');
@@ -182,6 +185,7 @@ class Store:
                 embedding TEXT NOT NULL, evidence_id TEXT);
             CREATE INDEX IF NOT EXISTS person_samples_resident ON person_samples(resident_id);
             CREATE INDEX IF NOT EXISTS person_samples_obligation ON person_samples(obligation_id);
+            CREATE INDEX IF NOT EXISTS person_samples_evidence ON person_samples(evidence_id,obligation_id);
             -- Every dish the live inventory saw put down or picked up, to score it against hand-checked footage.
             CREATE TABLE IF NOT EXISTS dish_changes(at TEXT NOT NULL, area TEXT NOT NULL, change TEXT NOT NULL, kind TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS dish_changes_at ON dish_changes(at);
