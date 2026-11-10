@@ -585,7 +585,7 @@ function render(force = false) {
 async function mutate(dish, action, body, message) {
   if (state.working || state.offline) {
     announce("Reconnect to the kitchen before changing a dish.");
-    return;
+    return false;
   }
   if (action === "name" || action === "verdict") {
     answerError = "";
@@ -593,7 +593,7 @@ async function mutate(dish, action, body, message) {
     answers.add(dish, action, body, message);
     window.scrollTo(0, 0);
     focusHeading();
-    return;
+    return true;
   }
   state.working = true;
   epoch++;
@@ -621,6 +621,7 @@ async function mutate(dish, action, body, message) {
     await refresh();
     render();
     focusHeading();
+    return true;
   } catch (e) {
     if (e instanceof HouseError && e.status === 401) {
       await signOut().catch(() => {});
@@ -634,6 +635,7 @@ async function mutate(dish, action, body, message) {
         announce(`${message} Your change wasn’t confirmed.`);
       }
     }
+    return false;
   } finally {
     state.working = false;
     scope?.querySelectorAll("button").forEach((b) => (b.disabled = false));

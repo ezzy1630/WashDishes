@@ -71,7 +71,10 @@ The housemate site deliberately looks and behaves like an iPhone app rather than
 the graphite operator dashboard (see the House site section of `../DESIGN.md`):
 system fonts, iOS grouped lists, light and dark following the device, a bottom
 tab bar (This week, Dishes, Footage, Me) that becomes a sidebar at 900px and up,
-and bottom sheets for secondary choices. Past weeks and Help the camera are
+and bottom sheets for secondary choices. Duplicate choices start with the 20
+nearest originals; Show more keeps every other original reachable. A failed
+dispute keeps its note and an error in the sheet until retry succeeds or the
+housemate dismisses it. Past weeks and Help the camera are
 pushed from Me with a back button. Pushes, pops and answering a dish slide via
 the View Transitions API where supported and are instant with reduced motion.
 The bars and shell stay mounted between pages; a background read only redraws

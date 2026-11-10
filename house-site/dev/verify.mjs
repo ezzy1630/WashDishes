@@ -915,6 +915,35 @@ try {
         await page.getByLabel("What happened?").inputValue(),
         "I carried it to the sink, but didn’t use it.",
       );
+      // A deferred background render must not discard a rejected dispute's draft or error.
+      await page.route("**/house/api/week*", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        data.unnamed_count += 1;
+        await route.fulfill({ response, json: data });
+      });
+      const refresh = page.waitForResponse((r) => r.url().includes("/house/api/week"));
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await refresh;
+      let attempts = 0;
+      await page.route("**/house/api/visits/*/dispute", async (route) => {
+        attempts++;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        if (attempts <= 2) return route.fulfill({
+          status: attempts === 1 ? 409 : 503,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "The record changed. Try again." }),
+        });
+        return route.continue();
+      });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await page.getByRole("button", { name: "Send dispute" }).click();
+        await page.locator("dialog[open] .form-error").filter({ hasText: "Your note is still here" }).waitFor();
+        assert.equal(await page.getByLabel("What happened?").inputValue(),
+          "I carried it to the sink, but didn’t use it.");
+      }
+      await capture(page, "dispute-save-error", "390x844", "light");
+      await page.unroute("**/house/api/week*");
       await page.getByRole("button", { name: "Send dispute" }).click();
       await page
         .getByText(
@@ -1148,6 +1177,34 @@ try {
       assert.ok(await page.evaluate(() => window.__tab.isConnected), "the tab bar persists");
     },
   );
+  await check("duplicate originals beyond the nearest twenty remain reachable", async () => {
+    await control({ reset: true });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    observe(page);
+    try {
+      await signedIn(page);
+      await page.route("**/house/api/week*", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const source = data.visits.find((v) => !v.resident && v.can_name);
+        data.visits = [source, ...Array.from({ length: 25 }, (_, i) => ({
+          ...source, id: `target-${i}`, title: `Target ${i}`,
+          at: new Date(Date.parse(source.at) - 1000 * (i + 1)).toISOString(),
+          resident: null, photo_url: null, filmstrip_url: null,
+        }))];
+        await route.fulfill({ response, json: data });
+      });
+      await page.goto(`${origin}/name?mock=1`);
+      await moreAnswer(page, "Same as another");
+      assert.equal(await page.locator("dialog[open] .duplicate-choice").count(), 20);
+      await page.getByRole("button", { name: /Show more dishes/ }).click();
+      assert.equal(await page.locator("dialog[open] .duplicate-choice").count(), 25);
+      assert.equal(await page.locator("dialog[open] .duplicate-choice").filter({ hasText: "Target 24" }).count(), 1);
+      assert.equal(await page.getByRole("button", { name: /Show more dishes/ }).count(), 0);
+      await capture(page, "duplicate-all-originals", "390x844", "light");
+    } finally { await context.close(); }
+  });
   await check("every client route is served by the deployed rewrites", async () => {
     const config = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
     const sources = config.rewrites.map((r) => r.source);

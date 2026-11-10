@@ -28,7 +28,10 @@ function plainReason(reason) {
     .replace("Arrival photos unavailable", "No photos of it arriving")
     .replace("Arrival not recorded", "The camera missed it arriving")
     .replace("No one in the photos", "no one’s in the photos")
-    .replace("Looks like a household object; check Not a dish", "This might not be a dish at all")
+    .replace(
+      "Looks like a household object; check Not a dish",
+      "This might not be a dish at all",
+    )
     .replace(" · ", ", ");
 }
 /** @param {Week} data @param {import('../types.js').ScreenContext} context */
@@ -39,7 +42,11 @@ function reviewedVisits(data, context) {
     ? h(
         "details",
         { class: "reviewed-visits" },
-        h("summary", {}, `Reviewed this week (${reviewed.length + history.length})`),
+        h(
+          "summary",
+          {},
+          `Reviewed this week (${reviewed.length + history.length})`,
+        ),
         h(
           "div",
           { class: "reviewed-list" },
@@ -48,7 +55,11 @@ function reviewedVisits(data, context) {
               "article",
               { class: "reviewed-visit" },
               h("h3", {}, visit.title),
-              h("p", { class: "help" }, `${visit.area} · ${when(visit.at, data.week.timezone)}`),
+              h(
+                "p",
+                { class: "help" },
+                `${visit.area} · ${when(visit.at, data.week.timezone)}`,
+              ),
               h(
                 "p",
                 { class: "review-attribution" },
@@ -77,14 +88,18 @@ function reviewedVisits(data, context) {
               "article",
               { class: "reviewed-visit" },
               h("h3", {}, entry.title),
-              h("p", { class: "review-attribution" }, verdictText({ verdict: entry })),
+              h(
+                "p",
+                { class: "review-attribution" },
+                verdictText({ verdict: entry }),
+              ),
             ),
           ),
         ),
       )
     : null;
 }
-/** The likeliest duplicates are close in time, so a week of 90 stays a short list. @param {Visit} visit @param {Week} data @param {import("../types.js").ScreenContext["mutate"]} mutate */
+/** Start with nearby duplicates; keep every other original reachable. @param {Visit} visit @param {Week} data @param {import("../types.js").ScreenContext["mutate"]} mutate */
 function duplicatePicker(visit, data, mutate) {
   const at = Date.parse(visit.at);
   const targets = data.visits
@@ -93,55 +108,67 @@ function duplicatePicker(visit, data, mutate) {
       (a, b) =>
         Number(b.area === visit.area) - Number(a.area === visit.area) ||
         Math.abs(Date.parse(a.at) - at) - Math.abs(Date.parse(b.at) - at),
-    )
-    .slice(0, 20);
+    );
+  const choices = h("div", { class: "duplicate-picker" });
+  let shown = 0;
+  const more = button("Show more dishes", showMore, "secondary");
+  function showMore() {
+    const next = targets.slice(shown, shown + 20);
+    shown += next.length;
+    choices.append(
+      ...next.map((target) => {
+        const choice = button(
+          "",
+          () => {
+            closeSheet();
+            void mutate(
+              visit,
+              "verdict",
+              { verdict: "duplicate", of_visit_id: target.id },
+              "Marked as a duplicate",
+            );
+          },
+          "duplicate-choice",
+        );
+        const thumbnail = imageURL(target.photo_url || target.filmstrip_url);
+        if (thumbnail) {
+          const img = h("img", {
+            src: thumbnail,
+            alt: "",
+            width: 80,
+            height: 60,
+            loading: "lazy",
+            referrerpolicy: "no-referrer",
+          });
+          img.onerror = () => img.remove();
+          choice.append(img);
+        }
+        choice.append(
+          h(
+            "span",
+            {},
+            h("strong", {}, target.title),
+            h(
+              "span",
+              { class: "help" },
+              `${target.area} · ${when(target.at, data.week.timezone)}`,
+            ),
+            target.resident
+              ? h("span", { class: "help" }, `Named as ${target.resident.name}`)
+              : null,
+          ),
+        );
+        return choice;
+      }),
+    );
+    more.hidden = shown >= targets.length;
+    more.textContent = `Show more dishes (${targets.length - shown} left)`;
+  }
+  showMore();
   openSheet(
     "Which one is it the same as?",
     targets.length
-      ? h(
-          "div",
-          { class: "duplicate-picker" },
-          targets.map((target) => {
-            const choice = button(
-              "",
-              () => {
-                closeSheet();
-                void mutate(
-                  visit,
-                  "verdict",
-                  { verdict: "duplicate", of_visit_id: target.id },
-                  "Marked as a duplicate",
-                );
-              },
-              "duplicate-choice",
-            );
-            const thumbnail = imageURL(target.photo_url || target.filmstrip_url);
-            if (thumbnail) {
-              const img = h("img", {
-                src: thumbnail,
-                alt: "",
-                width: 80,
-                height: 60,
-                loading: "lazy",
-                referrerpolicy: "no-referrer",
-              });
-              img.onerror = () => img.remove();
-              choice.append(img);
-            }
-            choice.append(
-              h(
-                "span",
-                {},
-                h("strong", {}, target.title),
-                h("span", { class: "help" }, `${target.area} · ${when(target.at, data.week.timezone)}`),
-                target.resident
-                  ? h("span", { class: "help" }, `Named as ${target.resident.name}`)
-                  : null,
-              ),
-            );
-            return choice;
-          }),
-        )
+      ? h("div", {}, choices, more)
       : h("p", { class: "help" }, "There isn’t another one to link this to."),
   );
 }
@@ -151,7 +178,12 @@ function moreAnswers(visit, data, mutate) {
   const option = (label, detail, run) => {
     const choice = h(
       "button",
-      { type: "button", class: "sheet-option verdict-button", "aria-label": label, onclick: run },
+      {
+        type: "button",
+        class: "sheet-option verdict-button",
+        "aria-label": label,
+        onclick: run,
+      },
       h("strong", {}, label),
       h("span", {}, detail),
     );
@@ -162,16 +194,27 @@ function moreAnswers(visit, data, mutate) {
     closeSheet();
     void mutate(visit, "verdict", { verdict }, message);
   };
-  openSheet("What’s wrong with this one?", h(
-    "div",
-    { class: "sheet-options" },
-    option("Not a dish", "The camera picked up something else. Removes it for everyone.", answer("not_dish", "Marked not a dish")),
-    option("It’s clean", "It’s already been washed. Removes it for everyone.", answer("clean", "Marked clean")),
-    option("Same as another", "This dish is already on the list.", () => {
-      closeSheet();
-      duplicatePicker(visit, data, mutate);
-    }),
-  ));
+  openSheet(
+    "What’s wrong with this one?",
+    h(
+      "div",
+      { class: "sheet-options" },
+      option(
+        "Not a dish",
+        "The camera picked up something else. Removes it for everyone.",
+        answer("not_dish", "Marked not a dish"),
+      ),
+      option(
+        "It’s clean",
+        "It’s already been washed. Removes it for everyone.",
+        answer("clean", "Marked clean"),
+      ),
+      option("Same as another", "This dish is already on the list.", () => {
+        closeSheet();
+        duplicatePicker(visit, data, mutate);
+      }),
+    ),
+  );
 }
 /** @param {import("../types.js").ScreenContext} context */
 export function namePage(context) {
@@ -254,7 +297,9 @@ export function namePage(context) {
   const next = remaining[1],
     upcoming = imageURL(next?.filmstrip_url || next?.photo_url || null);
   if (upcoming) new Image().src = upcoming;
-  const people = [...data.standings].sort((a, b) => a.name.localeCompare(b.name));
+  const people = [...data.standings].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
   const guess = visit.guess;
   return h(
     "div",
@@ -302,12 +347,20 @@ export function namePage(context) {
               "details",
               { class: "camera-guess" },
               h("summary", {}, `The camera thinks it’s ${guess.name}`),
-              h("p", { class: "help" }, `${guess.basis} It doesn’t count until someone taps a name.`),
+              h(
+                "p",
+                { class: "help" },
+                `${guess.basis} It doesn’t count until someone taps a name.`,
+              ),
             )
           : null,
         h(
           "div",
-          { class: "name-chips", role: "group", "aria-label": "Whose dishes are these?" },
+          {
+            class: "name-chips",
+            role: "group",
+            "aria-label": "Whose dishes are these?",
+          },
           people.map((p) =>
             button(
               p.name,
@@ -336,7 +389,11 @@ export function namePage(context) {
               ),
             "verdict-button",
           ),
-          button("Something’s off", () => moreAnswers(visit, data, mutate), "verdict-button"),
+          button(
+            "Something’s off",
+            () => moreAnswers(visit, data, mutate),
+            "verdict-button",
+          ),
         ),
         h("p", { class: "action-error", role: "alert" }),
       ),
@@ -349,7 +406,13 @@ export function namePage(context) {
               "details",
               { class: "later-photo" },
               h("summary", {}, "See the later photo"),
-              photo(visit.photo_url, `${visit.title}, later`, false, true, mediaSize(visit, false)),
+              photo(
+                visit.photo_url,
+                `${visit.title}, later`,
+                false,
+                true,
+                mediaSize(visit, false),
+              ),
             )
           : null,
         correctionLink(context, visit),
