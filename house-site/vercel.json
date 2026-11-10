@@ -6,7 +6,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self' https://khqnufjxpbcflhweociu.supabase.co https://dishwatch.ezzyrappeport.com; img-src 'self' https://khqnufjxpbcflhweociu.supabase.co https://dishwatch.ezzyrappeport.com; media-src 'self' https://dishwatch.ezzyrappeport.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+          "value": "default-src 'none'; script-src 'self'; style-src 'self'; manifest-src 'self'; connect-src 'self' https://khqnufjxpbcflhweociu.supabase.co https://dishwatch.ezzyrappeport.com; img-src 'self' https://khqnufjxpbcflhweociu.supabase.co https://dishwatch.ezzyrappeport.com; media-src 'self' https://dishwatch.ezzyrappeport.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
         },
         {
           "key": "Referrer-Policy",
@@ -44,15 +44,6 @@
       ]
     },
     {
-      "source": "/fonts/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=86400"
-        }
-      ]
-    },
-    {
       "source": "/js/(.*)",
       "headers": [
         {
@@ -71,7 +62,7 @@
       ]
     },
     {
-      "source": "/learning.css",
+      "source": "/mark.svg",
       "headers": [
         {
           "key": "Cache-Control",
@@ -80,11 +71,24 @@
       ]
     },
     {
-      "source": "/mark.svg",
+      "source": "/icons/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400"
+        }
+      ]
+    },
+    {
+      "source": "/manifest.webmanifest",
       "headers": [
         {
           "key": "Cache-Control",
           "value": "public, max-age=0, must-revalidate"
+        },
+        {
+          "key": "Content-Type",
+          "value": "application/manifest+json"
         }
       ]
     }
@@ -108,6 +112,10 @@
     },
     {
       "source": "/footage",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/help",
       "destination": "/index.html"
     }
   ]

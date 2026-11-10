@@ -17,17 +17,29 @@ export function h(tag, attrs = {}, ...children) {
       );
   return el;
 }
-/** @param {'house'|'arrow'|'dish'|'expand'|'close'} name */
+/** @typedef {'house'|'arrow'|'dish'|'expand'|'close'|'film'|'person'|'chevron'|'back'|'clock'|'spark'|'info'|'plus'|'share'|'alert'} IconName */
+/** @param {IconName} name */
 export function icon(name) {
+  /** @type {Record<IconName,string[]>} */
   const paths = {
-    house: ["m3 10 9-7 9 7", "M6 8v13h12V8", "M9 21v-8h6v8"],
+    house: ["m3 11 9-7.5L21 11", "M5.5 9v11.5h13V9", "M9.5 20.5V14h5v6.5"],
     arrow: ["M4 12h16", "m14 6 6 6-6 6"],
     dish: [
       "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
-      "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10",
+      "M12 7.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9",
     ],
     expand: ["M8 3H3v5", "M16 3h5v5", "M8 21H3v-5", "M16 21h5v-5"],
     close: ["m6 6 12 12", "M18 6 6 18"],
+    film: ["M4 5.5h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1", "m10 9 5 3-5 3z"],
+    person: ["M12 12a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5", "M4 20.5c.8-3.9 4-6 8-6s7.2 2.1 8 6"],
+    chevron: ["m9.5 5.5 6.5 6.5-6.5 6.5"],
+    back: ["m14.5 5 -7 7 7 7"],
+    clock: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18", "M12 7v5l3.5 2"],
+    spark: ["M12 3.5v4", "M12 16.5v4", "M3.5 12h4", "M16.5 12h4", "m6 6 2.8 2.8", "m15.2 15.2 2.8 2.8", "m18 6-2.8 2.8", "M8.8 15.2 6 18"],
+    info: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18", "M12 11v5.5", "M12 7.6v.1"],
+    plus: ["M12 5v14", "M5 12h14"],
+    share: ["M12 15V3.5", "m7.5 7.5 4.5-4.5 4.5 4.5", "M6 11H5v9.5h14V11h-1"],
+    alert: ["M12 3.5 2.5 20h19z", "M12 10v4.5", "M12 17.3v.1"],
   };
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   for (const [k, v] of Object.entries({
@@ -107,7 +119,7 @@ export function photo(url, label, wide = false, lazy = false, size) {
   const src = imageURL(url),
     box = h("div", { class: `photo ${wide ? "filmstrip" : ""}` });
   if (!src) {
-    box.append(h("p", {}, `${label} isn’t available.`));
+    box.append(h("p", {}, "The photo for this one is gone."));
     return box;
   }
   if (size?.width && size.height)
@@ -128,32 +140,27 @@ export function photo(url, label, wide = false, lazy = false, size) {
     box.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
   };
   img.onerror = () =>
-    box.replaceChildren(h("p", {}, "Photo unavailable. Refresh to try again."));
+    box.replaceChildren(h("p", {}, "This photo didn’t load. Reopen the page to try again."));
   const zoom = button("", () => zoomPhoto(src, label), "photo-open");
   zoom.setAttribute("aria-label", `Enlarge ${label.toLowerCase()}`);
   zoom.append(img);
   if (!wide)
     zoom.append(
-      h("span", { class: "zoom-hint" }, icon("expand"), "Tap to zoom"),
+      h("span", { class: "zoom-hint", "aria-hidden": "true" }, icon("expand")),
     );
   box.append(zoom);
-  if (wide)
-    return h(
-      "div",
-      { class: "arrival-photo" },
-      box,
-      h(
-        "p",
-        { class: "help photo-instruction" },
-        "Dish photos · Tap to enlarge",
-      ),
+  if (wide) {
+    zoom.append(
+      h("span", { class: "zoom-hint", "aria-hidden": "true" }, icon("expand")),
     );
+    return h("div", { class: "arrival-photo" }, box);
+  }
   return box;
 }
 /** @param {string} src @param {string} label */
 function zoomPhoto(src, label) {
-  const dialog = document.querySelector("dialog");
-  if (!dialog) return;
+  const dialog = document.querySelector("#photo-dialog");
+  if (!(dialog instanceof HTMLDialogElement)) return;
   const returnTo = document.activeElement;
   const image = h("img", {
     src,
@@ -166,7 +173,7 @@ function zoomPhoto(src, label) {
     {
       class: "zoom-scroll",
       tabindex: 0,
-      "aria-label": "Photo. Scroll to move across frames; pinch to zoom.",
+      "aria-label": "Photo. Scroll to move around; pinch to zoom.",
     },
     image,
   );
@@ -184,11 +191,6 @@ function zoomPhoto(src, label) {
   const tools = h(
     "div",
     { class: "zoom-tools" },
-    h(
-      "p",
-      { class: "help" },
-      "Scroll through the frames. Pinch or use the zoom buttons.",
-    ),
     button("−", () => resize(width / 1.5), "secondary"),
     button("+", () => resize(width * 1.5), "secondary"),
     button("Fit", () => resize(viewport.clientWidth), "secondary"),
@@ -235,8 +237,7 @@ function zoomPhoto(src, label) {
     h(
       "header",
       { class: "zoom-header" },
-      h("h2", {}, label),
-      button("Close", () => dialog.close(), "secondary"),
+      button("Done", () => dialog.close(), "zoom-done"),
     ),
     tools,
     viewport,
@@ -246,6 +247,8 @@ function zoomPhoto(src, label) {
     if (returnTo instanceof HTMLElement) returnTo.focus();
   };
   dialog.showModal();
+  // Open fitted to the screen; zooming in is the user's choice.
+  resize(viewport.clientWidth, 0);
 }
 
 /** @param {Element} el @param {...(Child|Child[])} children */
@@ -271,21 +274,162 @@ export function heading(title, intro = "") {
 export function tag(text, className = "") {
   return h("span", { class: `tag ${className}` }, text);
 }
-/** @param {(path:string)=>string} href @param {(path:string)=>void} navigate */
-export function brand(href, navigate) {
+/**
+ * One row of a grouped list. Rows are links when `href` is given, buttons when `run` is.
+ * @param {{label:string,detail?:string,value?:string,leading?:IconName,tone?:'danger',href?:string,run?:(event:MouseEvent)=>void,chevron?:boolean,thumb?:string|null}} options
+ */
+export function row({ label, detail, value, leading, tone, href, run, chevron = true, thumb }) {
+  const body = [
+    thumb
+      ? h("img", { class: "row-thumb", src: thumb, alt: "", width: 44, height: 44, loading: "lazy", referrerpolicy: "no-referrer" })
+      : leading
+        ? h("span", { class: "row-icon" }, icon(leading))
+        : null,
+    h(
+      "span",
+      { class: "row-text" },
+      h("span", { class: "row-label" }, label),
+      detail ? h("span", { class: "row-detail" }, detail) : null,
+    ),
+    value ? h("span", { class: "row-value" }, value) : null,
+    chevron ? h("span", { class: "row-chevron", "aria-hidden": "true" }, icon("chevron")) : null,
+  ];
+  const cls = `row${tone === "danger" ? " row-danger" : ""}`;
+  return href
+    ? h("a", { class: cls, href, onclick: run }, ...body)
+    : h("button", { type: "button", class: cls, onclick: run }, ...body);
+}
+/** @param {string} title @param {...(Child|Child[])} rows */
+export function group(title, ...rows) {
   return h(
-    "a",
-    {
-      class: "brand",
-      href: href("/"),
-      onclick: (/** @type {MouseEvent} */ e) => {
-        e.preventDefault();
-        navigate("/");
-      },
-    },
-    h("span", { class: "brand-mark" }, icon("house")),
-    h("span", {}, "Highest House", h("small", {}, "Dish Watch")),
+    "section",
+    { class: "group" },
+    title ? h("h2", { class: "group-title" }, title) : null,
+    h("div", { class: "group-rows" }, ...rows),
   );
+}
+
+/** @type {(()=>void)|null} */
+let afterSheet = null;
+// close() fires its event a task later. When one sheet replaces another, that
+// late event belongs to the old sheet and must not tear down the new one.
+let closing = false,
+  replaced = false;
+/**
+ * A bottom sheet on the shared native dialog: Escape, focus trapping and the top
+ * layer all come from the browser. Drag the grabber down or tap outside to dismiss.
+ * @param {string} title @param {Child|Child[]} content @param {{onclose?:()=>void}} [options]
+ */
+export function openSheet(title, content, options = {}) {
+  const dialog = document.getElementById("sheet");
+  if (!(dialog instanceof HTMLDialogElement)) return;
+  const returnTo = document.activeElement;
+  if (closing) replaced = true;
+  const panel = h(
+    "div",
+    { class: "sheet-panel" },
+    h("div", { class: "sheet-grabber", "aria-hidden": "true" }),
+    h(
+      "header",
+      { class: "sheet-header" },
+      h("h2", { id: "sheet-title", tabindex: "-1" }, title),
+      button("Close", () => closeSheet(), "sheet-close"),
+    ),
+    h("div", { class: "sheet-body" }, content),
+  );
+  dialog.replaceChildren(panel);
+  afterSheet = options.onclose || null;
+  dialog.onclose = () => {
+    closing = false;
+    if (replaced) {
+      replaced = false;
+      return;
+    }
+    dialog.replaceChildren();
+    panel.style.transform = "";
+    const done = afterSheet;
+    afterSheet = null;
+    if (returnTo instanceof HTMLElement && returnTo.isConnected) returnTo.focus();
+    done?.();
+  };
+  dialog.onclick = (event) => {
+    if (event.target === dialog) closeSheet();
+  };
+  const header = /** @type {HTMLElement} */ (panel.querySelector(".sheet-header")),
+    grabber = /** @type {HTMLElement} */ (panel.querySelector(".sheet-grabber"));
+  for (const handle of [header, grabber]) dragToDismiss(handle, panel);
+  dialog.showModal();
+  /** @type {HTMLElement|null} */ (panel.querySelector("h2"))?.focus({ preventScroll: true });
+}
+export function closeSheet() {
+  const dialog = document.getElementById("sheet");
+  if (dialog instanceof HTMLDialogElement && dialog.open) {
+    closing = true;
+    dialog.close();
+  }
+}
+/** @param {HTMLElement} handle @param {HTMLElement} panel */
+function dragToDismiss(handle, panel) {
+  /** @type {number|null} */
+  let start = null;
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.target instanceof HTMLButtonElement) return;
+    start = event.clientY;
+    handle.setPointerCapture(event.pointerId);
+    panel.style.transition = "none";
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (start !== null)
+      panel.style.transform = `translateY(${Math.max(0, event.clientY - start)}px)`;
+  });
+  const finish = (/** @type {PointerEvent} */ event) => {
+    if (start === null) return;
+    const moved = event.clientY - start;
+    start = null;
+    panel.style.transition = "";
+    panel.style.transform = "";
+    if (moved > 90) closeSheet();
+  };
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+}
+
+/** @type {ReturnType<typeof setTimeout>|null} */
+let noticeTimer = null;
+/** A short visible confirmation; screen readers hear the same words. @param {string} text */
+export function notify(text) {
+  announce(text);
+  const host = document.getElementById("notice");
+  if (!host) return;
+  host.textContent = text;
+  host.hidden = false;
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    host.hidden = true;
+  }, 3500);
+}
+
+/** Today / Yesterday / weekday for this week; a date beyond that. @param {string} value @param {string} timezone */
+export function when(value, timezone) {
+  if (!value || !Number.isFinite(Date.parse(value))) return "Time unknown";
+  const stamp = new Date(value);
+  const day = (/** @type {Date} */ d) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(d);
+  const time = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: timezone,
+  }).format(stamp);
+  const age = Math.round(
+    (Date.parse(day(new Date())) - Date.parse(day(stamp))) / 86400000,
+  );
+  if (age === 0) return `Today ${time}`;
+  if (age === 1) return `Yesterday ${time}`;
+  const named = new Intl.DateTimeFormat("en-US", {
+    ...(age > 1 && age < 7 ? { weekday: "long" } : { month: "short", day: "numeric" }),
+    timeZone: timezone,
+  }).format(stamp);
+  return `${named} ${time}`;
 }
 
 /** @param {import('./types.js').Visit} visit @param {boolean} [filmstrip] */

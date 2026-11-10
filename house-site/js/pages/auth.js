@@ -1,4 +1,4 @@
-import { brand, empty, field, fill, h, heading, icon } from "../ui.js";
+import { empty, field, fill, h, heading, icon } from "../ui.js";
 import { HouseError, redeem } from "../api.js";
 import {
   configured,
@@ -9,7 +9,7 @@ import {
 } from "../auth.js";
 /** @param {import("../types.js").ScreenContext} context */
 export function createAuthScreens(context) {
-  const { root, href, navigate, enter } = context;
+  const { root, href, enter } = context;
   function renderAuth() {
     if (location.pathname.replace(/\/$/, "") === "/join") {
       renderJoin();
@@ -72,30 +72,24 @@ export function createAuthScreens(context) {
     const connect = h("div", { class: "auth-connection" });
     fill(
       root,
-      h("header", { class: "auth-header" }, brand(href, navigate)),
       mock
         ? h(
             "p",
             { class: "demo-banner" },
-            "Local demo · Use password “house-demo”",
+            "Demo · The password is house-demo",
           )
         : null,
       h(
         "main",
         { id: "main", class: "auth" },
-        h("div", { class: "auth-symbol", "aria-hidden": "true" }, icon("dish")),
-        heading(
-          "Good house. Shared kitchen.",
-          "Who’s on kitchen? Sign in to see your week and name the dishes you know.",
-        ),
+        h("img", { class: "auth-mark", src: "/mark.svg", alt: "", width: 64, height: 64 }),
+        heading("Highest House", "Sign in to see this week’s kitchen."),
         form,
         connect,
         h(
           "p",
           { class: "auth-help" },
-          "First time here, or forgot your password?",
-          h("br"),
-          "Ask Ezzy for a fresh house link.",
+          "First time, or forgot your password? Ask Ezzy for a new link.",
         ),
       ),
     );
@@ -104,7 +98,7 @@ export function createAuthScreens(context) {
         h(
           "p",
           { class: "help" },
-          "Sign-in is waiting for the house connection to be set up.",
+          "Sign-in isn’t set up yet. Ask Ezzy.",
         ),
       );
       submit.disabled = true;
@@ -183,7 +177,7 @@ export function createAuthScreens(context) {
               submit.replaceChildren("Set password & come in", icon("arrow"));
               if (e instanceof HouseError && [400, 410].includes(e.status)) {
                 submit.disabled = true;
-                submit.textContent = "Ask Ezzy for a fresh link";
+                submit.textContent = "Ask Ezzy for a new link";
                 password.value = "";
                 confirm.value = "";
               }
@@ -194,7 +188,7 @@ export function createAuthScreens(context) {
       field(
         "New password",
         password,
-        "At least 8 characters. Make it one you don’t use elsewhere.",
+        "At least 8 characters.",
       ),
       field("Confirm password", confirm),
       error,
@@ -202,26 +196,25 @@ export function createAuthScreens(context) {
     );
     fill(
       root,
-      h("header", { class: "auth-header" }, brand(href, navigate)),
       mock
         ? h(
             "p",
             { class: "demo-banner" },
-            "Local demo · Invite and password reset",
+            "Demo · Invite and password reset",
           )
         : null,
       h(
         "main",
         { id: "main", class: "auth" },
         heading(
-          "Your place in the house.",
-          "Choose a password to join the house or reset your sign-in.",
+          "Choose a password",
+          "You’ll use it with your name to sign in.",
         ),
         token
           ? form
           : empty(
-              "This house link is incomplete",
-              "Open the complete house link Ezzy sent you, or ask for a fresh one.",
+              "This link is incomplete",
+              "Open the whole link Ezzy sent you, or ask for a new one.",
             ),
         h(
           "a",
@@ -230,7 +223,7 @@ export function createAuthScreens(context) {
         ),
       ),
     );
-    document.title = "Join the house · Dish Watch";
+    document.title = "Choose a password · Highest House";
   }
 
   return { renderAuth, renderJoin };

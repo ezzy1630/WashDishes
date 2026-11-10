@@ -1,4 +1,4 @@
-import { button, date, field, h, photo, tag, mediaSize } from "../ui.js";
+import { button, closeSheet, field, h, openSheet, photo, tag, mediaSize, when } from "../ui.js";
 import { watchFootage } from "./footage.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
@@ -8,10 +8,53 @@ export function verdictText(visit) {
   const labels = {
     not_dish: "Marked not a dish",
     clean: "Marked clean",
-    duplicate: "Marked same as another visit",
+    duplicate: "Marked same as another",
     cant_tell: "Couldn’t tell",
   };
-  return `${labels[visit.verdict.kind]} by ${visit.verdict.by?.name || "the operator"}`;
+  return `${labels[visit.verdict.kind]} by ${visit.verdict.by?.name || "Ezzy"}`;
+}
+/** @param {Visit} dish @param {import("../types.js").ScreenContext} context */
+function disputeSheet(dish, context) {
+  const note = h("textarea", {
+    name: `note-${dish.id}`,
+    rows: 3,
+    maxlength: 1000,
+    required: true,
+    placeholder: "e.g. That pot was already there when I came in.",
+  });
+  const error = h("p", { class: "form-error", role: "alert" });
+  const form = h(
+    "form",
+    {
+      class: "dispute-form",
+      onsubmit: (/** @type {SubmitEvent} */ e) => {
+        e.preventDefault();
+        if (!note.value.trim()) {
+          error.textContent = "Add a short note before sending.";
+          note.focus();
+          return;
+        }
+        const text = note.value.trim();
+        closeSheet();
+        void context.mutate(
+          dish,
+          "dispute",
+          { note: text },
+          "Dispute sent. Another housemate can settle it.",
+        );
+      },
+    },
+    field("What happened?", note),
+    h(
+      "p",
+      { class: "help" },
+      "Your points for this pause until another housemate checks. You and the person who named you can’t settle it.",
+    ),
+    error,
+    h("button", { type: "submit", class: "primary" }, "Send dispute"),
+  );
+  openSheet(dish.title, form);
+  note.focus();
 }
 /** @param {Visit} dish @param {boolean} settle @param {import("../types.js").ScreenContext} context */
 export function record(dish, settle, context) {
@@ -46,82 +89,13 @@ export function record(dish, settle, context) {
             ),
           "secondary",
         ),
-        h(
-          "p",
-          { class: "help settlement-help" },
-          "“It was them” restores their points. “Not them” leaves the visit unnamed.",
-        ),
       ),
     );
   else if (dish.can_dispute && dispute?.state !== "open")
     actions.append(
-      button(
-        "That wasn’t me",
-        () => {
-          const note = h("textarea", {
-            name: `note-${dish.id}`,
-            rows: 3,
-            maxlength: 1000,
-            required: true,
-            placeholder: "Tell the house what happened.",
-          });
-          const error = h("p", { class: "form-error", role: "alert" });
-          const form = h(
-            "form",
-            {
-              class: "dispute-form",
-              onsubmit: (/** @type {SubmitEvent} */ e) => {
-                e.preventDefault();
-                if (!note.value.trim()) {
-                  error.textContent = "Add a short note before sending.";
-                  note.focus();
-                  return;
-                }
-                void mutate(
-                  dish,
-                  "dispute",
-                  { note: note.value.trim() },
-                  "Dispute sent. Another housemate can settle it.",
-                );
-              },
-            },
-            field("What happened?", note),
-            h(
-              "p",
-              { class: "help" },
-              "Your points for this visit pause while a third housemate checks it. You and the person who named you can’t settle it.",
-            ),
-            error,
-            h(
-              "div",
-              { class: "form-actions" },
-              h("button", { type: "submit", class: "primary" }, "Send dispute"),
-              button(
-                "Cancel",
-                () => {
-                  actions.replaceChildren(disputeButton);
-                },
-                "quiet",
-              ),
-            ),
-          );
-          const disputeButton = button(
-            "That wasn’t me",
-            () => {
-              actions.replaceChildren(form);
-              note.focus();
-            },
-            "secondary",
-          );
-          actions.replaceChildren(form);
-          note.focus();
-        },
-        "secondary",
-      ),
+      button("That wasn’t me", () => disputeSheet(dish, context), "secondary"),
     );
-  const named = dish.named_by
-    ? `Named by ${dish.named_by.name}${dish.named_at ? ` · ${date(dish.named_at, data.week.timezone, true)}` : ""}`
-    : "No housemate named on the record.";
+  const showing = dish.filmstrip_url || dish.photo_url;
   return h(
     "article",
     { class: "dish-record", "data-dish-id": dish.id },
@@ -131,16 +105,11 @@ export function record(dish, settle, context) {
       h(
         "div",
         {},
-        h(
-          "h3",
-          {},
-          dish.title,
-          settle && dish.resident ? ` · ${dish.resident.name}` : "",
-        ),
+        h("h3", {}, dish.title, settle && dish.resident ? ` · ${dish.resident.name}` : ""),
         h(
           "p",
           { class: "help" },
-          `${dish.area} · ${date(dish.at, data.week.timezone, true)}`,
+          `${dish.area} · ${when(dish.at, data.week.timezone)}`,
         ),
       ),
       tag(
@@ -148,39 +117,29 @@ export function record(dish, settle, context) {
         dispute?.state === "open" ? "review" : "",
       ),
     ),
-    photo(
-      dish.filmstrip_url || dish.photo_url,
-      `${dish.title} evidence`,
-      Boolean(dish.filmstrip_url),
-      false,
-      mediaSize(dish, Boolean(dish.filmstrip_url)),
-    ),
-    watchFootage(dish, context),
+    settle
+      ? photo(showing, `${dish.title} evidence`, Boolean(dish.filmstrip_url), false, mediaSize(dish, Boolean(dish.filmstrip_url)))
+      : h(
+          "details",
+          { class: "record-photos" },
+          h("summary", {}, "See the photos"),
+          photo(showing, `${dish.title} evidence`, Boolean(dish.filmstrip_url), true, mediaSize(dish, Boolean(dish.filmstrip_url))),
+        ),
     dish.filmstrip_url && dish.photo_url
       ? h(
           "details",
           { class: "later-details" },
           h("summary", {}, "See the later photo"),
-          photo(
-            dish.photo_url,
-            `${dish.title}, later`,
-            false,
-            true,
-            mediaSize(dish, false),
-          ),
+          photo(dish.photo_url, `${dish.title}, later`, false, true, mediaSize(dish, false)),
         )
       : null,
-    !dish.arrival_seen
-      ? h(
-          "p",
-          { class: "help" },
-          "Arrival not recorded. People nearby are candidates. Only name someone if you know they used these dishes.",
-        )
-      : null,
-    h("p", { class: "help attribution" }, named),
-    dish.verdict
-      ? h("p", { class: "review-attribution" }, verdictText(dish))
-      : null,
+    watchFootage(dish, context),
+    h(
+      "p",
+      { class: "help attribution" },
+      dish.named_by ? `Named by ${dish.named_by.name}` : "No housemate on the record.",
+    ),
+    dish.verdict ? h("p", { class: "review-attribution" }, verdictText(dish)) : null,
     dispute
       ? h(
           "div",
@@ -193,20 +152,11 @@ export function record(dish, settle, context) {
                 : "Settled · not them",
             "review",
           ),
-          h(
-            "p",
-            {},
-            h("strong", {}, `${dispute.by.name}: `),
-            h("q", {}, dispute.note),
-          ),
+          h("p", {}, h("strong", {}, `${dispute.by.name}: `), h("q", {}, dispute.note)),
           dispute.settled_by
             ? h("p", { class: "help" }, `Settled by ${dispute.settled_by.name}`)
             : !settle
-              ? h(
-                  "p",
-                  { class: "help" },
-                  "These points don’t count while you wait for a third housemate to settle it.",
-                )
+              ? h("p", { class: "help" }, "These points don’t count until another housemate settles it.")
               : null,
         )
       : null,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { week } from "../house-site/js/contracts.js";
-import { pickDetail } from "../house-site/js/pages/league-copy.js";
+import { pickCopy } from "../house-site/js/pages/league-copy.js";
 
 const payload = (pick) => ({
   start_week: "2026-11-02",
@@ -42,10 +42,10 @@ const chosen = {
   reason: "6 points · 4 ahead",
 };
 
-test("site reads the server pick breakdown without rebuilding or stripping its reason", () => {
+test("site words the server pick from its numbers without rebuilding the decision", () => {
   const data = week(payload(chosen));
   assert.deepEqual(data.pick, chosen);
-  assert.equal(pickDetail(data), "6 points · 4 ahead");
+  assert.equal(pickCopy(data).detail, "6 points, 4 ahead of second place.");
   const close = {
     ...chosen,
     resident_id: null,
@@ -57,7 +57,7 @@ test("site reads the server pick breakdown without rebuilding or stripping its r
     reason: "Too close — 1 point ahead, needs 2",
   };
   assert.deepEqual(week(payload(close)).pick, close);
-  assert.equal(pickDetail(week(payload(close))), close.reason);
+  assert.match(pickCopy(week(payload(close))).detail, /4 points, but only 1 ahead/);
 });
 
 test("site refuses missing/unknown pick states and contradictory identity fields", () => {
@@ -105,7 +105,7 @@ import { pendingAnswers } from "../house-site/js/answers.js";
 
 test("personal status follows the authoritative pick and current duty, never rank order", () => {
   const data = week(payload(chosen));
-  assert.match(personalCopy(data, 1).title, /in line/);
+  assert.match(personalCopy(data, 1).title, /on track/);
   assert.equal(personalCopy(data, 1).points, 99);
   assert.match(
     personalCopy(
@@ -115,7 +115,7 @@ test("personal status follows the authoritative pick and current duty, never ran
       },
       1,
     ).title,
-    /not the pick/,
+    /99 points/,
   );
   assert.match(
     personalCopy(
@@ -128,7 +128,7 @@ test("personal status follows the authoritative pick and current duty, never ran
     ).title,
     /on kitchen/,
   );
-  assert.match(personalCopy(data, 2).title, /No points/);
+  assert.match(personalCopy(data, 2).title, /no points/);
 });
 
 test("Undo cancels an unsent name without changing the server; flush saves once", async () => {

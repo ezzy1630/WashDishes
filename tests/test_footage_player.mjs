@@ -45,11 +45,11 @@ for (const failure of ['timeout', 'media error']) test(`the same recording can b
   if (failure === 'timeout') t.mock.timers.tick(15000);
   else videos[0].dispatchEvent(new Event('error'));
   await first;
-  assert.match(statuses.at(-1), /too long|Could not load/);
+  assert.match(statuses.at(-1), /too long|Couldn’t load/);
   assert.equal(player.current, null);
 
   const transport = player.element.children[1];
-  const retryButton = transport.children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Retry recording'));
+  const retryButton = transport.children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Try again'));
   assert.ok(retryButton, 'a failed recording needs a direct retry control');
   assert.equal(retryButton.hidden, false);
   assert.equal(retryButton.disabled, false);
@@ -61,7 +61,7 @@ for (const failure of ['timeout', 'media error']) test(`the same recording can b
   assert.equal(player.current.start, 100);
   assert.equal(retryButton.hidden, true);
   assert.equal(videos[1].currentTime, 2);
-  assert.match(statuses.at(-1), /Scrub/);
+  assert.match(statuses.at(-1), /Drag/);
 });
 
 test('retry returns to the failed time jump instead of the previous recording', async t => {
@@ -86,7 +86,7 @@ test('retry returns to the failed time jump instead of the previous recording', 
   videos[1].dispatchEvent(new Event('error'));
   await jump;
   assert.equal(player.current.start, 100);
-  const retry = player.element.children[1].children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Retry recording'));
+  const retry = player.element.children[1].children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Try again'));
   assert.equal(retry.hidden, false);
   retry.dispatchEvent(new Event('click'));
   await settle();
@@ -94,7 +94,7 @@ test('retry returns to the failed time jump instead of the previous recording', 
   await settle();
   assert.equal(requests.at(-1), 202);
   assert.equal(player.current.start, 200);
-  assert.match(statuses.at(-1), /Scrub/, 'a manual time jump must not be described as a recording gap');
+  assert.match(statuses.at(-1), /Drag/, 'a manual time jump must not be described as a recording gap');
 });
 
 test('a media error during playback can reload the current recording', async t => {
@@ -109,12 +109,12 @@ test('a media error during playback can reload the current recording', async t =
   videos[0].error = { code: 2 };
   videos[0].dispatchEvent(new Event('error'));
   assert.match(statuses.at(-1), /stopped loading/);
-  const retry = player.element.children[1].children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Retry recording'));
+  const retry = player.element.children[1].children.find(el => el.tagName === 'button' && el.children.some(child => child.textContent === 'Try again'));
   retry.dispatchEvent(new Event('click'));
   await settle();
   assert.equal(videos.length, 2, 'an errored media element must not be reused');
   videos[1].dispatchEvent(new Event('loadeddata'));
   await settle();
   assert.equal(retry.hidden, true);
-  assert.match(statuses.at(-1), /Scrub/);
+  assert.match(statuses.at(-1), /Drag/);
 });

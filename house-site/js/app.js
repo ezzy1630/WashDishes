@@ -8,11 +8,13 @@ import { pastPage } from "./pages/past.js";
 import { helpPage } from "./pages/help.js";
 import { weekPage } from "./pages/week.js";
 import { footagePage, stopFootage } from "./pages/footage.js";
-import { announce, brand, button, fill, h, heading } from "./ui.js";
+import { announce, button, fill, h, heading, icon } from "./ui.js";
 
 /** @typedef {import('./types.js').Visit} Visit */
 /** @typedef {'week'|'name'|'mine'|'past'|'help'|'footage'} Page */
+/** @typedef {'push'|'pop'|'tab'|'advance'|'retreat'} Motion */
 const root = /** @type {HTMLDivElement} */ (document.getElementById("app"));
+history.scrollRestoration = "manual";
 /** @type {import('./types.js').State} */
 const state = {
   me: null,
@@ -26,7 +28,21 @@ const state = {
   working: false,
   loading: false,
 };
-let answerError = "";
+let answerError = "",
+  // A readable refusal (for example an account that isn't linked yet), which is
+  // a different thing from the kitchen computer being unreachable.
+  problem = "",
+  badge = 0,
+  fingerprint = "",
+  renderedAt = 0,
+  renderOwed = false;
+/** @type {Motion|null} */
+let motion = null;
+/** @type {IntersectionObserver|null} */
+let titleWatch = null;
+/** @type {Map<string, number>} */
+const scrolls = new Map();
+
 const answers = pendingAnswers({
   send: async (entry) => {
     const updated = await act(entry.visit.id, entry.action, entry.body);
@@ -35,10 +51,8 @@ const answers = pendingAnswers({
   },
   changed: () => {
     state.pending = new Set(answers.entries.keys());
-    const editing =
-      document.activeElement?.matches("input,textarea,select") ||
-      document.querySelector("dialog[open]");
-    if (!editing) render();
+    renderReceipts();
+    render();
   },
   saved: async (entry) => {
     announce(`${entry.visit.title}: saved.`);
@@ -59,68 +73,99 @@ function href(path) {
 }
 /** @returns {Page} */
 function page() {
-  return location.pathname.startsWith("/footage") ? "footage" : location.pathname.startsWith("/help") ? "help" : location.pathname.startsWith("/name")
-    ? "name"
-    : location.pathname.startsWith("/mine")
-      ? "mine"
-      : location.pathname.startsWith("/past")
-        ? "past"
-        : "week";
+  const path = location.pathname;
+  return path.startsWith("/footage")
+    ? "footage"
+    : path.startsWith("/help")
+      ? "help"
+      : path.startsWith("/name")
+        ? "name"
+        : path.startsWith("/mine")
+          ? "mine"
+          : path.startsWith("/past")
+            ? "past"
+            : "week";
 }
-/** @param {string} path */
-function navigate(path) {
+/** @param {Page} current @returns {{parent:string,label:string}|null} Pushed screens go back to their parent. */
+function parentOf(current) {
+  if (current === "help") return { parent: "/mine", label: "Me" };
+  if (current === "past")
+    return state.selected
+      ? { parent: "/past", label: "Past weeks" }
+      : { parent: "/mine", label: "Me" };
+  return null;
+}
+const depth = () => Number(history.state?.depth) || 0;
+let lastDepth = depth();
+/** @param {string} path @param {'push'|'pop'|'tab'} [direction] */
+function navigate(path, direction = "push") {
+  scrolls.set(location.pathname + location.search, window.scrollY);
   stopFootage();
   root.querySelector(".footage-page")?.remove();
   void answers.flush();
-  history.pushState({}, "", href(path));
+  lastDepth = depth() + 1;
+  history.pushState({ depth: lastDepth }, "", href(path));
   state.skipped.clear();
   state.showWeak = false;
-  if (page() !== "past" && state.selected) {
-    state.selected = "";
-    state.data = null;
-  }
-  render();
-  window.scrollTo(0, 0);
+  syncSelection();
+  motion = direction;
+  render(true);
+  const saved = direction === "tab" ? scrolls.get(location.pathname + location.search) : 0;
+  window.scrollTo(0, saved || 0);
   focusHeading();
   if (state.me && !state.data) void refresh();
 }
+function syncSelection() {
+  const selected =
+    page() === "past"
+      ? new URLSearchParams(location.search).get("start") || ""
+      : "";
+  if (selected !== state.selected) {
+    state.selected = selected;
+    state.data = null;
+    fingerprint = "";
+  }
+}
 function focusHeading() {
   requestAnimationFrame(() =>
-    document.querySelector("h1")?.focus({ preventScroll: true }),
+    document
+      .querySelector("#main")
+      ?.querySelector("h1")
+      ?.focus({ preventScroll: true }),
   );
 }
-function footer() {
-  if (!state.me) return null;
+/** @type {import("./types.js").ScreenContext["link"]} */
+function link(path, attrs, ...children) {
   return h(
-    "footer",
-    { class: "site-footer" },
-    h(
-      "div",
-      { class: "footer-account" },
-      h("span", {}, state.me.resident.name),
-      button(
-        "Sign out",
-        async () => {
-          try {
-            await answers.flush();
-            await signOut();
-            clearSession();
-          } catch (error) {
-            announce(
-              error instanceof Error ? error.message : "Couldn’t sign out.",
-            );
-          }
-        },
-        "quiet",
-      ),
-    ),
+    "a",
+    {
+      ...attrs,
+      href: href(path),
+      onclick: (/** @type {MouseEvent} */ e) => {
+        e.preventDefault();
+        navigate(path);
+      },
+    },
+    ...children,
   );
+}
+async function leave() {
+  try {
+    await answers.flush();
+    await signOut();
+    clearSession();
+  } catch (error) {
+    announce(error instanceof Error ? error.message : "Couldn’t sign out.");
+  }
 }
 function clearSession() {
   stopFootage();
   answers.cancel();
   state.pending.clear();
   answerError = "";
+  problem = "";
+  badge = 0;
+  fingerprint = "";
   epoch++;
   state.me = null;
   state.data = null;
@@ -130,10 +175,191 @@ function clearSession() {
   state.skipped.clear();
   state.showWeak = false;
   state.selected = "";
+  scrolls.clear();
   history.replaceState({}, "", href("/"));
   renderAuth();
 }
 onSignedOut(clearSession);
+
+/** Tabs keep their place in the DOM across pages so nothing flashes on navigation. */
+const tabs = /** @type {const} */ ([
+  ["week", "This week", "/", "house"],
+  ["name", "Dishes", "/name", "dish"],
+  ["footage", "Footage", "/footage", "film"],
+  ["mine", "Me", "/mine", "person"],
+]);
+/** @type {{title:HTMLElement,back:HTMLElement,bar:HTMLElement,main:HTMLElement,tabbar:HTMLElement,receipts:HTMLElement}|null} */
+let frame = null;
+function mountFrame() {
+  if (frame && root.contains(frame.main)) return frame;
+  document.documentElement.classList.toggle("demo", mock);
+  const title = h("p", { class: "navbar-title", "aria-hidden": "true" }),
+    back = h("div", { class: "navbar-leading" }),
+    bar = h("header", { class: "navbar" }, back, title, h("div")),
+    main = h("main", { id: "main", class: "main" }),
+    receipts = h("div", { class: "receipts" }),
+    tabbar = h("nav", { class: "tabbar", "aria-label": "Main navigation" });
+  fill(
+    root,
+    bar,
+    mock
+      ? h("div", { class: "demo-banner" }, "Demo · Made-up names and results")
+      : null,
+    main,
+    h(
+      "div",
+      { class: "floating" },
+      receipts,
+      h("p", { id: "notice", class: "notice", hidden: true }),
+    ),
+    tabbar,
+  );
+  frame = { title, back, bar, main, tabbar, receipts };
+  return frame;
+}
+function paintTabs() {
+  if (!frame) return;
+  const current = page();
+  const active =
+    current === "past" || current === "help" ? "mine" : current;
+  fill(
+    frame.tabbar,
+    h(
+      "a",
+      {
+        class: "tabbar-brand",
+        href: href("/"),
+        onclick: (/** @type {MouseEvent} */ e) => {
+          e.preventDefault();
+          navigate("/", "tab");
+        },
+      },
+      h("span", { class: "brand-mark" }, icon("house")),
+      "Highest House",
+    ),
+    tabs.map(([key, label, path, glyph]) =>
+      h(
+        "a",
+        {
+          class: "tab",
+          href: href(path),
+          "aria-current": active === key ? "page" : null,
+          "aria-label": key === "name" && badge ? `${label}, ${badge} waiting` : null,
+          onclick: (/** @type {MouseEvent} */ e) => {
+            e.preventDefault();
+            if (current === key) window.scrollTo({ top: 0, behavior: "smooth" });
+            else if (active === key && current !== key) navigate(path, "pop");
+            else navigate(path, "tab");
+          },
+        },
+        h(
+          "span",
+          { class: "tab-icon" },
+          icon(glyph),
+          key === "name" && badge
+            ? h("span", { class: "tab-badge", "aria-hidden": "true" }, badge > 99 ? "99+" : badge)
+            : null,
+        ),
+        h("span", { class: "tab-label" }, label),
+      ),
+    ),
+  );
+}
+function paintBar() {
+  if (!frame) return;
+  const current = page();
+  const parent = parentOf(current);
+  frame.bar.classList.toggle("navbar-pushed", Boolean(parent));
+  document.documentElement.classList.toggle("pushed", Boolean(parent));
+  frame.back.replaceChildren(
+    ...(parent
+      ? [
+          button(
+            "",
+            () => {
+              if (depth() > 0) history.back();
+              else navigate(parent.parent, "pop");
+            },
+            "navbar-back",
+          ),
+        ]
+      : []),
+  );
+  const back = frame.back.querySelector("button");
+  if (back && parent) back.append(icon("back"), parent.label);
+}
+/** Compact title fades in once the large title scrolls under the bar. */
+function watchTitle() {
+  titleWatch?.disconnect();
+  if (!frame) return;
+  const heading = frame.main.querySelector("h1");
+  const bar = frame.bar;
+  frame.title.textContent = heading?.textContent || "";
+  if (!heading) {
+    bar.classList.add("navbar-scrolled");
+    return;
+  }
+  bar.classList.remove("navbar-scrolled");
+  titleWatch = new IntersectionObserver(
+    ([entry]) => bar.classList.toggle("navbar-scrolled", !entry.isIntersecting),
+    { rootMargin: "-56px 0px 0px 0px" },
+  );
+  titleWatch.observe(heading);
+}
+function receiptNodes() {
+  /** @type {HTMLElement[]} */
+  const nodes = [];
+  if (answerError)
+    nodes.push(
+      h(
+        "div",
+        { class: "answer-error", role: "alert" },
+        h("p", {}, answerError),
+        button(
+          "Dismiss",
+          () => {
+            answerError = "";
+            renderReceipts();
+          },
+          "receipt-action",
+        ),
+      ),
+    );
+  const entries = [...answers.entries.values()];
+  // Quick answers stack in the same pill: the newest stays undoable, others show as a count.
+  entries.slice(-2).forEach((entry) =>
+    nodes.push(
+      h(
+        "div",
+        { class: "answer-receipt", role: "status" },
+        h(
+          "p",
+          {},
+          h("strong", {}, entry.saving ? "Saving…" : entry.message),
+          h("span", {}, entry.visit.title),
+        ),
+        button(
+          entry.saving ? "Saving…" : "Undo",
+          () => {
+            motion = "retreat";
+            answers.undo(entry.visit.id);
+            window.scrollTo(0, 0);
+            focusHeading();
+          },
+          "receipt-action",
+        ),
+      ),
+    ),
+  );
+  nodes.forEach((node) => {
+    const action = node.querySelector("button");
+    if (action && action.textContent === "Saving…") action.disabled = true;
+  });
+  return nodes;
+}
+function renderReceipts() {
+  frame?.receipts.replaceChildren(...receiptNodes());
+}
 function offlineBanner() {
   return h(
     "aside",
@@ -141,144 +367,86 @@ function offlineBanner() {
     h(
       "div",
       {},
-      h("strong", {}, "Dish Watch is offline right now"),
+      h("strong", {}, "Can’t reach the kitchen right now"),
       h(
         "p",
         {},
         state.lastLoaded
-          ? `Last loaded ${new Date(state.lastLoaded).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. These are the last loaded results.`
-          : "The kitchen connection is taking a break. Please try again in a bit.",
+          ? `You’re seeing what loaded at ${new Date(state.lastLoaded).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.`
+          : "It usually comes back on its own in a minute or two.",
       ),
     ),
     button("Try again", () => void refresh(), "secondary"),
   );
 }
+/** @param {()=>void} update */
+function transition(update) {
+  const kind = motion;
+  motion = null;
+  const animate =
+    kind &&
+    kind !== "tab" &&
+    "startViewTransition" in document &&
+    !document.hidden &&
+    !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!animate) {
+    update();
+    return;
+  }
+  const html = document.documentElement;
+  html.dataset.motion = kind;
+  document
+    .startViewTransition(update)
+    .finished.finally(() => delete html.dataset.motion);
+}
 /** @param {Node} content */
 function shell(content) {
   const current = page();
-  const links = /** @type {const} */ ([
-    ["week", "This week", "/"],
-    ["name", "Name dishes", "/name"],
-    ["mine", "My dishes", "/mine"],
-    ["past", "Past weeks", "/past"],
-    ["footage", "Footage", "/footage"],
-    ["help", "Help camera", "/help"],
-  ]);
-  fill(
-    root,
-    h(
-      "header",
-      { class: "site-header" },
-      h(
-        "div",
-        { class: "header-inner" },
-        brand(href, navigate),
-        h("span", { class: "house-note" }, "The weekly kitchen league"),
-      ),
-    ),
-    mock
-      ? h(
-          "div",
-          { class: "demo-banner" },
-          "Synthetic demo · Example names and results",
-        )
-      : null,
-    h(
-      "nav",
-      { class: "nav", "aria-label": "Main navigation" },
-      links.map(([key, label, path]) =>
-        h(
-          "a",
-          {
-            href: href(path),
-            "aria-current": current === key ? "page" : null,
-            onclick: (/** @type {MouseEvent} */ e) => {
-              e.preventDefault();
-              navigate(path);
-            },
-          },
-          label,
-        ),
-      ),
-    ),
-    h(
-      "main",
-      { id: "main", class: `main page-${current}` },
-      state.offline ? offlineBanner() : null,
-      answerError
-        ? h(
-            "div",
-            { class: "answer-error", role: "alert" },
-            h("p", {}, answerError),
-            button(
-              "Dismiss",
-              () => {
-                answerError = "";
-                render();
-              },
-              "quiet",
-            ),
-          )
-        : null,
-      answers.entries.size
-        ? h(
-            "div",
-            {
-              class: "answer-receipts",
-              "aria-label": "Answers waiting to save",
-            },
-            [...answers.entries.values()].map((entry) =>
-              h(
-                "div",
-                { class: "answer-receipt", role: "status" },
-                h(
-                  "p",
-                  {},
-                  h("strong", {}, entry.visit.title),
-                  h(
-                    "span",
-                    {},
-                    entry.saving
-                      ? "Saving answer…"
-                      : `${entry.message} Saving in a moment.`,
-                  ),
-                ),
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    class: "secondary",
-                    disabled: entry.saving,
-                    onclick: () => {
-                      answers.undo(entry.visit.id);
-                      focusHeading();
-                    },
-                  },
-                  entry.saving ? "Saving…" : "Undo",
-                ),
-              ),
-            ),
-          )
-        : null,
-      content,
-    ),
-    footer(),
+  mountFrame();
+  if (!frame) return;
+  const main = frame.main;
+  main.className = `main page-${current}`;
+  main.replaceChildren(
+    ...(state.offline && state.data ? [offlineBanner()] : []),
+    content,
   );
+  paintBar();
+  paintTabs();
+  renderReceipts();
+  watchTitle();
   if (state.offline)
     root
       .querySelectorAll(
-        '.chip,.guess-choice,.verdict-button,.duplicate-choice,.settle-actions button,.record-actions button[type="submit"]',
+        '.chip,.verdict-button,.duplicate-choice,.settle-actions button,.record-actions button[type="submit"]',
       )
       .forEach((button) => {
         if (button instanceof HTMLButtonElement) button.disabled = true;
       });
-  document.title = `${links.find((l) => l[0] === current)?.[1]} · Highest House`;
+  const label = main.querySelector("h1")?.textContent;
+  document.title = label ? `${label} · Highest House` : "Highest House";
+}
+/** Placeholder shapes keep the layout still while the first read arrives. */
+function skeleton() {
+  return h(
+    "div",
+    { class: "skeleton", role: "status", "aria-label": "Loading" },
+    h("div", { class: "skeleton-title" }),
+    h("div", { class: "skeleton-card" }),
+    h("div", { class: "skeleton-card short" }),
+  );
 }
 async function enter() {
   state.loading = true;
-  shell(h("p", { class: "loading", role: "status" }, "Loading the house…"));
+  motion = null;
+  shell(skeleton());
   await refresh(true);
   focusHeading();
+}
+/** Signed photo links change on every read; they shouldn't cause a redraw by themselves. */
+function contentKey(/** @type {import("./types.js").Week} */ data) {
+  return JSON.stringify(data, (key, value) =>
+    key.endsWith("_url") ? Boolean(value) : value,
+  );
 }
 /** @param {boolean} [initial] */
 async function refresh(initial = false) {
@@ -290,15 +458,28 @@ async function refresh(initial = false) {
   refreshing = true;
   const requestEpoch = epoch,
     selected = state.selected;
+  let changed = true;
   try {
     // The first authenticated read warms the server's signing-key cache. A
     // parallel cold read deliberately returns 503 while that refresh is held.
     const identity = !state.me || initial ? await getMe() : state.me;
     const data = await getWeek(selected);
     if (requestEpoch !== epoch || selected !== state.selected) return;
+    const key = contentKey(data);
+    changed =
+      key !== fingerprint ||
+      !state.me ||
+      state.offline ||
+      Boolean(problem) ||
+      // Photo links last 30 minutes, so a long-open page still gets fresh ones.
+      Date.now() - renderedAt > 15 * 60000;
+    fingerprint = key;
     state.me = identity;
     state.data = data;
     state.offline = false;
+    problem = "";
+    if (!selected)
+      badge = data.week.closed ? 0 : data.clear_count;
     state.lastLoaded = Date.now();
   } catch (error) {
     if (requestEpoch !== epoch) return;
@@ -308,50 +489,96 @@ async function refresh(initial = false) {
       announce("Please sign in again.");
       return;
     }
-    state.offline = true;
+    if (error instanceof HouseError && error.status >= 400 && error.status < 429)
+      problem = error.message;
+    else state.offline = true;
   } finally {
     refreshing = false;
     state.loading = false;
-    // Never replace a housemate's note while they are typing or move their photo zoom.
-    const editing =
-      document.activeElement?.matches("input,textarea,select") ||
-      document.querySelector("dialog[open]");
-    if (requestEpoch === epoch && !editing) render();
+    if (requestEpoch === epoch && changed) render();
     if (refreshAgain) {
       refreshAgain = false;
       if (state.me || state.offline) void refresh();
     }
   }
 }
-function render() {
+/** Never replace a note someone is typing or a sheet or photo they have open. */
+function busy() {
+  return (
+    document.activeElement?.matches("input,textarea,select") ||
+    document.querySelector("dialog[open]")
+  );
+}
+for (const id of ["sheet", "photo-dialog"])
+  document.getElementById(id)?.addEventListener("close", () => {
+    if (renderOwed && !busy()) render();
+  });
+/** @param {boolean} [force] */
+function render(force = false) {
+  if (!force && busy()) {
+    renderOwed = true;
+    return;
+  }
+  renderOwed = false;
+  renderedAt = Date.now();
+  if (problem) {
+    transition(() =>
+      shell(
+        h(
+          "div",
+          { class: "page-message" },
+          heading("We can’t show this yet", problem),
+          button("Sign out", () => void leave(), "secondary"),
+        ),
+      ),
+    );
+    return;
+  }
   if (!state.me && !state.offline && !state.loading) {
     renderAuth();
     return;
   }
   if (state.me && page() === "footage") {
     // Weekly background reads must not replace or interrupt the active video.
-    if (!root.querySelector(".footage-page")) shell(footagePage());
+    if (!root.querySelector(".footage-page"))
+      transition(() => shell(footagePage()));
+    else {
+      paintBar();
+      paintTabs();
+      renderReceipts();
+    }
     return;
   }
   if (!state.data) {
-    shell(
-      state.offline
-        ? heading(
-            "We’ll be back.",
-            "Your league will be here when the kitchen reconnects.",
-          )
-        : h("p", { class: "loading", role: "status" }, "Loading…"),
+    transition(() =>
+      shell(
+        state.offline
+          ? h(
+              "div",
+              { class: "page-message" },
+              heading(
+                "Can’t reach the kitchen",
+                "The computer in the kitchen isn’t answering. Nothing’s lost, and it usually comes back in a minute or two.",
+              ),
+              button("Try again", () => void refresh(), "secondary"),
+            )
+          : skeleton(),
+      ),
     );
     return;
   }
-  shell(
-    page() === "help" ? helpPage(context) : page() === "name"
-      ? namePage(context)
-      : page() === "mine"
-        ? minePage(context)
-        : page() === "past"
-          ? pastPage(context)
-          : weekPage(context),
+  transition(() =>
+    shell(
+      page() === "help"
+        ? helpPage(context)
+        : page() === "name"
+          ? namePage(context)
+          : page() === "mine"
+            ? minePage(context)
+            : page() === "past"
+              ? pastPage(context)
+              : weekPage(context),
+    ),
   );
 }
 /** @param {Visit} dish @param {'name'|'dispute'|'settle'|'verdict'} action @param {unknown} body @param {string} message */
@@ -362,6 +589,7 @@ async function mutate(dish, action, body, message) {
   }
   if (action === "name" || action === "verdict") {
     answerError = "";
+    motion = "advance";
     answers.add(dish, action, body, message);
     window.scrollTo(0, 0);
     focusHeading();
@@ -403,9 +631,7 @@ async function mutate(dish, action, body, message) {
       if (error) error.textContent = message;
       if (e instanceof HouseError && (e.status === 0 || e.status >= 500)) {
         state.offline = true;
-        announce(
-          "Dish Watch is offline right now. Your change wasn’t confirmed.",
-        );
+        announce(`${message} Your change wasn’t confirmed.`);
       }
     }
   } finally {
@@ -419,6 +645,8 @@ const context = {
   state,
   href,
   navigate,
+  link,
+  signOut: leave,
   render,
   refresh,
   focusHeading,
@@ -426,15 +654,15 @@ const context = {
   enter,
 };
 const { renderAuth, renderJoin } = createAuthScreens(context);
-window.addEventListener("popstate", () => {
+window.addEventListener("popstate", (event) => {
   stopFootage();
   root.querySelector(".footage-page")?.remove();
-  state.selected =
-    page() === "past"
-      ? new URLSearchParams(location.search).get("start") || ""
-      : "";
-  state.data = null;
-  render();
+  const before = lastDepth;
+  lastDepth = Number(event.state?.depth) || 0;
+  syncSelection();
+  motion = lastDepth < before ? "pop" : "push";
+  render(true);
+  window.scrollTo(0, scrolls.get(location.pathname + location.search) || 0);
   if (state.me) void refresh();
 });
 window.addEventListener("focus", () => {
@@ -450,10 +678,7 @@ document.addEventListener("visibilitychange", () => {
 setInterval(() => {
   if (!document.hidden && state.me) void refresh();
 }, 60000);
-state.selected =
-  page() === "past"
-    ? new URLSearchParams(location.search).get("start") || ""
-    : "";
+syncSelection();
 if (location.pathname.replace(/\/$/, "") === "/join") renderJoin();
 else
   accessToken()

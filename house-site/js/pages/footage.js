@@ -10,7 +10,7 @@ export function stopFootage() { dispose?.(); dispose = null; }
 /** @param {import('../types.js').Visit} visit @param {import('../types.js').ScreenContext} context */
 export function watchFootage(visit, context) {
   const at = Date.parse(visit.at) / 1000;
-  return button("Watch the footage", () => context.navigate(`/footage?at=${encodeURIComponent(at)}`), "secondary watch-footage");
+  return button("Watch the video", () => context.navigate(`/footage?at=${encodeURIComponent(at)}`, "tab"), "secondary watch-footage");
 }
 
 /** One shared recorded player, entered from navigation or any dish picture. */
@@ -18,50 +18,54 @@ export function footagePage() {
   stopFootage();
   let alive = true, timezone = "UTC", dragging = false;
   /** @type {Index|null} */ let index = null;
-  const clock = h("p", { class: "footage-clock" }, "Choose a recording"),
-    status = h("p", { class: "help footage-status", role: "status" }, "Loading recordings…"),
+  const clock = h("p", { class: "footage-clock" }, ""),
+    status = h("p", { class: "help footage-status", role: "status" }, "Loading…"),
     panel = h("section", { class: "footage-controls", "aria-label": "Browse recordings" }),
     moments = h("div", { class: "footage-moments" }),
     timeline = h("div", { class: "footage-timeline" }),
     slider = h("input", { type: "range", step: 1, "aria-label": "Recording time" }),
     chosen = h("output", { class: "help footage-chosen", "aria-live": "off" }),
     jump = h("input", { type: "datetime-local", name: "footage-time", required: true, step: 1 }),
-    previous = button("Previous chunk", () => { if (player.current?.previous != null) void load(player.current.previous, false, true); }, "secondary"),
-    next = button("Next chunk", () => { if (player.current?.next != null) void load(player.current.next, false, true); }, "secondary");
+    previous = button("Earlier", () => { if (player.current?.previous != null) void load(player.current.previous, false, true); }, "secondary"),
+    next = button("Later", () => { if (player.current?.next != null) void load(player.current.next, false, true); }, "secondary");
   previous.disabled = next.disabled = true;
-  const refresh = button("Refresh recordings", () => void refreshIndex(), "quiet");
+  const refresh = button("Check for new video", () => void refreshIndex(), "quiet");
   const player = recordedPlayer({
     status: (text) => { status.textContent = text; },
     clock: (at) => { clock.textContent = timeLabel(at); },
     changed: (chunk, at) => {
-      if (!dragging) { slider.value = String(at); chosen.textContent = timeLabel(at); }
+      if (!dragging) { slider.value = String(at); chosen.textContent = ""; }
       previous.disabled = chunk.previous === null; next.disabled = chunk.next === null;
       showMoments(at);
     },
   });
   const load = player.load;
-  const root = h("div", { class: "footage-page" }, heading("Kitchen footage", "Browse the recordings kept by the kitchen camera."),
-    status, player.element, clock,
+  const root = h("div", { class: "footage-page" }, heading("Footage", "Video from the kitchen camera. No sound."),
+    player.element, clock, status,
     h("div", { class: "footage-chunks" }, previous, next), panel,
-    h("p", { class: "help" }, "Recorded only · No audio · Clock times are approximate. New footage appears after a segment finishes. Older recordings roll off automatically."), refresh);
+    h("p", { class: "help" }, "Clock times are approximate. Older video is deleted automatically. The newest few minutes show up once they finish saving."), refresh);
   dispose = () => { alive = false; player.stop(); };
 
   /** @param {number} at */
   function timeLabel(at) {
-    return new Intl.DateTimeFormat("en-US", { timeZone: timezone, month: "short", day: "numeric",
-      hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(new Date(at * 1000));
+    return new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit", second: "2-digit" }).format(new Date(at * 1000));
+  }
+  /** @param {number} at */
+  function shortLabel(at) {
+    return new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(at * 1000));
   }
   /** @param {number} at */
   function showMoments(at) {
     if (!index) return;
     const nearest = [...index.moments].sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at)).slice(0, 12).sort((a, b) => a.at - b.at);
-    moments.replaceChildren(h("h2", {}, "Nearby moments"),
-      h("p", { class: "help" }, "Presence is sampled from detections, so some visits will be missing. It does not identify whose dishes these are."),
-      ...nearest.map((m) => button(`${m.label} · ${timeLabel(m.at)}`, () => void load(m.at), "quiet")));
+    moments.replaceChildren(h("h2", { class: "group-title" }, "Around this time"),
+      h("p", { class: "group-note" }, "When the camera saw dishes or people. It can miss some, and it doesn’t show whose dishes they are."),
+      ...nearest.map((m) => button(`${m.label} · ${shortLabel(m.at)}`, () => void load(m.at), "quiet")));
   }
   slider.addEventListener("input", () => {
     dragging = true;
-    chosen.textContent = `Jump to ${timeLabel(Number(slider.value))}`;
+    chosen.textContent = `Go to ${timeLabel(Number(slider.value))}`;
   });
   slider.addEventListener("change", () => {
     dragging = false;
@@ -72,7 +76,7 @@ export function footagePage() {
     e.preventDefault();
     const at = new Date(jump.value).getTime() / 1000;
     if (Number.isFinite(at)) void load(at);
-  } }, field("Jump to date and time (your device’s timezone)", jump), h("button", { type: "submit", class: "secondary" }, "Go to time"));
+  } }, field("Go to a date and time", jump), h("button", { type: "submit", class: "secondary" }, "Go"));
   async function refreshIndex() {
     refresh.disabled = true;
     try {
@@ -80,7 +84,7 @@ export function footagePage() {
       if (!alive) return;
       index = data; timezone = data.timezone;
       if (!data.ranges.length) {
-        status.textContent = "No finished recordings are available yet. Try refreshing shortly.";
+        status.textContent = "No video saved yet. Check back in a few minutes.";
         panel.replaceChildren(); return;
       }
       const start = data.ranges[0].start, end = data.ranges[data.ranges.length - 1].end;
@@ -109,9 +113,10 @@ export function footagePage() {
         svg.append(mark);
       }
       timeline.replaceChildren(svg, slider);
-      panel.replaceChildren(h("h2", {}, "Retained recordings"),
-        h("p", { class: "help" }, `${timeLabel(start)} – ${timeLabel(end)}`), timeline,
-        h("p", { class: "help footage-key" }, "Bottom band: recorded · Empty: gap · Blue lane: dishes · Amber lane: people"),
+      panel.replaceChildren(h("h2", { class: "group-title" }, "Everything saved"),
+        timeline,
+        h("p", { class: "help footage-range" }, h("span", {}, shortLabel(start)), h("span", {}, shortLabel(end))),
+        h("p", { class: "footage-key" }, h("span", { class: "key dish" }, "Dishes seen"), h("span", { class: "key person" }, "People seen"), h("span", { class: "key gap" }, "Recording")),
         chosen, form, moments);
       if (!player.current) {
         const wanted = new URLSearchParams(location.search).get("at");
@@ -121,7 +126,7 @@ export function footagePage() {
         showMoments(player.current.start);
       }
     } catch (error) {
-      if (alive) status.textContent = error instanceof Error ? error.message : "Could not load recordings.";
+      if (alive) status.textContent = "Couldn’t load the video list. Try again in a minute.";
     } finally { if (alive) refresh.disabled = false; }
   }
   void refreshIndex();

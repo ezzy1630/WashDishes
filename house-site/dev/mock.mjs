@@ -37,6 +37,11 @@ const residents = slugs.map((slug, i) => ({
   slug,
   name: slug[0].toUpperCase() + slug.slice(1),
 }));
+const clipFile = path.join(fixtureRoot, "footage-demo.mp4");
+execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i",
+  "testsrc2=size=640x360:rate=10:duration=30", "-pix_fmt", "yuv420p",
+  "-movflags", "+faststart", clipFile]);
+const footageStart = Math.floor(Date.now() / 1000) - 3600;
 const at = "2026-11-03T01:00:00-08:00";
 let closesAt = null,
   dutyMode = "carry",
@@ -391,7 +396,9 @@ const server = http.createServer(async (req, res) => {
         res.setHeader(
           key,
           key === "Content-Security-Policy"
-            ? value.replace("; upgrade-insecure-requests", "")
+            ? value.replace("; upgrade-insecure-requests", "") +
+                // The operator preview borrows the dashboard's fonts; the site has none.
+                (req.url.startsWith("/dev/learning-operator") ? "; font-src 'self'" : "")
             : value,
         );
     const url = new URL(req.url, `http://127.0.0.1:${port}`),
@@ -483,6 +490,20 @@ const server = http.createServer(async (req, res) => {
       res.end(await readFile(file));
       return;
     }
+    if (pathname === "/dev/footage.mp4") {
+      const clip = await readFile(clipFile),
+        range = /bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
+      const from = range ? Number(range[1]) : 0,
+        to = range?.[2] ? Number(range[2]) : clip.length - 1;
+      res.writeHead(range ? 206 : 200, {
+        "Content-Type": "video/mp4",
+        "Accept-Ranges": "bytes",
+        "Content-Length": to - from + 1,
+        ...(range ? { "Content-Range": `bytes ${from}-${to}/${clip.length}` } : {}),
+      });
+      res.end(req.method === "HEAD" ? undefined : clip.subarray(from, to + 1));
+      return;
+    }
     if (pathname === "/dev/control" && req.method === "POST") {
       const b = await body(req);
       if (b.reset) reset();
@@ -529,6 +550,37 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const route = pathname.slice("/house/api".length);
+      if (route === "/footage") {
+        json(res, 200, {
+          timezone: "America/Los_Angeles",
+          clock_estimated: true,
+          ranges: [
+            { start: footageStart, end: footageStart + 1200 },
+            { start: footageStart + 1500, end: footageStart + 3000 },
+          ],
+          moments: [120, 400, 900, 1700, 2500].map((offset, i) => ({
+            at: footageStart + offset,
+            kind: i % 2 ? "person" : "dish",
+            label: i % 2 ? "Person nearby" : "Dish seen",
+          })),
+        });
+        return;
+      }
+      if (route === "/footage/chunk") {
+        const at = Number(url.searchParams.get("at")) || footageStart,
+          start = footageStart + Math.floor((at - footageStart) / 30) * 30;
+        json(res, 200, {
+          url: `http://127.0.0.1:${port}/dev/footage.mp4`,
+          start,
+          end: start + 30,
+          offset: Math.max(0, at - start),
+          previous: start > footageStart ? start - 30 : null,
+          next: start + 30 < footageStart + 3000 ? start + 30 : null,
+          expires: Math.floor(Date.now() / 1000) + 600,
+          clock_estimated: true,
+        });
+        return;
+      }
       if (route === "/join" && req.method === "POST") {
         const b = await body(req);
         const ok =

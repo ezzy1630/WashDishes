@@ -134,6 +134,7 @@ try {
     fresh,
   );
   assert.ok(calls.some((c) => c.grant === "refresh_token"));
+  await page.locator(".tab", { hasText: "Me" }).click();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   assert.equal(

@@ -1,19 +1,36 @@
 import { correctionLink } from "./help.js";
 import {
   button,
-  date,
+  closeSheet,
   empty,
   h,
   heading,
   imageURL,
   mediaSize,
+  openSheet,
   photo,
   tag,
+  when,
 } from "../ui.js";
 /** @typedef {import("../types.js").Week} Week */
 /** @typedef {import("../types.js").Visit} Visit */
 import { verdictText } from "./visit.js";
 import { watchFootage } from "./footage.js";
+
+const evidenceLabels = {
+  strong: "Clear photos",
+  fair: "Decent photos",
+  weak: "Hard to see",
+};
+/** The server's short reasons, said the way a person would. @param {string} reason */
+function plainReason(reason) {
+  return reason
+    .replace("Arrival photos unavailable", "No photos of it arriving")
+    .replace("Arrival not recorded", "The camera missed it arriving")
+    .replace("No one in the photos", "no one’s in the photos")
+    .replace("Looks like a household object; check Not a dish", "This might not be a dish at all")
+    .replace(" · ", ", ");
+}
 /** @param {Week} data @param {import('../types.js').ScreenContext} context */
 function reviewedVisits(data, context) {
   const reviewed = data.visits.filter((v) => v.resident || v.verdict);
@@ -22,11 +39,7 @@ function reviewedVisits(data, context) {
     ? h(
         "details",
         { class: "reviewed-visits" },
-        h(
-          "summary",
-          {},
-          `Reviewed this week (${reviewed.length + history.length})`,
-        ),
+        h("summary", {}, `Reviewed this week (${reviewed.length + history.length})`),
         h(
           "div",
           { class: "reviewed-list" },
@@ -35,11 +48,7 @@ function reviewedVisits(data, context) {
               "article",
               { class: "reviewed-visit" },
               h("h3", {}, visit.title),
-              h(
-                "p",
-                { class: "help" },
-                `${visit.area} · ${date(visit.at, data.week.timezone, true)}`,
-              ),
+              h("p", { class: "help" }, `${visit.area} · ${when(visit.at, data.week.timezone)}`),
               h(
                 "p",
                 { class: "review-attribution" },
@@ -68,138 +77,101 @@ function reviewedVisits(data, context) {
               "article",
               { class: "reviewed-visit" },
               h("h3", {}, entry.title),
-              h(
-                "p",
-                { class: "review-attribution" },
-                verdictText({ verdict: entry }),
-              ),
+              h("p", { class: "review-attribution" }, verdictText({ verdict: entry })),
             ),
           ),
         ),
       )
     : null;
 }
-/** @param {Visit} visit @param {Week} data @param {import("../types.js").ScreenContext["mutate"]} mutate */
-function verdictChoices(visit, data, mutate) {
-  const choices = h("div", { class: "other-answers" });
-  const picker = h("div", { class: "duplicate-picker" });
-  const targets = data.visits.filter((v) => v.id !== visit.id);
-  const duplicate = button(
-    "Same as another",
-    () => {
-      if (picker.hasChildNodes()) {
-        picker.replaceChildren();
-        duplicate.setAttribute("aria-expanded", "false");
-        return;
-      }
-      duplicate.setAttribute("aria-expanded", "true");
-      picker.replaceChildren(
-        h("p", { class: "help" }, "Which visit is this the same as?"),
-        ...targets.map((target) => {
-          const choice = button(
-            "",
-            () =>
-              void mutate(
-                visit,
-                "verdict",
-                { verdict: "duplicate", of_visit_id: target.id },
-                "Marked as a duplicate. On to the next visit.",
-              ),
-            "duplicate-choice",
-          );
-          const thumbnail = imageURL(target.photo_url || target.filmstrip_url);
-          if (thumbnail) {
-            const img = h("img", {
-              src: thumbnail,
-              alt: "",
-              width: 80,
-              height: 60,
-              loading: "eager",
-              decoding: "sync",
-              referrerpolicy: "no-referrer",
-            });
-            img.onerror = () => img.remove();
-            choice.append(img);
-          }
-          choice.append(
-            h(
-              "span",
-              {},
-              h("strong", {}, target.title),
+/** The likeliest duplicates are close in time, so a week of 90 stays a short list. @param {Visit} visit @param {Week} data @param {import("../types.js").ScreenContext["mutate"]} mutate */
+function duplicatePicker(visit, data, mutate) {
+  const at = Date.parse(visit.at);
+  const targets = data.visits
+    .filter((v) => v.id !== visit.id)
+    .sort(
+      (a, b) =>
+        Number(b.area === visit.area) - Number(a.area === visit.area) ||
+        Math.abs(Date.parse(a.at) - at) - Math.abs(Date.parse(b.at) - at),
+    )
+    .slice(0, 20);
+  openSheet(
+    "Which one is it the same as?",
+    targets.length
+      ? h(
+          "div",
+          { class: "duplicate-picker" },
+          targets.map((target) => {
+            const choice = button(
+              "",
+              () => {
+                closeSheet();
+                void mutate(
+                  visit,
+                  "verdict",
+                  { verdict: "duplicate", of_visit_id: target.id },
+                  "Marked as a duplicate",
+                );
+              },
+              "duplicate-choice",
+            );
+            const thumbnail = imageURL(target.photo_url || target.filmstrip_url);
+            if (thumbnail) {
+              const img = h("img", {
+                src: thumbnail,
+                alt: "",
+                width: 80,
+                height: 60,
+                loading: "lazy",
+                referrerpolicy: "no-referrer",
+              });
+              img.onerror = () => img.remove();
+              choice.append(img);
+            }
+            choice.append(
               h(
                 "span",
-                { class: "help" },
-                `${target.area} · ${date(target.at, data.week.timezone, true)}`,
+                {},
+                h("strong", {}, target.title),
+                h("span", { class: "help" }, `${target.area} · ${when(target.at, data.week.timezone)}`),
+                target.resident
+                  ? h("span", { class: "help" }, `Named as ${target.resident.name}`)
+                  : null,
               ),
-              target.resident
-                ? h(
-                    "span",
-                    { class: "help" },
-                    `Named as ${target.resident.name}`,
-                  )
-                : null,
-            ),
-          );
-          return choice;
-        }),
-        ...(!targets.length
-          ? [
-              h(
-                "p",
-                { class: "help" },
-                "There isn’t another visit to link this to.",
-              ),
-            ]
-          : []),
-      );
-      picker.querySelector("button")?.focus();
-    },
-    "verdict-button",
+            );
+            return choice;
+          }),
+        )
+      : h("p", { class: "help" }, "There isn’t another one to link this to."),
   );
-  duplicate.setAttribute("aria-expanded", "false");
-  choices.append(
-    button(
-      "Not a dish",
-      () =>
-        void mutate(
-          visit,
-          "verdict",
-          { verdict: "not_dish" },
-          "Marked not a dish. On to the next visit.",
-        ),
-      "verdict-button",
-    ),
-    button(
-      "It’s clean",
-      () =>
-        void mutate(
-          visit,
-          "verdict",
-          { verdict: "clean" },
-          "Marked clean. On to the next visit.",
-        ),
-      "verdict-button",
-    ),
-    duplicate,
-    button(
-      "Can’t tell",
-      () =>
-        void mutate(
-          visit,
-          "verdict",
-          { verdict: "cant_tell" },
-          "Skipped. It stays unnamed.",
-        ),
-      "verdict-button",
-    ),
-  );
-  return h(
+}
+/** @param {Visit} visit @param {Week} data @param {import("../types.js").ScreenContext["mutate"]} mutate */
+function moreAnswers(visit, data, mutate) {
+  /** @param {string} label @param {string} detail @param {()=>void} run */
+  const option = (label, detail, run) => {
+    const choice = h(
+      "button",
+      { type: "button", class: "sheet-option verdict-button", "aria-label": label, onclick: run },
+      h("strong", {}, label),
+      h("span", {}, detail),
+    );
+    return choice;
+  };
+  /** @param {'not_dish'|'clean'} verdict @param {string} message */
+  const answer = (verdict, message) => () => {
+    closeSheet();
+    void mutate(visit, "verdict", { verdict }, message);
+  };
+  openSheet("What’s wrong with this one?", h(
     "div",
-    { class: "verdict-answers" },
-    h("p", { class: "help" }, "Something else?"),
-    choices,
-    picker,
-  );
+    { class: "sheet-options" },
+    option("Not a dish", "The camera picked up something else. Removes it for everyone.", answer("not_dish", "Marked not a dish")),
+    option("It’s clean", "It’s already been washed. Removes it for everyone.", answer("clean", "Marked clean")),
+    option("Same as another", "This dish is already on the list.", () => {
+      closeSheet();
+      duplicatePicker(visit, data, mutate);
+    }),
+  ));
 }
 /** @param {import("../types.js").ScreenContext} context */
 export function namePage(context) {
@@ -217,11 +189,11 @@ export function namePage(context) {
         !state.skipped.has(v.id) && (state.showWeak || v.evidence !== "weak"),
     ),
     visit = remaining[0];
-  const intro = data.week.closed
-    ? "Week closed. Unnamed visits don’t count."
-    : "Look at the pictures. Only name someone if you know they used these dishes.";
+  const hiddenWeak = unreviewed.filter(
+    (v) => v.evidence === "weak" && !state.skipped.has(v.id),
+  ).length;
   const weakLink =
-    !data.week.closed && data.weak_count
+    !data.week.closed && (state.showWeak || hiddenWeak)
       ? h(
           "button",
           {
@@ -235,46 +207,38 @@ export function namePage(context) {
             },
           },
           state.showWeak
-            ? "Hide weak evidence"
-            : `+${data.weak_count} with weak evidence`,
+            ? "Hide the hard-to-see ones"
+            : `Show ${hiddenWeak} that ${hiddenWeak === 1 ? "is" : "are"} hard to see`,
         )
       : null;
   const reviewed = reviewedVisits(data, context);
   if (!visit)
     return h(
       "div",
-      {},
-      heading("Name the dishes", intro),
-      weakLink,
+      { class: "name-done" },
+      heading(data.week.closed ? "This week’s dishes" : "Dishes"),
       empty(
-        state.pending.size
-          ? "All visits answered."
-          : state.skipped.size
-            ? "That’s the round."
-            : "You’re all caught up.",
-        state.pending.size
-          ? "Your answers will save in a moment. You can still undo them above."
-          : state.skipped.size
-            ? "The visits you couldn’t tell stay unnamed. That’s better than a guess."
-            : data.weak_count
-              ? "The remaining visits have weak evidence. Leave them unnamed or reveal them above."
-              : "There’s nothing waiting for you to review right now.",
+        data.week.closed
+          ? "This week is final."
+          : state.pending.size
+            ? "All answered."
+            : state.skipped.size
+              ? "That’s the round."
+              : "You’re all caught up.",
+        data.week.closed
+          ? "Dishes nobody named don’t count."
+          : state.pending.size
+            ? "Saving in a moment. You can still undo."
+            : state.skipped.size
+              ? "The ones you couldn’t tell stay unnamed. That’s better than a guess."
+              : hiddenWeak
+                ? "What’s left is hard to see. It’s fine to leave those unnamed."
+                : "Nothing needs a name right now.",
       ),
-      h(
-        "a",
-        {
-          class: "primary",
-          href: context.href("/"),
-          onclick: (/** @type {MouseEvent} */ e) => {
-            e.preventDefault();
-            context.navigate("/");
-          },
-        },
-        "Back to this week",
-      ),
+      weakLink,
       state.skipped.size
         ? button(
-            "Look at skipped visits",
+            "Look at the skipped ones again",
             () => {
               state.skipped.clear();
               render();
@@ -283,16 +247,19 @@ export function namePage(context) {
             "secondary",
           )
         : null,
+      context.link("/", { class: "primary" }, "Back to this week"),
       reviewed,
     );
-  const people = [...data.standings].sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+  // Open the next photo instantly when this one is answered.
+  const next = remaining[1],
+    upcoming = imageURL(next?.filmstrip_url || next?.photo_url || null);
+  if (upcoming) new Image().src = upcoming;
+  const people = [...data.standings].sort((a, b) => a.name.localeCompare(b.name));
+  const guess = visit.guess;
   return h(
     "div",
-    {},
-    heading("Name the dishes", intro),
-    weakLink,
+    { class: "name-page" },
+    heading("Whose dishes are these?", "Only name someone if you know."),
     h(
       "article",
       { class: "naming", "data-dish-id": visit.id },
@@ -300,88 +267,47 @@ export function namePage(context) {
         "div",
         { class: "evidence" },
         h(
-          "div",
-          { class: "section-heading" },
+          "header",
+          { class: "visit-heading" },
           h("h2", {}, visit.title),
-          tag(
-            `${remaining.length} ${remaining.length === 1 ? "visit" : "visits"} left`,
-          ),
+          tag(`${remaining.length} left`),
         ),
         h(
           "p",
           { class: "help visit-metadata" },
-          `${visit.evidence[0].toUpperCase() + visit.evidence.slice(1)} evidence · ${visit.area} · ${date(visit.at, data.week.timezone, true)} · ${visit.points} potential ${visit.points === 1 ? "point" : "points"}`,
-          visit.reason
-            ? h("span", { class: "evidence-reason" }, visit.reason)
-            : null,
+          `${visit.area} · ${when(visit.at, data.week.timezone)} · ${visit.points} ${visit.points === 1 ? "point" : "points"} · ${evidenceLabels[visit.evidence]}`,
         ),
         photo(
-          visit.filmstrip_url,
-          `${visit.title}: dish and nearby people`,
+          visit.filmstrip_url || visit.photo_url,
+          `${visit.title}: arrival photos`,
           true,
           false,
-          mediaSize(visit),
+          mediaSize(visit, Boolean(visit.filmstrip_url)),
         ),
-        watchFootage(visit, context),
         h(
-          "div",
-          { class: "later-photo" },
-          h("h3", {}, "The later photo"),
-          photo(
-            visit.photo_url,
-            `${visit.title}, later`,
-            false,
-            false,
-            mediaSize(visit, false),
-          ),
+          "p",
+          { class: "help visit-note" },
+          visit.reason
+            ? `${plainReason(visit.reason)}.`
+            : visit.arrival_seen
+              ? "Name whoever used them, not whoever moved them."
+              : "The camera missed them being put down, so people nearby might not be the owner.",
         ),
       ),
       h(
         "section",
-        { class: "name-panel" },
-        h("h2", { class: "person-question" }, "Whose dishes are these?"),
-        h(
-          "p",
-          { class: "help" },
-          visit.arrival_seen
-            ? "Name the person who used them. Carrying dishes doesn’t make them yours."
-            : "Arrival not recorded. People nearby are candidates. Only name someone if you know they used these dishes.",
-        ),
-        visit.guess
+        { class: "name-panel", "aria-label": "Answer" },
+        guess
           ? h(
-              "div",
+              "details",
               { class: "camera-guess" },
-              button(
-                `Camera thinks ${visit.guess.name} — tap to confirm`,
-                () =>
-                  void mutate(
-                    visit,
-                    "name",
-                    { resident_id: visit.guess?.resident_id },
-                    `Named as ${visit.guess?.name}.`,
-                  ),
-                "guess-choice",
-              ),
-              h(
-                "p",
-                { class: "help" },
-                "Suggestion only. No points until you name someone.",
-              ),
-              h(
-                "details",
-                { class: "guess-basis" },
-                h("summary", {}, "Why this suggestion?"),
-                h("p", { class: "help" }, visit.guess.basis),
-              ),
+              h("summary", {}, `The camera thinks it’s ${guess.name}`),
+              h("p", { class: "help" }, `${guess.basis} It doesn’t count until someone taps a name.`),
             )
           : null,
         h(
           "div",
-          {
-            class: "name-chips",
-            role: "group",
-            "aria-label": "Name the person responsible",
-          },
+          { class: "name-chips", role: "group", "aria-label": "Whose dishes are these?" },
           people.map((p) =>
             button(
               p.name,
@@ -390,17 +316,46 @@ export function namePage(context) {
                   visit,
                   "name",
                   { resident_id: p.resident_id },
-                  `Named as ${p.name}.`,
+                  `Named ${p.name}`,
                 ),
-              `chip ${String(p.resident_id) === String(visit.guess?.resident_id) ? "camera-chip" : ""}`,
+              `chip ${String(p.resident_id) === String(guess?.resident_id) ? "camera-chip" : ""}`,
             ),
           ),
         ),
-        verdictChoices(visit, data, mutate),
-        correctionLink(context, visit),
+        h(
+          "div",
+          { class: "other-answers" },
+          button(
+            "Can’t tell",
+            () =>
+              void mutate(
+                visit,
+                "verdict",
+                { verdict: "cant_tell" },
+                "Skipped",
+              ),
+            "verdict-button",
+          ),
+          button("Something’s off", () => moreAnswers(visit, data, mutate), "verdict-button"),
+        ),
         h("p", { class: "action-error", role: "alert" }),
       ),
+      h(
+        "div",
+        { class: "visit-extras" },
+        watchFootage(visit, context),
+        visit.filmstrip_url && visit.photo_url
+          ? h(
+              "details",
+              { class: "later-photo" },
+              h("summary", {}, "See the later photo"),
+              photo(visit.photo_url, `${visit.title}, later`, false, true, mediaSize(visit, false)),
+            )
+          : null,
+        correctionLink(context, visit),
+      ),
     ),
+    weakLink,
     reviewed,
   );
 }

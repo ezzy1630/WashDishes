@@ -28,7 +28,7 @@ const blocked = [];
 const errors = [];
 const checks = [];
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const ui = { join: 'Set password & come in', nameTab: 'Name dishes',
+const ui = { join: 'Set password & come in', nameTab: 'Dishes(, \\d+\\+? waiting)?',
   signOut: 'Sign out', signIn: 'Sign in', dispute: 'That wasn’t me',
   disputeSubmit: 'Submit dispute|Send dispute|Dispute', settle: 'Settle|Review dispute',
   them: 'Them|It was them|Confirm Theo', notThem: 'Not them|Not Theo',
@@ -97,9 +97,12 @@ async function showStandings(actor, theo, wren, pick, label) {
     if (expected) assert.equal(await row.locator('.points').innerText(), String(expected), `${name} rendered points`);
     else assert.equal(await row.count(), 0, `${name} must not have a positive points row`);
   }
-  assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Theo is in line/ : /No clear pick yet/);
+  assert.match(await actor.page.locator('.pick h2').innerText(), pick ? /Theo’s on track for next week/ : /No one’s on track|tie at the top|Too close/);
   const source = await week(actor);
-  assert.equal(await actor.page.locator('.pick > p').first().innerText(), source.pick.reason, 'render the API explanation verbatim');
+  const explanation = await actor.page.locator('.pick > p').first().innerText();
+  // The sentence is worded on the site, but its numbers must be the API's.
+  if (pick) assert.equal(explanation, `${source.pick.points} points, ${source.pick.lead} ahead of second place.`);
+  else assert(source.pick.points === 0 || explanation.includes(String(source.pick.points)), `Explanation must state the API's top score: ${explanation}`);
   assert.equal(source.pick.points, Math.max(theo, wren));
   assert.equal(source.pick.lead, Math.abs(theo - wren));
   assert.equal(source.pick.state === 'pick', Boolean(pick));
@@ -172,7 +175,7 @@ async function join(name) {
   assert.equal(auth.user.email, `${name}@highest-house.ezzyrappeport.com`);
   // Let the site's initial authenticated request finish before this independent
   // probe: a concurrent cold JWKS fetch deliberately returns a fast 503.
-  await page.getByRole('link', { name: 'This week', exact: true }).waitFor();
+  await page.locator('#main h1', { hasText: 'This week' }).waitFor();
   const me = await ok('/house/api/me', { token: auth.access_token });
   assert.equal(Number(me.resident?.id ?? me.resident_id ?? me.id), cfg.fixture.residents[name]);
   await screenshot(page, `join-${name}-signed-in`);
@@ -214,7 +217,7 @@ function findVisit(state, fixtureIndex) {
 async function card(page, visit) {
   const result = page.locator(`[data-dish-id="${visit.id}"]`);
   if (visit.evidence === 'weak' && !await result.count()) {
-    await page.getByRole('button', {name: /with weak evidence/}).click();
+    await page.getByRole('button', {name: /hard to see/}).click();
   }
   await result.first().waitFor();
   assert.equal(await result.count(), 1, `Need one data-dish-id visit card for ${visit.id}`);
@@ -224,7 +227,7 @@ async function card(page, visit) {
 async function nameVisit(actor, visit, name, guess = false) {
   await actor.page.getByRole('link', { name: rx('nameTab') }).click();
   const item = await card(actor.page, visit);
-  const button = guess ? item.getByRole('button', { name: new RegExp(cfg.ui.guess || '^Camera thinks Theo — tap to confirm$', 'i') })
+  const button = guess ? item.locator('.camera-chip')
     : item.getByRole('button', { name: new RegExp(`^${name}$`, 'i') });
   if (guess) await screenshot(actor.page, 'camera-guess-awaiting-one-tap-confirmation');
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/house/api/visits/${visit.id}/name`) && r.request().method() === 'POST');
@@ -246,7 +249,7 @@ async function nameVisit(actor, visit, name, guess = false) {
 
 async function dispute(actor, visit, label) {
   await actor.page.reload();
-  await actor.page.getByRole('link', { name: 'My dishes', exact: true }).click();
+  await actor.page.getByRole('link', { name: 'Me', exact: true }).click();
   const item = await card(actor.page, visit);
   const response = actor.page.waitForResponse(r => r.url().endsWith(`/visits/${visit.id}/dispute`) && r.request().method() === 'POST');
   await item.getByRole('button', { name: rx('dispute') }).click();
@@ -265,7 +268,7 @@ async function dispute(actor, visit, label) {
 
 async function settle(actor, visit, decision) {
   await actor.page.reload();
-  await actor.page.getByRole('link', { name: 'My dishes', exact: true }).click();
+  await actor.page.getByRole('link', { name: 'Me', exact: true }).click();
   const item = await card(actor.page, visit);
   const open = item.getByRole('button', { name: rx('settle') });
   if (await open.count()) await open.click();
@@ -297,7 +300,8 @@ async function journey() {
   const wren = await join('wren');
   const theo = await join('theo');
   const milo = await join('milo');
-  await wren.page.getByRole('link',{name:'Help camera',exact:true}).click();
+  await wren.page.getByRole('link',{name:'Me',exact:true}).click();
+  await wren.page.getByRole('link',{name:'Help the camera',exact:true}).click();
   await wren.page.getByRole('heading',{name:'Is this a dish?',exact:true}).waitFor();
   await wren.page.getByRole('button',{name:'Yes',exact:true}).click();
   await wren.page.getByText('Saved. Another housemate will check it.',{exact:true}).waitFor();
@@ -368,7 +372,8 @@ async function journey() {
   await wren.page.getByRole('link', { name: rx('nameTab') }).click();
   const review = await card(wren.page, multi);
   const verdictResponse = wren.page.waitForResponse(r => r.url().endsWith(`/visits/${multi.id}/verdict`) && r.request().method() === 'POST');
-  await review.getByRole('button', { name: 'Not a dish', exact: true }).click();
+  await review.getByRole('button', { name: 'Something’s off', exact: true }).click();
+  await wren.page.getByRole('button', { name: 'Not a dish', exact: true }).click();
   const savedVerdict = await verdictResponse;
   assert.equal(savedVerdict.status(), 200);
   assert.equal((await savedVerdict.json()).verdict.kind, 'not_dish');
@@ -444,14 +449,15 @@ async function journey() {
   assert.equal(closed.week.closed, true);
   await refused(`/house/api/visits/${closedVisit.id}/name`, { token: wren.token, method: 'POST', body: { resident_id: cfg.fixture.residents.wren } }, [409]);
   assert.equal(closedVisit.can_name, false, 'Closed-week visit must not offer naming');
-  const past = wren.page.getByRole('button', { name: /^(Past weeks|History)$/i }).or(wren.page.getByRole('link', { name: /^(Past weeks|History)$/i }));
-  await past.click();
-  const closedWeek = wren.page.locator('.week-choice').filter({ hasText: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: closed.week.timezone }).format(new Date(cfg.fixture.closed_start + 'T12:00:00Z')) });
+  await wren.page.getByRole('link', { name: 'Me', exact: true }).click();
+  await wren.page.getByRole('link', { name: 'Past weeks', exact: true }).click();
+  await wren.page.locator('.past-page .row').first().waitFor();
+  assert.equal(await wren.page.locator('.past-page .row').count(), 3, 'Past-weeks UI respects the start boundary');
+  const closedWeek = wren.page.locator('.past-page .row').filter({ hasText: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: closed.week.timezone }).format(new Date(cfg.fixture.closed_start + 'T12:00:00Z')) });
   const pastResponse = wren.page.waitForResponse(r => r.url().endsWith('/house/api/week?start=' + cfg.fixture.closed_start));
   await closedWeek.click();
   assert((await pastResponse).ok());
-  await wren.page.locator('.past-detail').getByText('Closed', { exact: true }).waitFor();
-  assert.equal(await wren.page.locator('.week-choice').count(), 3, 'Past-weeks UI respects the start boundary');
+  await wren.page.locator('.past-detail').getByText('Final result. Names and points can’t change.', { exact: true }).waitFor();
   assert.equal(await wren.page.locator('.past-detail button').count(), 0, 'Closed history must not offer naming');
   await screenshot(wren.page, 'past-weeks-closed-naming-refused');
   await ok('/house/api/me', { token: theo.token });
@@ -485,6 +491,7 @@ async function journey() {
   finally { await clockOffset(0); }
   assert.equal((await request(media)).status, 200, 'Media must work again when fixture clock is restored');
   await screenshot(theo.page, 'auth-media-and-tunnel-refusals-checked');
+  await theo.page.getByRole('link', { name: 'Me', exact: true }).click();
   await theo.page.getByRole('button', { name: rx('signOut') }).click();
   await theo.page.waitForFunction(() => !Object.values(localStorage).some(v => { try { return !!JSON.parse(v)?.access_token; } catch { return false; } }));
   await theo.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();

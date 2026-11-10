@@ -2,25 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
     <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="no-referrer" />
-    <meta
-      name="description"
-      content="Highest House’s weekly kitchen league. A little help keeping the kitchen good for everyone."
-    />
-    <title>Highest House · Dish Watch</title>
+    <meta name="description" content="Our weekly kitchen league." />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="House" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Highest House</title>
     <link rel="icon" href="/mark.svg" type="image/svg+xml" />
-    <link
-      rel="preload"
-      href="/fonts/MonaSans.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/style.css" />
-    <link rel="stylesheet" href="/learning.css" />
-    <link rel="stylesheet" href="/footage.css" />
     <script type="module" src="/js/app.js"></script>
   </head>
   <body>
@@ -30,9 +29,10 @@
     </div>
     <p id="announcement" class="sr-only" role="status" aria-live="polite"></p>
     <dialog id="photo-dialog" aria-label="Enlarged dish photo"></dialog>
+    <dialog id="sheet" class="sheet" aria-labelledby="sheet-title"></dialog>
     <noscript
       ><p class="boot">
-        Dish Watch needs JavaScript to sign you in and load the league.
+        This site needs JavaScript to sign you in and load the week.
       </p></noscript
     >
   </body>

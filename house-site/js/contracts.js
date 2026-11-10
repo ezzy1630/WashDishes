@@ -39,10 +39,19 @@ function array(value, parse) {
 function nullable(value, parse) {
   return value == null ? null : parse(value);
 }
+/** Accounts are often stored as lowercase logins; people read them as names.
+ * @param {string} name */
+export function displayName(name) {
+  return name === name.toLowerCase()
+    ? name.replace(/(^|[\s-])(\p{L})/gu, (_, gap, letter) => gap + letter.toUpperCase())
+    : name;
+}
+/** @param {unknown} value */
+const personName = (value) => displayName(string(value));
 /** @param {unknown} value */
 export function resident(value) {
   const r = object(value);
-  return { id: id(r.id), name: string(r.name) };
+  return { id: id(r.id), name: personName(r.name) };
 }
 /** @param {unknown} value */
 export function me(value) {
@@ -126,7 +135,7 @@ export function week(value) {
       const s = object(item);
       return {
         resident_id: id(s.resident_id),
-        name: string(s.name),
+        name: personName(s.name),
         points: number(s.points),
         dishes: number(s.dishes),
       };
@@ -136,7 +145,7 @@ export function week(value) {
       const d = object(item);
       return {
         resident_id: id(d.resident_id),
-        name: string(d.name),
+        name: personName(d.name),
         since: string(d.since),
         why: string(d.why),
       };
@@ -160,7 +169,7 @@ export function week(value) {
       const h = object(item);
       return {
         start: string(h.start),
-        pick_name: nullable(h.pick_name, string),
+        pick_name: nullable(h.pick_name, personName),
         closed: boolean(h.closed),
       };
     }),
@@ -182,7 +191,7 @@ function pick(value) {
       ...fields,
       state,
       resident_id: id(p.resident_id),
-      name: string(p.name),
+      name: personName(p.name),
     };
   if (
     state !== "too_close" &&
@@ -206,7 +215,7 @@ function guess(value) {
   const g = object(value);
   return {
     resident_id: id(g.resident_id),
-    name: string(g.name),
+    name: personName(g.name),
     basis: string(g.basis),
   };
 }

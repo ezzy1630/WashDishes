@@ -6,9 +6,9 @@ A standalone, phone-first static site. Vanilla ES modules and CSS; no framework,
 
 Fill the three marked public values in `config.js`. Use a **Supabase publishable key** (`sb_publishable_…`), never a secret or service-role key. Then run `node house-site/dev/prepare.mjs` from the repository root. This local preflight validates the config and copies its two HTTPS origins into the Vercel CSP, so configuration is entered in one place. It changes no remote resources.
 
-When the lead is authorized to deploy, the Vercel project root is `house-site`, with no build command. `vercel.json` rewrites `/join`, `/name`, `/mine`, and `/past` to the SPA and applies restrictive CSP, no-referrer, frame denial, MIME protection, and disabled camera/microphone/location/payment access. The versioned Supabase bundle can be cached immutably; the public config and app documents are not stored. `dev/` is excluded by `.vercelignore`. No infrastructure has been created or deployed by this lane.
+When the lead is authorized to deploy, the Vercel project root is `house-site`, with no build command. `vercel.json` rewrites `/join`, `/name`, `/mine`, `/past`, `/help` and `/footage` to the SPA and applies restrictive CSP, no-referrer, frame denial, MIME protection, and disabled camera/microphone/location/payment access. The versioned Supabase bundle can be cached immutably; the public config and app documents are not stored. `dev/` is excluded by `.vercelignore`. No infrastructure has been created or deployed by this lane.
 
-Fonts cache for one day. Unversioned JS, CSS and the mark revalidate before reuse;
+Icons cache for one day. Unversioned JS, CSS and the mark revalidate before reuse;
 HTML and public config remain `no-store`. The initial account read warms sign-in
 verification before the week loads. Snapshot previews request `w=640`; the Jetson keeps a bounded RAM cache,
 and photo zoom uses the original signed URL. Filmstrips keep their full resolution.
@@ -56,11 +56,30 @@ Screenshots: `/Volumes/Neural/dishwatch-scratch/houseleague/laneC/screenshots/<s
 
 Mock controls: local `POST /dev/control` accepts `reset`, `offline`, `empty`, `missingPhotos`, `malformed`, `delay`, and `dutyMode` (`pick`, `carry`, `override`, `disabled`), supporting failure and state checks. Nothing from this endpoint exists in production.
 
-## Design and remaining integration
+## Design
 
-This extends `../DESIGN.md`: local Mona Sans with its OFL license, graphite dark tokens, compact 24/27px titles, quiet borders, evidence-first composition, and review blue. Light mode uses a warm neutral counterpart. Controls are at least 44px, metadata stays readable, image frames reserve aspect ratios, all images reserve their API-provided intrinsic aspect ratio at the full evidence-column width, zoom uses a native keyboard-dismissable dialog with scrolling, pinch gestures, and labeled zoom controls, and there is no continuous animation. Zero-point housemates collapse into one alphabetic line; threshold copy states points and required lead in words. Current-duty copy uses the API reason and assignment date to distinguish a weekly pick, carry-over, house-vote override, or paused league. The phone layout places the review action before the standings; the desktop layout puts it alongside. The later photo is a zoomable thumbnail after the naming controls on phones, and stays beside the workflow on desktop. The operator's Send page places the week summary and share image before review; People and Live retain their existing workflows. Root design files are unchanged.
+The housemate site deliberately looks and behaves like an iPhone app rather than
+the graphite operator dashboard (see the House site section of `../DESIGN.md`):
+system fonts, iOS grouped lists, light and dark following the device, a bottom
+tab bar (This week, Dishes, Footage, Me) that becomes a sidebar at 900px and up,
+and bottom sheets for secondary choices. Past weeks and Help the camera are
+pushed from Me with a back button. Pushes, pops and answering a dish slide via
+the View Transitions API where supported and are instant with reduced motion.
+The bars and shell stay mounted between pages; a background read only redraws
+when the week's content changed (photo link rotation alone doesn't count, but
+photos are re-signed at least every 15 minutes). Each tab keeps its scroll
+position. `manifest.webmanifest` and the Apple meta tags let housemates add the
+site to their Home Screen and open it full screen.
 
-Live Supabase credentials, the tunnel/CORS connection, Lane B's real responses, and Vercel-hosted routing/security headers remain integration work for the lead. Local Auth interception proves the client protocol and session behavior; it does not prove a provisioned account or live authorization. This lane creates no remote resources and performs no deployment, push, or PR.
+Copy is written for someone who has never heard of the system: “dishes need a
+name”, “Can’t tell”, “Something’s off”, “Watch the video”. The pick sentence is
+worded on the site from the API's structured `pick` numbers and state; the API
+still makes the decision. Lowercase account names display capitalized at the
+contract boundary.
+
+Reads retry twice over about two seconds on a network failure, 429 or 5xx before
+showing “Can’t reach the kitchen”; writes are never retried automatically. A
+4xx refusal such as an unlinked account shows its own reason with Sign out.
 
 ## Frontend modules
 

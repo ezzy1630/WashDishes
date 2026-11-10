@@ -21,7 +21,7 @@ export function recordedPlayer(callbacks) {
   const seek = h("input", { type: "range", min: 0, max: 1, step: 0.1, value: 0,
     "aria-label": "Seek within this recording" });
   const elapsed = h("span", { class: "help footage-elapsed" }, "0:00 / 0:00");
-  const retry = button("Retry recording", () => {
+  const retry = button("Try again", () => {
     if (selectedAt !== null) void load(selectedAt);
   }, "secondary");
   retry.hidden = true;
@@ -43,7 +43,7 @@ export function recordedPlayer(callbacks) {
   /** @param {unknown} error */
   function failed(error) {
     if (!alive) return;
-    callbacks.status(error instanceof Error ? error.message : "Could not open this recording. Try another moment.");
+    callbacks.status(error instanceof Error ? error.message : "Couldn’t open this video. Try another time.");
     retry.hidden = false; retry.disabled = false;
     play.disabled = !active;
     seek.disabled = !active;
@@ -61,8 +61,8 @@ export function recordedPlayer(callbacks) {
     const response = await fetch(slot.chunk.url, { method: "HEAD", cache: "no-store",
       credentials: "omit", referrerPolicy: "no-referrer", signal: slot.controller.signal });
     if (!response.ok) throw new Error(response.status === 410
-      ? "This recording is no longer kept. Choose another moment."
-      : "This footage link expired or is unavailable. Open the moment again.");
+      ? "This video has been deleted. Pick another time."
+      : "This video link expired. Tap Try again.");
   }
   /** @param {Chunk} chunk @returns {Slot} */
   function obtain(chunk) {
@@ -72,7 +72,7 @@ export function recordedPlayer(callbacks) {
       slot.release(); slots.delete(slot);
     }
     const src = imageURL(chunk.url);
-    if (!src) throw new Error("This recording address is unavailable.");
+    if (!src) throw new Error("This video isn’t available.");
     const video = h("video", { playsinline: true, preload: "auto", crossorigin: "anonymous",
       "aria-label": "Recorded kitchen footage", "aria-hidden": "true" });
     video.muted = true;
@@ -81,18 +81,18 @@ export function recordedPlayer(callbacks) {
     /** @type {()=>void} */ let cancelReady = () => {};
     /** @type {Promise<void>} */
     const ready = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("This recording is taking too long. Retry it or choose another time.")), 15000);
+      const timeout = setTimeout(() => reject(new Error("This video is taking too long. Try again or pick another time.")), 15000);
       const finish = () => { clearTimeout(timeout); resolve(); };
       video.addEventListener("loadeddata", finish, { once: true });
-      video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Could not load this recording. Try another moment.")); }, { once: true });
+      video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Couldn’t load this video. Try another time.")); }, { once: true });
       cancelReady = () => { clearTimeout(timeout); reject(new Error("Recording selection changed.")); };
     });
     /** @type {()=>void} */ let cancelBuffer = () => {};
     /** @type {Promise<void>} */
     const buffered = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("The next recording is still buffering. Try again.")), 20000);
+      const timeout = setTimeout(() => reject(new Error("The next clip is still loading. Try again.")), 20000);
       video.addEventListener("canplaythrough", () => { clearTimeout(timeout); resolve(); }, { once: true });
-      video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Could not prepare the next recording.")); }, { once: true });
+      video.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Couldn’t load the next clip.")); }, { once: true });
       cancelBuffer = () => { clearTimeout(timeout); reject(new Error("Recording selection changed.")); };
     });
     void buffered.catch(() => {});
@@ -128,7 +128,7 @@ export function recordedPlayer(callbacks) {
     video.addEventListener("error", () => {
       if (active === slot) {
         selectedAt = slot.chunk.start + video.currentTime;
-        failed(new Error("This recording stopped loading. Retry it or choose another time."));
+        failed(new Error("This video stopped loading. Try again or pick another time."));
       }
     });
     video.addEventListener("ended", () => { if (active === slot) void advance(slot); });
@@ -148,8 +148,8 @@ export function recordedPlayer(callbacks) {
     retry.hidden = true;
     play.textContent = "Play"; update();
     const gap = adjacent && old && old !== slot ? slot.chunk.start - old.chunk.end : 0;
-    const message = gap > 2 ? `Recording gap · skipped ${short(gap)}. Resuming at the next recording.`
-      : "Scrub the player, or choose another moment below.";
+    const message = gap > 2 ? `Nothing was recorded for ${short(gap)}, so it skipped ahead.`
+      : "Drag the slider to move through this clip.";
     callbacks.status(message);
     callbacks.changed(slot.chunk, slot.chunk.start + offset);
     cancelAhead();
@@ -168,7 +168,7 @@ export function recordedPlayer(callbacks) {
     if (nearEnd && ahead) {
       // Exact time jumps can land just before a boundary. Buffer before motion
       // starts rather than playing a fraction of a second and then freezing.
-      callbacks.status("Preparing the next recording…");
+      callbacks.status("Loading the next clip…");
       const next = await ahead.promise;
       if (!next.check) next.check = validate(next);
       await next.check;
@@ -196,7 +196,7 @@ export function recordedPlayer(callbacks) {
   }
   /** @param {Slot} ended */
   async function advance(ended) {
-    if (ended.chunk.next === null) { callbacks.status("End of the finished recordings. Refresh for newer footage."); return; }
+    if (ended.chunk.next === null) { callbacks.status("That’s the newest video saved so far."); return; }
     selectedAt = ended.chunk.next;
     const selected = generation;
     try {
@@ -217,7 +217,7 @@ export function recordedPlayer(callbacks) {
     const selected = ++generation;
     selecting?.abort(); selecting = new AbortController(); cancelAhead();
     active?.video.pause(); play.disabled = seek.disabled = true;
-    callbacks.status("Opening recording…");
+    callbacks.status("Opening…");
     try {
       const chunk = await getFootageChunk(at, selecting.signal);
       if (!alive || selected !== generation) return;
@@ -248,7 +248,7 @@ export function recordedPlayer(callbacks) {
       if (ahead) void ahead.promise.then((next) => { next.check = null; }).catch(() => {});
       callbacks.changed(fresh, at);
       play.disabled = false;
-      await start(slot, selected, "Scrub the player, or choose another moment below.");
+      await start(slot, selected, "Drag the slider to move through this clip.");
     } catch (error) { if (alive && selected === generation) failed(error); }
   }
   function stop() {

@@ -191,6 +191,23 @@ The normal photo page opens with no review form. Something wrong? exposes one co
 
 **The Evidence Boundary Rule.** Keep missing stages, uncertain attribution and washing-unknown outcomes explicit. A photograph, a nearby person or a disappearing dish is not a visual substitute for confirmed responsibility or washing.
 
+### House site (housemates' phones)
+
+The Vercel site at highest-house.vercel.app is a separate surface with its own
+look, chosen 2026-11-07: it should feel like a native iPhone app. It uses the
+system font stack (SF on Apple devices), iOS system backgrounds and grouped
+inset lists, 12px card radius, 0.5px separators, one blue tint (#0a66d6 fill;
+#0056c2 light-mode text and #4da3ff dark-mode text for contrast), and follows the
+device's light/dark setting. A translucent tab bar holds This week, Dishes (with
+a count badge), Footage and Me; the large page title collapses into a centered
+bar title on scroll. Secondary answers, the duplicate picker, disputes and How it
+works open as bottom sheets with a grabber. Naming keeps the photo first, with a
+docked name grid and Can’t tell / Something’s off above the tab bar. Pressed
+states scale slightly; motion is limited to page pushes, answer slides, sheet
+rise and the Undo pill, all disabled under reduced motion. Copy avoids system
+words (visit, evidence tier, chunk, operator) in favour of plain ones. The
+graphite tokens above remain the operator dashboard's system.
+
 ## Do's and Don'ts
 
 ### Do:

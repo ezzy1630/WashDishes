@@ -5,7 +5,7 @@ export async function inspectLayout(page) {
     const root = document.scrollingElement;
     const violations = [];
     const cards =
-      ".auth,.duty,.pick,.standings,.rankings li,.name-cta,.house-rules,.name-panel,.dish-record,.reviewed-visit,.week-choice,.past-detail,.offline,.duplicate-choice,.photo,.arrival-photo,.naming,.learning-card,.learning-panel,.personal-status,.learning-prompt";
+      ".auth,.duty,.pick,.standings,.rankings li,.name-cta,.name-panel,.dish-record,.reviewed-visit,.row,.past-detail,.offline,.duplicate-choice,.photo,.arrival-photo,.learning-card,.learning-panel,.status-card";
     const describe = (el) =>
       `${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.trim().replace(/\s+/g, ".") : ""}`;
     for (const el of document.querySelectorAll("main *, nav *")) {

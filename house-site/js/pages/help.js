@@ -4,7 +4,7 @@ import {
   undoLearning,
   feedbackLearning,
 } from "../api.js";
-import { announce, button, fill, h, heading } from "../ui.js";
+import { announce, button, fill, h, heading, notify, row } from "../ui.js";
 
 /** @typedef {import('../types.js').ScreenContext} ScreenContext */
 /** @typedef {Awaited<ReturnType<typeof getLearning>>} LearningFeed */
@@ -67,7 +67,7 @@ export function helpPage(context) {
   }
   const current = session;
   const host = h("div", { class: "help-camera" });
-  const title = heading("Help the camera", "Teach it what you can see.");
+  const title = heading("Help the camera", "Quick questions that teach it to spot dishes better. They never change anyone’s points.");
   const content = h("div", { class: "learning-body" });
   host.append(title, content);
   const paint = () => {
@@ -81,7 +81,7 @@ export function helpPage(context) {
         "p",
         {},
         data
-          ? `You’ve taught it ${data.personal_labels} ${data.personal_labels === 1 ? "thing" : "things"}.`
+          ? `You’ve answered ${data.personal_labels} ${data.personal_labels === 1 ? "question" : "questions"}.`
           : "Your answers stay in the house.",
       ),
       h(
@@ -89,7 +89,7 @@ export function helpPage(context) {
         { class: "help" },
         data?.last_learned
           ? `Last learned: ${new Date(data.last_learned).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
-          : "Learning starts when there are enough independent answers.",
+          : "It learns once a few of you agree on an answer.",
       ),
     );
     const metrics = data?.metrics[0];
@@ -98,7 +98,7 @@ export function helpPage(context) {
         h(
           "p",
           { class: "help" },
-          `${metrics.model === "probe" ? "Dish recognition" : metrics.model === "identity" ? "Person recognition" : "Dish detection"}: ${Math.round(metrics.before_accuracy * 100)}% → ${Math.round(metrics.after_accuracy * 100)}% on reserved checks.`,
+          `${metrics.model === "identity" ? "Recognizing people" : "Spotting dishes"} went from ${Math.round(metrics.before_accuracy * 100)}% to ${Math.round(metrics.after_accuracy * 100)}% right in testing.`,
         ),
       );
     const receipt = h(
@@ -110,23 +110,23 @@ export function helpPage(context) {
               "span",
               {},
               current.receipt.state === "trusted"
-                ? "Saved as teaching truth."
+                ? "Saved. It’ll learn from that."
                 : current.receipt.state === "conflict"
-                  ? "Saved. The operator will check the disagreement."
+                  ? "Saved. People answered differently, so Ezzy will take a look."
                   : "Saved. Another housemate will check it.",
             ),
             button("Undo", () => void undo(), "quiet"),
           ]
-        : h("span", {}, "Independent checks keep the league fair."),
+        : null,
     );
+    receipt.hidden = !current.receipt;
     /** @type {HTMLElement} */
     let body;
     if (current.loading && !data)
       body = h(
         "section",
         { class: "learning-card learning-message", "aria-busy": "true" },
-        h("h2", {}, "Finding useful questions…"),
-        h("p", {}, "One clear question at a time."),
+        h("h2", {}, "Finding a question…"),
       );
     else if (current.error && !card)
       body = h(
@@ -144,12 +144,12 @@ export function helpPage(context) {
         h(
           "p",
           {},
-          "Thanks for helping. We’ll save the next useful questions for another visit.",
+          "Thanks for helping. There’ll be more next time.",
         ),
         h(
           "p",
           { class: "help" },
-          "No guessing needed. Your answers never change anyone’s points.",
+          "Your answers never change anyone’s points.",
         ),
       );
     else {
@@ -179,7 +179,7 @@ export function helpPage(context) {
           h(
             "p",
             { class: "learning-photo-missing" },
-            "This photo is no longer available. Skip to the next question.",
+            "This photo is gone. Skip to the next question.",
           ),
         );
       };
@@ -310,7 +310,7 @@ export function helpPage(context) {
         const coords = h(
           "details",
           { class: "learning-coordinates" },
-          h("summary", {}, "Adjust box with keyboard"),
+          h("summary", {}, "Adjust the box by number"),
         );
         const fields = h("div", { class: "learning-box-fields" });
         ["Left", "Top", "Width", "Height"].forEach((label, i) => {
@@ -336,11 +336,11 @@ export function helpPage(context) {
         actions.append(
           select,
           button(
-            "Save dish box",
+            "Save",
             () =>
               current.box
                 ? void send("box", { box: current.box, kind: select.value })
-                : announce("Tap a dish or drag a box around it first."),
+                : announce("Tap the dish or drag a box around it first."),
             "primary",
           ),
           coords,
@@ -351,7 +351,7 @@ export function helpPage(context) {
             button(label, () => void send(answer), "learning-choice"),
           );
       actions.append(
-        button("Not sure · Skip", () => void send("unsure"), "quiet"),
+        button("Not sure, skip", () => void send("unsure"), "quiet"),
       );
       let media = photo;
       if (card.other_image_url) {
@@ -376,8 +376,8 @@ export function helpPage(context) {
             "p",
             { class: "help" },
             card.task === "missed"
-              ? "Tap to place a box, or drag around the whole dish."
-              : `${card.reason} · Only answer what you can see.`,
+              ? "Tap the dish, or drag a box around it."
+              : `Only answer what you can see.`,
           ),
         ),
         media,
@@ -421,11 +421,6 @@ export function helpPage(context) {
       progress,
       receipt,
       body,
-      h(
-        "p",
-        { class: "learning-fairness" },
-        "You won’t be asked to judge visits that could affect your points. Conflicting answers go to a person, not a model.",
-      ),
     );
   };
   async function load() {
@@ -502,49 +497,51 @@ export function helpPage(context) {
   return host;
 }
 
-/** @param {ScreenContext} context */
-export function learningPrompt(context) {
-  const component = h("div", { class: "learning-prompt", hidden: true });
-  void getLearning()
-    .then((data) => {
-      if (!component.isConnected || !data.questions.length) return;
-      component.hidden = false;
-      component.append(
-        h("p", {}, "A fresh pair of eyes would help."),
-        h(
-          "a",
-          {
-            href: context.href("/help"),
-            onclick: (/** @type {MouseEvent} */ e) => {
-              e.preventDefault();
-              context.navigate("/help");
-            },
-          },
-          "Help the camera",
-        ),
-      );
-    })
-    .catch(() => {});
-  return component;
+/** One read per few minutes: the row appears on pages that redraw often. */
+let questions = { count: 0, read: 0 };
+/** @param {ScreenContext} context @param {boolean} [always] Show the row even with nothing waiting. */
+export function learningRow(context, always = false) {
+  const open = row({
+    label: "Help the camera",
+    leading: "spark",
+    href: context.href("/help"),
+    run: (e) => {
+      e.preventDefault();
+      context.navigate("/help");
+    },
+  });
+  open.classList.add("learning-prompt");
+  const show = () => {
+    open.hidden = !always && !questions.count;
+  };
+  show();
+  if (Date.now() - questions.read > 300000) {
+    questions.read = Date.now();
+    void getLearning()
+      .then((data) => {
+        questions.count = data.questions.length;
+        show();
+      })
+      .catch(() => {});
+  }
+  return open;
 }
 
 /** @param {ScreenContext} context @param {import("../types.js").Visit} visit */
 export function correctionLink(context, visit) {
   return button(
-    "Box was wrong? Fix it",
+    "The yellow box is in the wrong spot",
     async () => {
       try {
         const result = await feedbackLearning(visit.id);
         if (result.independent_review)
-          announce("Flagged. Another housemate will check this visit.");
+          notify("Thanks. Another housemate will check that.");
         else {
           sessions.delete(context);
           context.navigate("/help");
         }
       } catch (e) {
-        announce(
-          (e instanceof Error ? e.message : "") || "Couldn’t flag this box.",
-        );
+        notify((e instanceof Error ? e.message : "") || "Couldn’t send that. Try again.");
       }
     },
     "quiet correction-link",

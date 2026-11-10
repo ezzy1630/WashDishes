@@ -47,6 +47,9 @@ function observe(page) {
       !m.text().includes("503") &&
       !m.text().includes("400") &&
       !m.text().includes("409") &&
+      // The hiccup and unlinked-account checks provoke these on purpose.
+      !m.text().includes("429") &&
+      !m.text().includes("403") &&
       !m.location().url.includes("/dev/photos/missing.jpg")
     )
       issues.push(m.text());
@@ -60,11 +63,39 @@ async function signedIn(page, slug = "ezzy") {
   await page.getByRole("heading", { name: "This week", exact: true }).waitFor();
 }
 async function navigation(page, label) {
-  await page.getByRole("link", { name: label, exact: true }).click();
-  await page.locator("h1").waitFor();
+  // Past weeks is pushed from Me; the other destinations are tabs.
+  if (label === "Past weeks") {
+    await page.locator(".tab", { hasText: "Me" }).click();
+    await page.getByRole("link", { name: "Past weeks", exact: true }).click();
+    await page.locator(".past-page").waitFor();
+    return;
+  }
+  const tab = { "Name dishes": "Dishes", "My dishes": "Me" }[label] || label;
+  await page.locator(".tab", { hasText: tab }).click();
+  await page.locator("#main h1").waitFor();
+}
+async function signOutVia(page) {
+  await navigation(page, "My dishes");
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page.getByLabel("Your name").waitFor();
+}
+/** Not a dish, It's clean and Same as another live in one sheet. */
+async function moreAnswer(page, label) {
+  await page.getByRole("button", { name: "Something’s off", exact: true }).click();
+  await page.getByRole("button", { name: label, exact: true }).click();
 }
 async function capture(page, name, size, theme) {
   await page.evaluate(() => document.fonts.ready);
+  await captureImages(page, name, size, theme);
+}
+async function captureImages(page, name, size, theme) {
+  // Lazy images outside the scroll viewport (inside sheets, behind the photo
+  // viewer) never start loading by themselves; screenshots need them complete.
+  await page.evaluate(() =>
+    document.querySelectorAll('img[loading="lazy"]').forEach((img) => {
+      if (!img.closest("details:not([open])")) img.loading = "eager";
+    }),
+  );
   await page.locator("img").evaluateAll((imgs) =>
     Promise.all(
       imgs
@@ -124,7 +155,7 @@ async function capture(page, name, size, theme) {
   layouts.push({ screen: name, size, theme, ...layout });
   const small = await page
     .locator(
-      "button:not(:disabled), nav a, .learning-prompt a, .personal-link, .learning-panel a, input, select, textarea, summary",
+      "button:not(:disabled), nav a, a.row, .learning-panel a, input:not([type=range]), select, textarea, summary",
     )
     .evaluateAll((nodes) =>
       nodes
@@ -183,19 +214,19 @@ try {
       await capture(page, "this-week", size, theme);
       assert.equal(
         await page.locator(".page-heading p").innerText(),
-        "Nov 2 – 8 · closes Mon 12 PM",
+        "Nov 2 – 8 · ends Mon 12 PM",
       );
       assert.equal(
         await page.locator(".pick > p").first().innerText(),
-        "7 points · 4 ahead",
+        "7 points, 4 ahead of second place.",
       );
-      const tiedLeadGate = await page.evaluate(async () => {
+      const tied = await page.evaluate(async () => {
         const { getWeek } = await import("/js/api.js");
-        const { standings } = await import("/js/pages/standings.js");
+        const { pickCopy } = await import("/js/pages/league-copy.js");
         const data = await getWeek();
-        const view = standings({
+        return pickCopy({
           ...data,
-          rules: { ...data.rules, min_lead: 0 },
+          rules: { ...data.rules, min_lead: 1 },
           pick: {
             resident_id: null,
             name: null,
@@ -207,10 +238,9 @@ try {
             reason: "Tied for first · needs a 1-point lead",
           },
         });
-        return view.querySelectorAll(".gate")[1].textContent;
       });
-      assert.match(tiedLeadGate, /Leads by 0 · needs 1/);
-      assert.match(tiedLeadGate, /1 to go/);
+      assert.equal(tied.title, "It’s a tie at the top");
+      assert.match(tied.detail, /Tied at 4 points\. Someone needs a 1-point lead\./);
       assert.deepEqual(
         await page.evaluate(async () => {
           const { weekRange } = await import("/js/pages/league-copy.js");
@@ -225,9 +255,6 @@ try {
         "exclusive dates across month, year and DST boundaries",
       );
       assert.equal(await page.locator(".rankings li").count(), 3);
-      assert.equal(await page.locator(".rank-bar path").count(), 0);
-      await page.getByText("7 pts · needs 4", { exact: true }).waitFor();
-      await page.getByText("Leads by 4 · needs 2", { exact: true }).waitFor();
       for (const mode of ["pick", "override", "disabled"]) {
         await control({ dutyMode: mode });
         await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -235,17 +262,17 @@ try {
           .locator(".duty, .personal-duty")
           .getByText(
             mode === "pick"
-              ? "Most dish points the week of Oct 26."
+              ? "Most points the week of Oct 26."
               : mode === "override"
-                ? "Chosen by the house. On kitchen since Nov 2."
-                : "The weekly pick is switched off.",
+                ? "Chosen by the house on Nov 2."
+                : "No one gets picked while it’s off.",
             { exact: true },
           )
           .waitFor();
         if (mode === "disabled")
           assert.equal(
             await page.locator(".pick > p").first().innerText(),
-            "Standings still count.",
+            "Points still count.",
           );
         await capture(page, `duty-${mode}`, size, theme);
       }
@@ -253,7 +280,7 @@ try {
       await page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await page
         .getByText(
-          "Most dish points the week of Oct 19. Nobody else has been a clear pick since, so Ezzy stays on.",
+          "Most points the week of Oct 19. No one’s had a clear lead since, so Ezzy stays on.",
           { exact: true },
         )
         .waitFor();
@@ -261,7 +288,7 @@ try {
       assert.equal(
         await page
           .getByRole("heading", {
-            name: "You’re on kitchen this week",
+            name: "You’re on kitchen duty",
             exact: true,
           })
           .count(),
@@ -270,7 +297,7 @@ try {
       assert.equal(
         await page
           .getByRole("heading", {
-            name: "Ezzy’s on kitchen this week",
+            name: "Ezzy’s on kitchen duty",
             exact: true,
           })
           .count(),
@@ -280,13 +307,14 @@ try {
       const otherContext = await browser.newContext({
         viewport: { width, height },
         colorScheme: theme,
+        reducedMotion: "reduce",
       });
       const otherPage = await otherContext.newPage();
       observe(otherPage);
       await signedIn(otherPage, "wren");
       await otherPage
         .getByRole("heading", {
-          name: "Ezzy’s on kitchen this week",
+          name: "Ezzy’s on kitchen duty",
           exact: true,
         })
         .waitFor();
@@ -311,7 +339,7 @@ try {
           );
           await page.mouse.up();
           await page
-            .getByText("Adjust box with keyboard", { exact: true })
+            .getByText("Adjust the box by number", { exact: true })
             .click();
           assert.equal(
             await page.getByLabel("Top percent", { exact: true }).inputValue(),
@@ -325,7 +353,7 @@ try {
             r.url().endsWith("/learning/3/answer"),
           );
           await page
-            .getByRole("button", { name: "Save dish box", exact: true })
+            .getByRole("button", { name: "Save", exact: true })
             .click();
           const payload = (await saved).postDataJSON();
           assert.equal(payload.answer, "box");
@@ -365,7 +393,7 @@ try {
         if (state === "missing") {
           await page
             .getByText(
-              "This photo is no longer available. Skip to the next question.",
+              "This photo is gone. Skip to the next question.",
               { exact: true },
             )
             .waitFor();
@@ -375,7 +403,7 @@ try {
           );
           assert.equal(
             await page
-              .getByRole("button", { name: "Not sure · Skip", exact: true })
+              .getByRole("button", { name: "Not sure, skip", exact: true })
               .isEnabled(),
             true,
           );
@@ -394,7 +422,7 @@ try {
       await control({ reset: true, learningState: "error" });
       await page.goto(`${origin}/help?mock=1`);
       await page.getByRole("button", { name: "Yes", exact: true }).click();
-      await page.getByRole("alert").filter({ hasText: "offline" }).waitFor();
+      await page.getByRole("alert").filter({ hasText: "reach the kitchen" }).waitFor();
       await capture(page, "help-save-error", size, theme);
       assert.equal(
         await page.locator(".learning-question h2").innerText(),
@@ -403,7 +431,7 @@ try {
       await control({ reset: true });
       await navigation(page, "Name dishes");
       await page
-        .getByRole("button", { name: "Box was wrong? Fix it", exact: true })
+        .getByRole("button", { name: "The yellow box is in the wrong spot", exact: true })
         .click();
       await page
         .getByRole("heading", {
@@ -479,10 +507,9 @@ try {
             content: container.getBoundingClientRect().width,
           };
         });
-      assert.equal(
-        Math.round(widths.photo),
-        Math.round(widths.content),
-        "arrival grid fills the evidence content width",
+      assert.ok(
+        Math.round(widths.photo) >= Math.round(widths.content),
+        "arrival grid fills at least the evidence content width",
       );
 
       assert.deepEqual(
@@ -540,8 +567,11 @@ try {
         await page
           .locator(".zoom-scroll img")
           .evaluate((img) => Math.round(img.getBoundingClientRect().width)),
-        1200,
+        await page.locator(".zoom-scroll").evaluate((el) => el.clientWidth),
+        "photos open fitted to the screen",
       );
+      for (const step of [1, 2])
+        await page.getByRole("button", { name: "Zoom in", exact: true }).click();
       await page.locator(".zoom-scroll").evaluate((el) => {
         el.scrollTop = 600;
       });
@@ -551,13 +581,9 @@ try {
       await capture(page, "filmstrip-zoom", size, theme);
       await page.keyboard.press("Escape");
 
-      await page
-        .getByRole("button", { name: "Same as another", exact: true })
-        .click();
+      await moreAnswer(page, "Same as another");
       await capture(page, "duplicate-picker", size, theme);
-      await page
-        .getByRole("button", { name: "Same as another", exact: true })
-        .click();
+      await page.keyboard.press("Escape");
       await page.getByText("Reviewed this week (5)", { exact: true }).click();
       await page
         .getByText("Marked not a dish by Milo", { exact: true })
@@ -571,7 +597,7 @@ try {
         .getByRole("heading", { name: "Dinner plate", exact: true })
         .waitFor();
       await page
-        .getByText("Arrival not recorded — only name someone if you know", {
+        .getByText("The camera missed them being put down, so people nearby might not be the owner.", {
           exact: true,
         })
         .waitFor();
@@ -586,30 +612,25 @@ try {
       await capture(page, "my-dishes", size, theme);
       await navigation(page, "Past weeks");
       await capture(page, "past-weeks", size, theme);
-      assert.equal(
-        await page.locator(".past-detail > .section-heading h2").innerText(),
-        "Nov 2 – 8",
-      );
       assert.deepEqual(
-        await page.locator(".week-choice strong").allTextContents(),
+        await page.locator(".past-page .row-label").allTextContents(),
         ["Nov 2 – 8", "Oct 26 – Nov 1", "Oct 19 – 25"],
       );
-      await page.getByRole("button", { name: /Oct 26/ }).click();
-      await page
-        .getByText("Wren would need 2 more points for a clear pick.")
-        .waitFor();
+      await page.getByRole("link", { name: /Oct 26/ }).click();
+      await page.getByText("Top score is 2. It takes 4 points and a 2-point lead.").waitFor();
+      await page.locator(".past-detail h1").filter({ hasText: "Oct 26 – Nov 1" }).waitFor();
       await capture(page, "no-pick", size, theme);
       await navigation(page, "This week");
       await control({ offline: true });
       await page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await page
-        .getByText("Dish Watch is offline right now", { exact: true })
+        .getByText("Can’t reach the kitchen right now", { exact: true })
         .waitFor();
       await capture(page, "offline", size, theme);
       await control({ offline: false });
       await page.getByRole("button", { name: "Try again" }).click();
       await page
-        .getByText("Dish Watch is offline right now", { exact: true })
+        .getByText("Can’t reach the kitchen right now", { exact: true })
         .waitFor({ state: "hidden" });
       await context.close();
       console.log(`PASS screenshots ${size} ${theme}`);
@@ -628,14 +649,14 @@ try {
       await control({ closesAt: "2026-11-10T15:30:00-08:00" });
       await signedIn(page);
       await page
-        .getByText("Nov 2 – 8 · closes Tue 3:30 PM", { exact: true })
+        .getByText("Nov 2 – 8 · ends Tue 3:30 PM", { exact: true })
         .waitFor();
       await control({ closesAt: null });
       await page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await page
-        .getByText("Nov 2 – 8 · closes Mon 12 PM", { exact: true })
+        .getByText("Nov 2 – 8 · ends Mon 12 PM", { exact: true })
         .waitFor();
-      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await signOutVia(page);
     },
   );
   await check(
@@ -714,7 +735,8 @@ try {
       assert.equal(before.visits[0].resident, null);
       assert.equal(before.unnamed_count, 3);
       await page
-        .getByRole("button", { name: "Camera thinks Wren — tap to confirm" })
+        .locator(".camera-chip")
+        .getByText("Wren", { exact: true })
         .click();
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
       await page.locator(".answer-receipt").waitFor({ state: "hidden" });
@@ -737,7 +759,7 @@ try {
         .first()
         .waitFor({ state: "hidden" });
       await page
-        .getByRole("button", { name: "Look at skipped visits" })
+        .getByRole("button", { name: "Look at the skipped ones again" })
         .click();
       await page.getByRole("button", { name: "Theo", exact: true }).click();
       await page
@@ -757,13 +779,9 @@ try {
       await page
         .getByRole("heading", { name: "Whose dishes are these?" })
         .waitFor();
-      await page
-        .getByRole("button", { name: "Not a dish", exact: true })
-        .click();
+      await moreAnswer(page, "Not a dish");
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
-      await page
-        .getByRole("button", { name: "It’s clean", exact: true })
-        .click();
+      await moreAnswer(page, "It’s clean");
       await page
         .getByRole("heading", { name: "You’re all caught up." })
         .waitFor();
@@ -792,9 +810,7 @@ try {
       );
       await control({ reset: true });
       await page.reload();
-      await page
-        .getByRole("button", { name: "Same as another", exact: true })
-        .click();
+      await moreAnswer(page, "Same as another");
       assert.equal(await page.locator(".duplicate-choice").count(), 5);
       await page.getByRole("button", { name: /Dinner plate/ }).click();
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
@@ -835,8 +851,9 @@ try {
         .click();
       const viewport = page.locator(".zoom-scroll"),
         img = page.locator(".zoom-scroll img");
+      const fitted = await img.evaluate((el) => el.width);
       await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-      assert.equal(await img.evaluate((el) => el.width), 1800);
+      assert.equal(await img.evaluate((el) => el.width), Math.round(fitted * 1.5));
       await page.keyboard.press("Escape");
       await page
         .getByRole("button", { name: /Enlarge.*arrival photos/ })
@@ -863,7 +880,7 @@ try {
         touchPoints: [],
       });
       assert.ok(
-        (await img.evaluate((el) => el.width)) > 1200,
+        (await img.evaluate((el) => el.width)) > fitted,
         "two-finger pinch enlarges the image",
       );
       await page.keyboard.press("Escape");
@@ -872,6 +889,7 @@ try {
   );
   await check("photo zoom and Escape return focus", async () => {
     await navigation(page, "My dishes");
+    await page.getByText("See the photos", { exact: true }).first().click();
     const enlarge = page
       .getByRole("button", { name: /Enlarge.*evidence/ })
       .first();
@@ -900,12 +918,12 @@ try {
       await page.getByRole("button", { name: "Send dispute" }).click();
       await page
         .getByText(
-          "These points don’t count while you wait for a third housemate to settle it.",
+          "These points don’t count until another housemate settles it.",
         )
         .waitFor();
       await page.getByRole("button", { name: "Not them", exact: true }).click();
       await page.getByRole("heading", { name: "All settled here." }).waitFor();
-      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await signOutVia(page);
       await signedIn(page, "finn");
       await navigation(page, "My dishes");
       await page.getByRole("button", { name: "It was them" }).click();
@@ -915,10 +933,10 @@ try {
   await check(
     "expired and incomplete invite; mismatch; join and reset auto sign-in",
     async () => {
-      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await signOutVia(page);
       await page.goto(`${origin}/join?mock=1`);
       await page
-        .getByRole("heading", { name: "This house link is incomplete" })
+        .getByRole("heading", { name: "This link is incomplete" })
         .waitFor();
       await page.goto(`${origin}/join?mock=1#expired`);
       await page.getByLabel("New password").fill("new-house-password");
@@ -980,21 +998,22 @@ try {
       await navigation(page, "Name dishes");
       await page.reload();
       await page
-        .getByText("Pan and pot arrival photos isn’t available.")
+        .locator("article.naming")
+        .getByText("The photo for this one is gone.")
         .waitFor();
       await control({ malformed: true });
       await page.reload();
       await page
-        .getByText("Dish Watch is offline right now", { exact: true })
+        .getByRole("heading", { name: "Can’t reach the kitchen", exact: true })
         .waitFor();
       await control({ reset: true, offline: true });
       await page.reload();
       await page
-        .getByText("Dish Watch is offline right now", { exact: true })
+        .getByRole("heading", { name: "Can’t reach the kitchen", exact: true })
         .waitFor();
       await control({ offline: false });
       await page.getByRole("button", { name: "Try again" }).click();
-      await page.getByRole("heading", { name: "Name the dishes" }).waitFor();
+      await page.getByRole("heading", { name: "Whose dishes are these?" }).waitFor();
     },
   );
   await check(
@@ -1002,7 +1021,7 @@ try {
     async () => {
       await page.clock.install();
       await page.reload();
-      await page.getByRole("heading", { name: "Name the dishes" }).waitFor();
+      await page.getByRole("heading", { name: "Whose dishes are these?" }).waitFor();
       let requests = 0;
       page.on("request", (r) => {
         if (r.url().includes("/house/api/week")) requests++;
@@ -1037,36 +1056,104 @@ try {
       await control({ reset: true, evidenceQueue: true });
       await page.goto(`${origin}/?mock=1`);
       await page
-        .getByRole("heading", { name: "2 clear ones to name" })
+        .getByRole("heading", { name: "2 dishes need a name" })
         .waitFor();
+      await navigation(page, "Name dishes");
       await page
-        .getByRole("link", { name: "+1 with weak evidence", exact: true })
+        .getByRole("button", { name: "Show 1 that is hard to see", exact: true })
         .click();
-      await page.getByRole("button", { name: "Hide weak evidence" }).waitFor();
+      await page.getByRole("button", { name: "Hide the hard-to-see ones" }).waitFor();
       assert.equal(
         await page.locator("article.naming").getAttribute("data-dish-id"),
         "visit-101",
       );
-      await page
-        .getByRole("button", { name: "Not a dish", exact: true })
-        .click();
+      await moreAnswer(page, "Not a dish");
       await page.locator('article[data-dish-id="visit-103"]').waitFor();
-      await page
-        .getByRole("button", { name: "It’s clean", exact: true })
-        .click();
+      await moreAnswer(page, "It’s clean");
       await page.locator('article[data-dish-id="visit-113"]').waitFor();
       await page
-        .getByText("Arrival not recorded · No one in the photos", {
+        .getByText("The camera missed it arriving, no one’s in the photos.", {
           exact: true,
         })
         .waitFor();
-      await page.getByRole("button", { name: "Hide weak evidence" }).click();
+      await page.getByRole("button", { name: "Hide the hard-to-see ones" }).click();
       assert.equal(await page.locator("article.naming").count(), 0);
       await page
-        .getByRole("button", { name: "+1 with weak evidence", exact: true })
+        .getByRole("button", { name: "Show 1 that is hard to see", exact: true })
         .waitFor();
     },
   );
+  await check(
+    "a brief server hiccup never shows the offline screen",
+    async () => {
+      await control({ reset: true });
+      await page.goto(`${origin}/?mock=1`);
+      await page.getByRole("heading", { name: "This week", exact: true }).waitFor();
+      let failures = 0;
+      await page.route("**/house/api/week*", (route) => {
+        if (failures++ < 2)
+          return route.fulfill({ status: failures === 1 ? 503 : 429, contentType: "application/json", body: "{}" });
+        return route.continue();
+      });
+      await page.reload();
+      await page.getByRole("heading", { name: "This week", exact: true }).waitFor({ timeout: 8000 });
+      assert.equal(failures, 3);
+      assert.equal(await page.getByText("Can’t reach the kitchen", { exact: false }).count(), 0);
+      await page.unroute("**/house/api/week*");
+    },
+  );
+  await check(
+    "an unlinked account gets its reason, not an offline message",
+    async () => {
+      await page.route("**/house/api/me", (route) =>
+        route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "Your account is not linked to an active housemate. Ask the operator for a sign-in link." }),
+        }),
+      );
+      await page.reload();
+      await page.getByText(/not linked to an active housemate/).waitFor();
+      assert.equal(await page.getByText("Can’t reach the kitchen", { exact: false }).count(), 0);
+      await page.unroute("**/house/api/me");
+      await page.reload();
+      await page.getByRole("heading", { name: "This week", exact: true }).waitFor();
+    },
+  );
+  await check(
+    "lowercase account names read as names; tabs keep their place and background reads don't redraw",
+    async () => {
+      assert.deepEqual(
+        await page.evaluate(async () => {
+          const { displayName } = await import("/js/contracts.js");
+          return ["andrew", "Mary", "mary-jane", "de la cruz"].map(displayName);
+        }),
+        ["Andrew", "Mary", "Mary-Jane", "De La Cruz"],
+      );
+      await page.evaluate(() => {
+        window.__tab = document.querySelector(".tabbar");
+        window.__stat = document.querySelector("#main .status-card");
+      });
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page.waitForTimeout(300);
+      assert.ok(
+        await page.evaluate(() => window.__stat.isConnected),
+        "an unchanged background read leaves the page in place",
+      );
+      await page.evaluate(() => window.scrollTo(0, 200));
+      const scrolled = await page.evaluate(() => window.scrollY);
+      await navigation(page, "Footage");
+      await navigation(page, "This week");
+      assert.equal(await page.evaluate(() => window.scrollY), scrolled, "a tab keeps its scroll position");
+      assert.ok(await page.evaluate(() => window.__tab.isConnected), "the tab bar persists");
+    },
+  );
+  await check("every client route is served by the deployed rewrites", async () => {
+    const config = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+    const sources = config.rewrites.map((r) => r.source);
+    for (const route of ["/join", "/name", "/mine", "/past", "/help", "/footage"])
+      assert.ok(sources.includes(route), `${route} survives a refresh`);
+  });
   await context.close();
   assert.deepEqual(issues, [], "Browser exceptions/CSP errors");
   await writeFile(

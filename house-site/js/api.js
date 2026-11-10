@@ -7,6 +7,7 @@ import { HOUSE_API_ORIGIN } from "../config.js";
 import { accessToken, mock } from "./auth.js";
 import * as parse from "./contracts.js";
 const origin = mock ? location.origin : HOUSE_API_ORIGIN;
+const offlineMessage = "Can’t reach the kitchen right now.";
 export class HouseError extends Error {
   /** @param {string} message @param {number} status */
   constructor(message, status) {
@@ -16,6 +17,31 @@ export class HouseError extends Error {
 }
 /** @param {string} path @param {{public?:boolean, body?:unknown, signal?:AbortSignal}} [options] @returns {Promise<unknown>} */
 async function request(path, options = {}) {
+  // A cold sign-in check or a busy moment on the kitchen computer usually clears
+  // in a second or two; reads ride that out instead of showing a false outage.
+  // Writes never repeat here: the caller decides whether one is safe to resend.
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await requestOnce(path, options);
+    } catch (error) {
+      const transient =
+        error instanceof HouseError &&
+        (error.status === 0 || error.status === 429 || error.status >= 500);
+      if (
+        !transient ||
+        options.body !== undefined ||
+        options.signal?.aborted ||
+        attempt >= 2 ||
+        Date.now() - started > 8000
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 + attempt * 1000));
+    }
+  }
+}
+/** @param {string} path @param {{public?:boolean, body?:unknown, signal?:AbortSignal}} [options] @returns {Promise<unknown>} */
+async function requestOnce(path, options = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (!options.public) {
     const token = await accessToken();
@@ -44,7 +70,7 @@ async function request(path, options = {}) {
     });
     data = await response.json().catch(() => null);
   } catch {
-    throw new HouseError("Dish Watch is offline right now", 0);
+    throw new HouseError(offlineMessage, 0);
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abort);
@@ -58,7 +84,7 @@ async function request(path, options = {}) {
         ? data.detail
         : "That didn’t go through. Please try again.";
     throw new HouseError(
-      response.status >= 500 ? "Dish Watch is offline right now" : detail,
+      response.status >= 500 ? offlineMessage : detail,
       response.status,
     );
   }
@@ -70,7 +96,7 @@ async function parsed(response, parser) {
   try {
     return parser(value);
   } catch {
-    throw new HouseError("Dish Watch is offline right now", 502);
+    throw new HouseError("Something went wrong on our end. Try again.", 502);
   }
 }
 export const getMe = () => parsed(request("/me"), parse.me);
