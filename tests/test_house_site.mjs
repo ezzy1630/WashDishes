@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { week } from "../house-site/js/contracts.js";
+import { week, joinOptions } from "../house-site/js/contracts.js";
 import { pickCopy } from "../house-site/js/pages/league-copy.js";
+
+test("shared invite parses eligible and registered names and refuses malformed account state", () => {
+  const data = { residents: [{ id: 1, name: "Wren", has_account: false },
+    { id: 2, name: "Theo", has_account: true }], expires_at: "2026-12-09T12:00:00Z" };
+  assert.deepEqual(joinOptions(data), data);
+  assert.throws(() => joinOptions({ ...data, residents: [{ id: 1, name: "Wren" }] }));
+  assert.throws(() => joinOptions({ ...data, residents: [{ id: "1", name: "Wren", has_account: false }] }));
+});
 
 const payload = (pick) => ({
   start_week: "2026-11-02",

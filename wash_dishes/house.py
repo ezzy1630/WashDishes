@@ -67,6 +67,14 @@ class Join(Write):
     password: str = Field(min_length=8, max_length=256)
 
 
+class Invite(Write):
+    token: str = Field(min_length=20, max_length=100)
+
+
+class HouseJoin(Join):
+    resident_id: int = Field(ge=1, strict=True)
+
+
 class Weights(Write):
     pan: int = Field(default=2, ge=0, le=100, strict=True)
     pot: int = Field(default=2, ge=0, le=100, strict=True)
@@ -800,6 +808,56 @@ class House:
             self.store._event(None, 'house_join_link_created', f"One-time sign-in link created for {resident['name']}.", {'resident_id': resident_id})
         return {'url': f'{self.config.site_origin}/join#{token}', 'expires_at': expires}
 
+    def house_invite(self) -> dict:
+        if not self.config.site_origin:
+            raise HTTPException(503, 'Set HOUSE_SITE_ORIGIN before making a house invite.')
+        token = 'house-' + secrets.token_urlsafe(32)
+        expires = stamp(utcnow() + timedelta(days=30))
+        with self.join_lock, self.store.lock, self.store.conn:
+            self.store.conn.execute('INSERT OR REPLACE INTO house_invite VALUES(1,?,?)',
+                                    (hashlib.sha256(token.encode()).hexdigest(), expires))
+            self.store._event(None, 'house_invite_created', 'Shared house sign-up link created.')
+        return {'url': f'{self.config.site_origin}/join#{token}', 'expires_at': expires}
+
+    def _check_invite(self, token: str) -> str:
+        row = self.store.conn.execute('SELECT * FROM house_invite WHERE id=1').fetchone()
+        if (not row or not hmac.compare_digest(row['token_hash'], hashlib.sha256(token.encode()).hexdigest())
+                or parse_stamp(row['expires_at']) <= utcnow()):
+            raise HTTPException(410, 'This house invite expired or was replaced. Ask Ezzy for a fresh link.')
+        return row['expires_at']
+
+    def join_options(self, body: Invite) -> dict:
+        # The roster is only available to holders of the private group invite.
+        with self.store.lock:
+            expires = self._check_invite(body.token)
+            residents = [{'id': r['id'], 'name': r['name'], 'has_account': bool(r['auth_user_id'])}
+                         for r in self.store.residents() if r['active']]
+        return {'residents': residents, 'expires_at': expires}
+
+    def join_house(self, body: HouseJoin) -> dict:
+        # A shared invite can only create accounts. Personal reset links retain
+        # their separate single-use authority; never pass an existing account to admin.
+        with self.join_lock:
+            with self.store.lock, self.store.conn:
+                self._check_invite(body.token)
+                row = self.store.conn.execute('SELECT * FROM residents WHERE id=? AND active=1',
+                                              (body.resident_id,)).fetchone()
+                if not row:
+                    raise HTTPException(400, 'Choose your name from the housemates list.')
+                resident = dict(row)
+                if resident['auth_user_id']:
+                    raise HTTPException(409, 'Your account is already set up. Sign in, or ask Ezzy for a personal reset link.')
+                slug = slug_for(self.store, resident)
+            auth_id = self.admin.account(resident, slug, body.password)
+            with self.store.lock, self.store.conn:
+                self.store._resident(resident['id'])
+                self.store.conn.execute('UPDATE residents SET auth_user_id=? WHERE id=?', (auth_id, resident['id']))
+                # An earlier personal invite must not reset a newly claimed account.
+                self.store.conn.execute('DELETE FROM house_join_tokens WHERE resident_id=?', (resident['id'],))
+                self.store._event(None, 'house_account_ready', f"House sign-in saved for {resident['name']}.",
+                                  {'resident_id': resident['id']})
+        return {'login': slug}
+
     def join(self, body: Join) -> dict:
         # Serialize redemption/revocation in the Jetson's single server process. Network
         # waits never hold Store.lock: camera recording/review must continue during sign-up.
@@ -934,6 +992,21 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
         house.join_limiter.check('join:' + client_identity(request), count=5, seconds=900)
         return house.join(body)
 
+    @router.post('/api/join-options')
+    def join_options(body: Invite, request: Request):
+        if app.state.config.demo or app.state.config.snapshot:
+            raise HTTPException(403, 'House accounts are unavailable in demo and snapshot mode.')
+        house.join_limiter.check('invite:' + client_identity(request), count=60)
+        return house.join_options(body)
+
+    @router.post('/api/join-house')
+    def join_house(body: HouseJoin, request: Request):
+        if app.state.config.demo or app.state.config.snapshot:
+            raise HTTPException(403, 'House accounts are unavailable in demo and snapshot mode.')
+        # Housemates share a public IP. Allow a full household to join together.
+        house.join_limiter.check('house-join:' + client_identity(request), count=60, seconds=900)
+        return house.join_house(body)
+
     @router.get('/media/{evidence_id}')
     def media(evidence_id: str, exp: int, sig: str, request: Request,
               w: int | None = Query(default=None, ge=640, le=640)):
@@ -1011,6 +1084,10 @@ def install(app: FastAPI, authenticated, *, config: HouseConfig) -> House:
     @operator.post('/residents/{resident_id}/join-link')
     def join_link(resident_id: int):
         return house.join_link(resident_id)
+
+    @operator.post('/house-invite')
+    def house_invite():
+        return house.house_invite()
 
     app.include_router(operator)
 
