@@ -993,7 +993,7 @@ dialog {
 .sheet-panel {
   display: flex;
   flex-direction: column;
-  max-height: 88dvh;
+  max-height: min(88dvh, calc(100dvh - env(safe-area-inset-top) - 12px));
   border-radius: 14px 14px 0 0;
   background: var(--bg);
   padding-bottom: env(safe-area-inset-bottom);
@@ -1037,6 +1037,8 @@ dialog {
   padding: 0 16px 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: 24px;
 }
 .sheet-body > * + * {
   margin-top: 12px;

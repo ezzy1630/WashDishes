@@ -42,6 +42,11 @@ let motion = null;
 let titleWatch = null;
 /** @type {Map<string, number>} */
 const scrolls = new Map();
+// Save continuously: by the time popstate fires, location already names the
+// destination, so the page being left can no longer be identified from it.
+window.addEventListener("scroll", () => {
+  scrolls.set(location.pathname + location.search, window.scrollY);
+}, { passive: true });
 
 const answers = pendingAnswers({
   send: async (entry) => {
@@ -668,6 +673,9 @@ window.addEventListener("popstate", (event) => {
   if (state.me) void refresh();
 });
 window.addEventListener("focus", () => {
+  if (state.me && !document.hidden) void refresh();
+});
+window.addEventListener("online", () => {
   if (state.me && !document.hidden) void refresh();
 });
 window.addEventListener("pagehide", () => {

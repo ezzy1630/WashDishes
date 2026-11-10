@@ -391,7 +391,11 @@ function dragToDismiss(handle, panel) {
     if (moved > 90) closeSheet();
   };
   handle.addEventListener("pointerup", finish);
-  handle.addEventListener("pointercancel", finish);
+  handle.addEventListener("pointercancel", () => {
+    start = null;
+    panel.style.transition = "";
+    panel.style.transform = "";
+  });
 }
 
 /** @type {ReturnType<typeof setTimeout>|null} */
