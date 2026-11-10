@@ -267,6 +267,20 @@ display gate, including rejected refits. No inference models are loaded by the f
 
 ## Join, media and errors
 
+For group-chat onboarding the operator can `POST /api/league/house-invite {}`.
+It returns `{url, expires_at}` with a private `/join#house-<token>` link valid for
+30 days. Creating another replaces the previous shared invite. Only its hash is
+stored. Holders `POST /house/api/join-options {token}` to list active housemates
+and their `has_account` status, then `POST /house/api/join-house
+{token, resident_id, password}` to claim their own unregistered name. The response
+is `{login}` for normal password sign-in. The same invite supports the whole
+household; it cannot add names, enroll archived residents, or reset existing
+accounts. Shared enrollment invalidates earlier personal links for that resident.
+Existing accounts use normal sign-in or a newly issued personal reset below.
+Neither roster nor account creation is available without a valid shared token;
+demo/snapshot modes refuse both. Shared signup allows 60 attempts per network
+per 15 minutes so the household's shared public IP does not block onboarding.
+
 The operator creates `{HOUSE_SITE_ORIGIN}/join#<token>` on Housemates: 7 days,
 single use, hash stored, new link revokes the old. Public
 `POST /house/api/join {"token":"...","password":"..."}` (8–256 characters)

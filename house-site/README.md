@@ -18,6 +18,15 @@ The API must allow the website's exact origin through CORS, including `Authoriza
 
 ## Visit contract
 
+Shared group-chat onboarding uses `/join#house-<token>`. The operator creates a
+30-day invite with `POST /api/league/house-invite {}`; creating another revokes
+the previous shared invite. The page loads names through token-protected
+`POST /house/api/join-options {token}`, then creates the selected unregistered
+housemate's account through `POST /house/api/join-house {token,resident_id,password}`.
+Already registered names remain disabled and use the sign-in link. Shared invites
+cannot reset passwords; individual first-time/reset links retain their existing
+flow. Only share the complete private link in the household group chat.
+
 `GET /house/api/week` must include both `dishes` and the lead's new `visits` array. Naming, disputes, and settlements operate exclusively on `/house/api/visits/{id}/{name|dispute|settle}`. A visit contains `dish_ids`, `title`, `area`, `at`, `points`, signed media, attribution, `guess`, dispute, and permission flags. `guess.basis` is a plain string. Each visit also includes nullable `verdict: {kind, by: {id, name}, at}`, and the week includes `unreviewed_count`. A guess is visually highlighted, with an explicit tap to confirm; it has no attribution effect before that tap. Every name stays in the alphabetical chip grid, including the outlined camera suggestion. Names come from the week's full ten-resident standings and stay alphabetic. The server must include zero-point housemates there because the public login-name endpoint has been removed.
 
 The home CTA reports `clear_count` as “N clear ones to name”, with an optional `weak_count` disclosure. Visits carry server-computed `evidence` and `reason`, ordered strong → fair → weak, then newest first. Unnamed visits simply do not count; closed weak unnamed visits are no longer pending. The naming flow advances one **visit** at a time. Each visit has the primary person question and four secondary answers: “Not a dish,” “It’s clean,” “Same as another,” and “Can’t tell.” They POST to `/house/api/visits/{id}/verdict` using `not_dish`, `clean`, `duplicate` (plus `of_visit_id`), or `cant_tell`. The duplicate picker shows the other visits’ photos, titles, places, times, and known names. “Can’t tell” records a skip and leaves the visit unnamed. Excluded verdicts appear in review history with their kind and reviewer; signed media remains unavailable for excluded visits. A dish only counts once someone names it. All actions respect server `can_*` flags and refetch the week afterward. Point and lead meters explain thresholds, while the API's `pick` and `on_duty` remain authoritative. Past-week selection refetches the selected week; leaving Past weeks restores the current week.

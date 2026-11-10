@@ -1,5 +1,5 @@
 import { brand, empty, field, fill, h, heading, icon } from "../ui.js";
-import { HouseError, redeem } from "../api.js";
+import { HouseError, redeem, getJoinOptions, joinHouse } from "../api.js";
 import {
   configured,
   mock,
@@ -114,6 +114,10 @@ export function createAuthScreens(context) {
   }
   function renderJoin() {
     const token = location.hash.slice(1);
+    const shared = token.startsWith("house-");
+    const name = h("select", { name: "resident", required: true },
+      h("option", { value: "" }, "Choose your name"));
+    const status = h("p", { class: "help", role: "status" }, shared ? "Loading housemates…" : "");
     const error = h("p", { class: "form-error", role: "alert" });
     const password = h("input", {
       type: "password",
@@ -131,7 +135,7 @@ export function createAuthScreens(context) {
     });
     const submit = h(
       "button",
-      { class: "primary", type: "submit" },
+      { class: "primary", type: "submit", disabled: shared },
       "Set password & come in",
       icon("arrow"),
     );
@@ -156,7 +160,9 @@ export function createAuthScreens(context) {
           submit.textContent = "Setting your password…";
           let saved = false;
           try {
-            const { login } = await redeem(token, password.value);
+            const { login } = shared
+              ? await joinHouse(token, Number(name.value), password.value)
+              : await redeem(token, password.value);
             saved = true;
             history.replaceState({}, "", href("/join"));
             await signIn(login, password.value);
@@ -181,7 +187,11 @@ export function createAuthScreens(context) {
                   : "Couldn’t use that link. Try again.";
               submit.disabled = false;
               submit.replaceChildren("Set password & come in", icon("arrow"));
-              if (e instanceof HouseError && [400, 410].includes(e.status)) {
+              if (shared && e instanceof HouseError && e.status === 409) {
+                password.value = "";
+                confirm.value = "";
+                void loadNames();
+              } else if (e instanceof HouseError && [400, 410].includes(e.status)) {
                 submit.disabled = true;
                 submit.textContent = "Ask Ezzy for a fresh link";
                 password.value = "";
@@ -191,6 +201,8 @@ export function createAuthScreens(context) {
           }
         },
       },
+      shared ? field("Your name", name, "Choose only your own name. Already registered? Sign in below.") : null,
+      shared ? status : null,
       field(
         "New password",
         password,
@@ -215,7 +227,8 @@ export function createAuthScreens(context) {
         { id: "main", class: "auth" },
         heading(
           "Your place in the house.",
-          "Choose a password to join the house or reset your sign-in.",
+          shared ? "Choose your name and set a password. Keep this invite in the house group chat."
+            : "Choose a password to join the house or reset your sign-in.",
         ),
         token
           ? form
@@ -230,6 +243,32 @@ export function createAuthScreens(context) {
         ),
       ),
     );
+    async function loadNames() {
+      submit.disabled = true;
+      name.disabled = true;
+      try {
+        const { residents } = await getJoinOptions(token);
+        name.replaceChildren(h("option", { value: "" }, "Choose your name"),
+          ...residents.map((person) => h("option", { value: person.id, disabled: person.has_account },
+            person.name + (person.has_account ? " — already registered" : ""))));
+        const available = residents.some((person) => !person.has_account);
+        status.textContent = available ? "Not listed? Ask Ezzy to add you."
+          : "Everyone listed has an account. Sign in below, or ask Ezzy to add you.";
+        name.disabled = !available;
+        submit.disabled = !available;
+      } catch (e) {
+        status.textContent = "";
+        error.textContent = e instanceof Error ? e.message : "Couldn’t load housemates. Try again.";
+        if (!(e instanceof HouseError) || ![400, 410].includes(e.status)) {
+          status.replaceChildren(h("button", { type: "button", class: "quiet", onclick: () => {
+            error.textContent = "";
+            status.textContent = "Loading housemates…";
+            void loadNames();
+          } }, "Try again"));
+        }
+      }
+    }
+    if (shared) void loadNames();
     document.title = "Join the house · Dish Watch";
   }
 

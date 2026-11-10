@@ -58,6 +58,17 @@ export function join(value) {
   return { login };
 }
 /** @param {unknown} value */
+export function joinOptions(value) {
+  const invite = object(value);
+  return {
+    residents: array(invite.residents, (value) => {
+      const person = object(value);
+      return { id: number(person.id), name: string(person.name), has_account: boolean(person.has_account) };
+    }),
+    expires_at: string(invite.expires_at),
+  };
+}
+/** @param {unknown} value */
 function dispute(value) {
   const d = object(value),
     state = string(d.state);

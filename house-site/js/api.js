@@ -90,6 +90,12 @@ export const redeem = (token, password) =>
     request("/join", { public: true, body: { token, password } }),
     parse.join,
   );
+/** @param {string} token */
+export const getJoinOptions = (token) =>
+  parsed(request("/join-options", { public: true, body: { token } }), parse.joinOptions);
+/** @param {string} token @param {number} residentId @param {string} password */
+export const joinHouse = (token, residentId, password) =>
+  parsed(request("/join-house", { public: true, body: { token, resident_id: residentId, password } }), parse.join);
 /** @param {string|number} id @param {'name'|'dispute'|'settle'|'verdict'} action @param {unknown} body */
 export const act = (id, action, body) =>
   parsed(

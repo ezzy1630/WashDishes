@@ -159,10 +159,23 @@ async function operatorJoin(name) {
   return token;
 }
 
+let sharedInvite;
 async function join(name) {
   const page = await newPage();
-  const token = await operatorJoin(name);
+  const shared = name !== 'milo';
+  if (shared && !sharedInvite) sharedInvite = new URL((await ok('/api/league/house-invite', { method: 'POST', operator: true })).url).hash.slice(1);
+  const token = shared ? sharedInvite : await operatorJoin(name);
   await page.goto(cfg.site + '/join#' + token);
+  if (shared) {
+    const names = page.getByLabel('Your name', { exact: true });
+    await names.selectOption(String(cfg.fixture.residents[name]));
+    if (name === 'theo') {
+      assert(await names.locator(`option[value="${cfg.fixture.residents.wren}"]`).isDisabled());
+      await refused('/house/api/join-house', { method: 'POST', body: {
+        token, resident_id: cfg.fixture.residents.wren, password: 'must-not-reset-password',
+      } }, [409], 'shared invite cannot reset Wren');
+    }
+  }
   await screenshot(page, `join-${name}-opened`);
   const passwords = page.locator('input[type=password]');
   await passwords.first().waitFor();
@@ -176,6 +189,7 @@ async function join(name) {
   const me = await ok('/house/api/me', { token: auth.access_token });
   assert.equal(Number(me.resident?.id ?? me.resident_id ?? me.id), cfg.fixture.residents[name]);
   await screenshot(page, `join-${name}-signed-in`);
+  if (shared) assert.equal(new URL(page.url()).hash, '', 'invite cleared after successful signup');
   return { page, token: auth.access_token, name };
 }
 
