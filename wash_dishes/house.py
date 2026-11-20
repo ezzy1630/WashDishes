@@ -292,6 +292,12 @@ class House:
                     await run_in_threadpool(self.footage.cleanup)
                 except (OSError, sqlite3.Error):
                     logging.getLogger(__name__).exception('Weekly close failed; retrying on the next minute.')
+                try:
+                    # The first full scan of days of segments can outlast the site's
+                    # request timeout on a busy start, so no viewer should pay for it.
+                    await run_in_threadpool(self.footage.inventory)
+                except Exception:
+                    logging.getLogger(__name__).exception('Footage index refresh failed; retrying on the next minute.')
                 await asyncio.sleep(60)
         task = asyncio.create_task(run()) if enabled else None
         try:

@@ -616,7 +616,7 @@ def create_app(config: Config | None = None, *, house_tunnel_port: int = 8788) -
     def live_video(quality: str = "hd"):
         """Smooth video from the local relay; the browser never talks to the camera or go2rtc directly."""
         from urllib.request import urlopen
-        if config.demo or not runtime.camera.relayed or not runtime.camera.relay.running():
+        if config.demo or not runtime.camera.video_available():
             raise HTTPException(503, "Smooth video needs the local go2rtc relay. Frame-by-frame view is still available.")
         try:
             upstream = urlopen(runtime.camera.relay.mp4("kitchen_sd" if quality == "sd" else "kitchen"), timeout=10)

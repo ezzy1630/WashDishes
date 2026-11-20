@@ -53,7 +53,9 @@ class Runtime:
         self.stories = Stories(store, media, self.journal)
         self.proof_thread: threading.Thread | None = None
         self.media_thread: threading.Thread | None = None
-        self.camera = Camera(config.root, store, media, self.offer_frame)
+        # With an external recorder service, this process only analyses frames.
+        role = "analyze" if os.getenv("WASHDISHES_RECORDER") == "external" else "both"
+        self.camera = Camera(config.root, store, media, self.offer_frame, role=role)
         self.notifier = Notifier(config.root, store)
         self.thread: threading.Thread | None = None
         self.notify_thread: threading.Thread | None = None

@@ -13,6 +13,7 @@ def main() -> None:
     serve.add_argument("--port", type=int, default=8787)
     serve.add_argument("--tunnel-port", type=int, default=8788, help="House-only loopback listener for cloudflared")
     serve.add_argument("--host", default="127.0.0.1", help="Loopback by default; use Tailscale Serve for remote access")
+    sub.add_parser("record", help="Record the camera only, as its own service, so app restarts never cut footage")
     sub.add_parser("access-key", help="Print the generated household key locally")
     models = sub.add_parser("models", help="Explicit one-time local model preparation")
     models.add_argument("kind", choices=("faces", "dishes", "teacher", "verifier", "all"), default="all", nargs="?")
@@ -95,6 +96,29 @@ def main() -> None:
             server = uvicorn.Server(uvicorn.Config(create_app(config, house_tunnel_port=args.tunnel_port),
                 proxy_headers=False, log_level='warning'))
             asyncio.run(server.serve(sockets=[tailnet, tunnel]))
+    elif args.command == "record":
+        import signal
+        import threading
+
+        from .camera import Camera
+        from .media import Media
+        from .store import Store
+        store = Store(config.root)
+        camera = Camera(config.root, store, Media(config.root, store), role="record")
+        stopping = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stopping.set())
+        signal.signal(signal.SIGINT, lambda *_: stopping.set())
+        camera.start()
+        print("Recording the kitchen camera into %s" % camera.media.buffer, flush=True)
+        try:
+            last = None
+            while not stopping.wait(60):
+                if camera.message != last:
+                    print(camera.message, flush=True)
+                    last = camera.message
+        finally:
+            camera.stop()
+            store.close()
     elif args.command == "repair-left-out":
         import json
         import os

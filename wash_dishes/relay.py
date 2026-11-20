@@ -33,6 +33,15 @@ class Relay:
     def running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    @staticmethod
+    def reachable() -> bool:
+        """Whether some go2rtc (possibly another process's) answers on the loopback API."""
+        try:
+            with urlopen(f"http://127.0.0.1:{API_PORT}/api", timeout=1):
+                return True
+        except OSError:
+            return False
+
     def ensure(self, streams: dict[str, str]) -> bool:
         """Start or restart go2rtc for these sources; an empty source accepts a local RTSP publisher."""
         fingerprint = json.dumps(streams, sort_keys=True)

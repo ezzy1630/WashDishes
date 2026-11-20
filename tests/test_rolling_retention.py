@@ -4,9 +4,24 @@ from datetime import timedelta
 from wash_dishes.store import Store, utcnow
 
 
+def test_default_retention_keeps_four_full_days_with_a_day_of_margin(store, media, monkeypatch):
+    now = utcnow()
+    monkeypatch.setattr('wash_dishes.media.utcnow', lambda: now)
+    for age in (96.5, 119.9, 120.1):
+        path = media.buffer / f'{age}.ts'
+        path.write_bytes(b'recording')
+        ended = (now - timedelta(hours=age)).timestamp()
+        os.utime(path, (ended, ended))
+
+    media.cleanup()
+
+    assert sorted(p.name for p in media.buffer.glob('*.ts')) == ['119.9.ts', '96.5.ts']
+
+
 def test_four_day_retention_preserves_recent_footage_and_expires_older_segments(store, media, monkeypatch):
     now = utcnow()
     monkeypatch.setattr('wash_dishes.media.utcnow', lambda: now)
+    store.set_settings({'buffer_hours': 96})
     for age in (35, 50, 72, 95.99, 96.01):
         path = media.buffer / f'{age}.ts'
         path.write_bytes(b'recording')
@@ -18,13 +33,13 @@ def test_four_day_retention_preserves_recent_footage_and_expires_older_segments(
     assert sorted(p.name for p in media.buffer.glob('*.ts')) == ['35.ts', '50.ts', '72.ts', '95.99.ts']
 
 
-def test_four_day_retention_can_be_saved_through_settings_and_survives_reopen(authenticated):
-    result = authenticated.patch('/api/settings', json={'buffer_hours': 96, 'storage_limit_gb': 150})
+def test_seven_day_retention_can_be_saved_through_settings_and_survives_reopen(authenticated):
+    result = authenticated.patch('/api/settings', json={'buffer_hours': 168, 'storage_limit_gb': 150})
     assert result.status_code == 200
     root = authenticated.app.state.runtime.store.root
     reopened = Store(root)
     try:
-        assert reopened.settings()['buffer_hours'] == 96
+        assert reopened.settings()['buffer_hours'] == 168
         assert reopened.settings()['storage_limit_gb'] == 150
     finally:
         reopened.close()
