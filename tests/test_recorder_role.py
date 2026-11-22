@@ -82,6 +82,18 @@ def test_recorder_health_follows_its_own_newest_segment(store, media):
     assert not camera._recording(), 'A stalled writer must be restarted, not reported healthy.'
 
 
+def test_recorder_restarts_when_one_segment_never_ends(store, media, monkeypatch):
+    camera = Camera(store.root, store, media, role='record')
+    camera.segment_prefix, camera.segment_index = '123', -1
+    (media.buffer / '123-000000.ts').write_bytes(b'ts')
+    clock = [1000.0]
+    monkeypatch.setattr('wash_dishes.camera.time.monotonic', lambda: clock[0])
+    assert camera._recording()
+    clock[0] += 31
+    os.utime(media.buffer / '123-000000.ts')
+    assert not camera._recording(), 'A segment that is still growing after 30 s means ffmpeg stopped splitting.'
+
+
 def test_unknown_role_is_rejected(store, media):
     with pytest.raises(ValueError):
         Camera(store.root, store, media, role='other')

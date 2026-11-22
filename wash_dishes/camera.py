@@ -33,6 +33,7 @@ class Camera:
         self.role = role
         self.segment_prefix = ""
         self.segment_index = -1
+        self.segment_started = 0.0
         self.lock = threading.RLock()
         self.frame: bytes | None = None
         self.frame_time: str | None = None
@@ -122,9 +123,16 @@ class Camera:
             self.stream_generation = uuid.uuid4().hex
 
     def _recording(self) -> bool:
-        """True while this recorder's newest segment is still being written."""
+        """True while this recorder writes fresh segments and still splits them on time.
+
+        A camera timestamp collapse once left ffmpeg appending to one segment for 95
+        minutes: the file stayed fresh, but no new 10 s segment ever started.
+        """
         while (self.media.buffer / f"{self.segment_prefix}-{self.segment_index + 1:06d}.ts").exists():
             self.segment_index += 1
+            self.segment_started = time.monotonic()
+        if self.segment_index >= 0 and time.monotonic() - self.segment_started > 30:
+            return False
         try:
             return time.time() - (self.media.buffer / f"{self.segment_prefix}-{self.segment_index:06d}.ts").stat().st_mtime < 30
         except FileNotFoundError:
