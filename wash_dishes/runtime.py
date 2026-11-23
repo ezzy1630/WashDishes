@@ -46,7 +46,8 @@ class Runtime:
         self.sequences = SequenceCollection(store, media)
         self.recovery = EvidenceRecovery(store, media, self.dataset)
         self.incidents = Incidents(store, media, self.sequences)
-        self.proofs = Proofs(config.root, store, media)
+        # WASHDISHES_PROOF_REVIEW=1 holds new proofs for the nightly picture check (proof_review.py).
+        self.proofs = Proofs(config.root, store, media, review=os.getenv("WASHDISHES_PROOF_REVIEW") == "1")
         # What the detector saw on every analysed frame, so a put-down can be looked up instead of re-scanned.
         self.journal = Journal(config.root / "journal.db")
         self.filmstrips = Filmstrips(store, media, self.journal, identify=self._identify_arrival)

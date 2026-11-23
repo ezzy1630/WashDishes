@@ -5,6 +5,10 @@ then finds the moment it was put down in the rolling recording (putdown.py) and 
 the empty spot, the person putting it down, the dish left there, and the late photo. A proof is shown
 only while the dish is still out: once it is cleared, resolved or no longer seen, someone dealt with it
 and there is nothing left to send.
+
+With `review` on, a finished proof is saved as 'review' rather than 'ready' and stays off the page
+(its dish shows as a plain still-out card) until the nightly picture check (proof_review.py) passes
+it to 'ready' or marks it 'vetoed'.
 """
 from __future__ import annotations
 
@@ -40,11 +44,12 @@ class Finder(Protocol):
 
 
 class Proofs:
-    def __init__(self, root: Path, store: Store, media, check: Callable | None = None):
+    def __init__(self, root: Path, store: Store, media, check: Callable | None = None, *, review: bool = False):
         self.dir = Path(root) / "proofs"
         self.store, self.media = store, media
         self.lock = threading.Lock()
         self.check = check
+        self.finished = "review" if review else "ready"
         with store.lock, store.conn:
             # Waiting retains its trace while a newer late photo is requested. Terminal failures
             # stay recorded so a bad sequence is not traced repeatedly.
@@ -207,7 +212,7 @@ class Proofs:
                 **{f"{k}_at": found[k]["at"] for k in ("before", "putting", "left")}, "late_at": late_at, **trace}
         if waiting:
             data.update(reason=checked["reason"], retry_at=stamp(now + RETRY))
-        self._save(oid, "waiting" if waiting else "ready", data)
+        self._save(oid, "waiting" if waiting else self.finished, data)
         if identify_selected is not None and not waiting:
             # Identity is optional to a checked proof. If describing someone fails, keep the
             # valid unnamed pictures; the prediction must observe their actual ready state.
@@ -217,7 +222,7 @@ class Proofs:
                 shutil.rmtree(folder, ignore_errors=True)
             elif person_box is None:
                 data["person_box"] = identified
-                self._save(oid, "ready", data)
+                self._save(oid, self.finished, data)
         return oid
 
     # Seen lately and not picked up since. A dish picked up and not seen since is gone from the counter:

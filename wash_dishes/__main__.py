@@ -55,6 +55,10 @@ def main() -> None:
     repair = sub.add_parser("repair-left-out", help="Restore observed left-out dismissals and close stale camera episodes")
     repair.add_argument("--since", help="Recover auto-dismissals deposited since this local date (YYYY-MM-DD); stale opens have no date cutoff")
     repair.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing records")
+    review = sub.add_parser("review-proofs", help="Nightly, with live analysis stopped: a local vision-language model passes or vetoes proofs held for review")
+    review.add_argument("--model-dir", help="Qwen3.5-2B folder (default: <data dir>/vlm/qwen3.5-2b)")
+    review.add_argument("--device", help="cuda or cpu (default: cuda when available)")
+    review.add_argument("--pending", action="store_true", help="Only check: exit 0 when a proof is held for review, 1 otherwise (for systemd ExecCondition)")
     reset = sub.add_parser("league-reset-start", help="Start the league this week and remove pre-start frozen results")
     reset.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing the database")
     args = parser.parse_args()
@@ -200,6 +204,30 @@ def main() -> None:
             Path(args.out).write_text(json.dumps(report, indent=1))
         summary = {key: report[key] and {k: v for k, v in report[key].items() if k not in ("missed", "extra")} for key in ("changes", "left_out", "deployed_left_out")}
         print(json.dumps(summary, indent=1))
+    elif args.command == "review-proofs":
+        import json
+        from pathlib import Path
+
+        from .proof_review import Judge, load_head, review
+        from .store import Store
+        store = Store(config.root)
+        try:
+            exists = store.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='proofs'").fetchone()
+            pending = exists and store.conn.execute("SELECT count(*) FROM proofs WHERE status='review'").fetchone()[0]
+            if args.pending:
+                print(f"{pending or 0} proofs held for review")
+                raise SystemExit(0 if pending else 1)
+            if not pending:
+                print(json.dumps({"reviewed": 0}))
+                return
+            head = load_head(config.root)
+            if head is None:
+                raise SystemExit("No adopted head (models/proof-review-head.json); held proofs stay held.")
+            model = Path(args.model_dir) if args.model_dir else config.root.parent / "vlm" / "qwen3.5-2b"
+            judge = Judge(model, head, device=args.device)
+            print(json.dumps(review(config.root, store, judge), indent=1))
+        finally:
+            store.close()
     elif args.command == "learn-nightly":
         import json
 

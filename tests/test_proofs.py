@@ -518,3 +518,69 @@ def test_house_review_exclusions_remove_shareable_proofs_until_undone(authentica
         assert client.get(f"/api/proofs/{item['id']}/image").status_code == 404
         assert client.post(f"/api/league/visits/{visit['id']}/undo-verdict").status_code == 200
         assert len(client.get('/api/proofs?ready_only=true').json()['items']) == 1
+
+
+class FakeJudge:
+    """Stands in for the vision-language model: a fixed 'using' score, or a NaN failure."""
+
+    def __init__(self, using=0.9, broken=False, head=True):
+        self.score, self.broken, self.seen = using, broken, []
+        self.head = {"threshold": 0.7} if head else None
+
+    def using(self, image):
+        if self.broken:
+            raise ValueError("The model returned NaN.")
+        self.seen.append(image.size)
+        return self.score
+
+
+def test_held_proofs_stay_off_the_page_until_the_picture_check_passes_them(store, media):
+    from wash_dishes.proof_review import review
+    proofs = Proofs(store.root, store, media, review=True)
+    good, carried = late_dish(store, media), late_dish(store, media)
+    proofs.run_once(found)
+    proofs.run_once(found)
+    assert proofs.items() == []
+    assert [p["id"] for p in proofs.out_items()] == [good["id"], carried["id"]]
+
+    # A broken run, or one with no adopted head, neither publishes nor discards anything.
+    for judge in (FakeJudge(broken=True), FakeJudge(head=False)):
+        assert all("error" in r for r in review(store.root, store, judge))
+    assert proofs.items() == [] and len(proofs.out_items()) == 2
+
+    def judged(oid, judge):
+        """Review with only this proof held."""
+        with store.lock, store.conn:
+            store.conn.execute("UPDATE proofs SET status='held' WHERE status='review' AND obligation_id!=?", (oid,))
+        [result] = review(store.root, store, judge)
+        with store.lock, store.conn:
+            store.conn.execute("UPDATE proofs SET status='review' WHERE status='held'")
+        return result
+
+    judge = FakeJudge()
+    passed = judged(good["id"], judge)
+    assert passed["status"] == "ready" and passed["scores"] == {"using": 0.9} and len(judge.seen) == 1
+    assert [p["id"] for p in proofs.items()] == [good["id"]]
+
+    vetoed = judged(carried["id"], FakeJudge(using=0.69))
+    assert vetoed["status"] == "vetoed" and "carried or set down" in vetoed["reason"]
+    # A vetoed proof's dish keeps its still-out card and is never traced again.
+    assert [p["id"] for p in proofs.items()] == [good["id"]]
+    assert carried["id"] in [p["id"] for p in proofs.out_items()]
+    assert proofs.run_once(found) is None
+    reason = store.conn.execute("SELECT json_extract(data,'$.reason') FROM proofs WHERE obligation_id=?", (carried["id"],)).fetchone()[0]
+    assert "carried or set down" in reason
+
+
+def test_without_review_proofs_are_ready_at_once(store, media):
+    proofs = Proofs(store.root, store, media)
+    late_dish(store, media)
+    proofs.run_once(found)
+    assert len(proofs.items()) == 1
+
+
+def test_head_score_matches_a_logistic_model():
+    from wash_dishes.proof_review import head_score
+    head = {"mean": [1.0, 0.0], "scale": [2.0, 1.0], "coef": [1.0, -1.0], "intercept": 0.5}
+    # z = [(3-1)/2, (1-0)/1] = [1, 1]; logit = 1 - 1 + 0.5
+    assert abs(head_score(head, [3.0, 1.0]) - 1 / (1 + 2.718281828459045 ** -0.5)) < 1e-9
