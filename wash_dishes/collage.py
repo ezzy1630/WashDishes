@@ -149,15 +149,28 @@ def render(meta: dict, pictures: dict[str, bytes], name: str | None) -> bytes:
     boxes = [meta['box'],*([meta['late_box']] if meta.get('late_box') else [])]
     bounds = visual.region(boxes,pictures['left'])
     panels = []
-    for key,label in (('before','Before · check this spot'),('putting','Who was at the counter'),
-                      ('left','After'),('late','Seen again · '+_later(meta['late_at']-meta['left_at']))):
+    if meta.get('using_at'):
+        # Found by the footage check (proof_review.py): someone using the dish, then the dish left there.
+        for n,(at,person) in enumerate(zip(meta['using_at'],meta['using_boxes']),1):
+            meta = meta | {f'using{n}_at':at,f'using{n}_box':person}
+        stages = (('before','Before · check this spot'),('using1','Using it'),('using2','Using it'),
+                  ('late','Still here · '+_later(meta['late_at']-meta['using_at'][-1])))
+    else:
+        stages = (('before','Before · check this spot'),('putting','Who was at the counter'),
+                  ('left','After'),('late','Seen again · '+_later(meta['late_at']-meta['left_at'])))
+    for key,label in stages:
         if key not in pictures:
             continue
         box = meta.get('late_box') if key == 'late' else meta['box']
-        people = key == 'putting' and meta.get('person_box')
+        people = meta.get('person_box') if key == 'putting' else meta.get(f'{key}_box') if key.startswith('using') else None
         if people:
             x,y,w,h = people
             box = [x,y,w,min(h,max(w,h*.6))]
+        if key.startswith('using'):
+            # Both outlined: the dish (yellow) and the person using it.
+            panels.append({'jpeg':pictures[key],'label':label,'time':_clock(meta[key+'_at']),
+                           'boxes':[meta['box']],'person_boxes':[box],'people':True})
+            continue
         panels.append({'jpeg':pictures[key],'label':label,'time':_clock(meta[key+'_at']),
                        'boxes':[box or meta['box']],'people':bool(people),'expected':key == 'before',
                        **({} if people else {'region':bounds})})

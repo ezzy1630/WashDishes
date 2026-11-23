@@ -521,55 +521,76 @@ def test_house_review_exclusions_remove_shareable_proofs_until_undone(authentica
 
 
 class FakeJudge:
-    """Stands in for the vision-language model: a fixed 'using' score, or a NaN failure."""
+    """Stands in for the vision-language model: 'using' scores handed out in frame order, or a NaN failure."""
 
-    def __init__(self, using=0.9, broken=False, head=True):
-        self.score, self.broken, self.seen = using, broken, []
-        self.head = {"threshold": 0.7} if head else None
+    def __init__(self, using=(0.95, 0.95), broken=False, head=True):
+        self.scores, self.broken, self.seen = list(using), broken, []
+        self.head = {"threshold": 0.9, "min_frames": 2} if head else None
 
     def using(self, image):
         if self.broken:
             raise ValueError("The model returned NaN.")
         self.seen.append(image.size)
-        return self.score
+        return self.scores[len(self.seen) - 1]
 
 
-def test_held_proofs_stay_off_the_page_until_the_picture_check_passes_them(store, media):
+def footage(*times, asked=None):
+    """Frames with someone in reach of the dish at these seconds after the before picture."""
+    def moments(box, t0, t1):
+        if asked is not None:
+            asked.append((t0, t1))
+        return [{"at": t0 + dt, "person_box": [0.1 * i, 0.1, 0.2, 0.5], "jpeg": jpeg((60, 60 + 20 * i, 60))}
+                for i, dt in enumerate(times)]
+    return moments
+
+
+def test_held_proofs_need_two_pictures_of_someone_using_the_dish(store, media):
     from wash_dishes.proof_review import review
     proofs = Proofs(store.root, store, media, review=True)
-    good, carried = late_dish(store, media), late_dish(store, media)
-    proofs.run_once(found)
-    proofs.run_once(found)
+    used, moved, nobody = late_dish(store, media), late_dish(store, media), late_dish(store, media)
+    for _ in range(3):
+        proofs.run_once(found)
     assert proofs.items() == []
-    assert [p["id"] for p in proofs.out_items()] == [good["id"], carried["id"]]
+    assert len(proofs.out_items()) == 3
+    store.set_suggestion(used["id"], store.add_resident("Casey")["id"], 0.5)
+    assert store.obligation(used["id"])["suggested_resident_id"] is not None
 
     # A broken run, or one with no adopted head, neither publishes nor discards anything.
     for judge in (FakeJudge(broken=True), FakeJudge(head=False)):
-        assert all("error" in r for r in review(store.root, store, judge))
-    assert proofs.items() == [] and len(proofs.out_items()) == 2
+        assert all("error" in r for r in review(store.root, store, judge, footage(5, 30)))
+    assert proofs.items() == [] and len(proofs.out_items()) == 3
 
-    def judged(oid, judge):
+    def judged(oid, judge, moments):
         """Review with only this proof held."""
         with store.lock, store.conn:
             store.conn.execute("UPDATE proofs SET status='held' WHERE status='review' AND obligation_id!=?", (oid,))
-        [result] = review(store.root, store, judge)
+        [result] = review(store.root, store, judge, moments)
         with store.lock, store.conn:
             store.conn.execute("UPDATE proofs SET status='review' WHERE status='held'")
         return result
 
-    judge = FakeJudge()
-    passed = judged(good["id"], judge)
-    assert passed["status"] == "ready" and passed["scores"] == {"using": 0.9} and len(judge.seen) == 1
-    assert [p["id"] for p in proofs.items()] == [good["id"]]
+    # Three frames: one clear use, a second 1 s later (the same moment), a third 40 s on.
+    asked = []
+    passed = judged(used["id"], FakeJudge(using=[0.97, 0.99, 0.92]), footage(5, 6, 45, asked=asked))
+    data = json.loads(store.conn.execute("SELECT data FROM proofs WHERE obligation_id=?", (used["id"],)).fetchone()[0])
+    assert passed["status"] == "ready" and passed["scores"]["using"] == [0.99, 0.92]
+    assert asked == [(data["before_at"], data["late_at"])]
+    assert data["using_at"] == [data["before_at"] + 6, data["before_at"] + 45]
+    assert data["person_box"] == data["using_boxes"][-1] == [0.2, 0.1, 0.2, 0.5]
+    assert (store.root / "proofs" / str(used["id"]) / "using2.jpg").exists()
+    # The guess so far was of whoever put it down, who may only have moved it.
+    assert store.obligation(used["id"])["suggested_resident_id"] is None
+    assert [p["id"] for p in proofs.items()] == [used["id"]]
+    assert proofs.image(used["id"]).startswith(b"\xff\xd8")
 
-    vetoed = judged(carried["id"], FakeJudge(using=0.69))
-    assert vetoed["status"] == "vetoed" and "carried or set down" in vetoed["reason"]
+    # Clear use in one moment only is not enough.
+    vetoed = judged(moved["id"], FakeJudge(using=[0.95, 0.96, 0.5]), footage(5, 7, 60))
+    assert vetoed["status"] == "vetoed" and "only near it or moving it" in vetoed["reason"]
+    assert judged(nobody["id"], FakeJudge(), footage())["reason"] == "nobody was near the dish in the footage"
     # A vetoed proof's dish keeps its still-out card and is never traced again.
-    assert [p["id"] for p in proofs.items()] == [good["id"]]
-    assert carried["id"] in [p["id"] for p in proofs.out_items()]
+    assert [p["id"] for p in proofs.items()] == [used["id"]]
+    assert {moved["id"], nobody["id"]} <= {p["id"] for p in proofs.out_items()}
     assert proofs.run_once(found) is None
-    reason = store.conn.execute("SELECT json_extract(data,'$.reason') FROM proofs WHERE obligation_id=?", (carried["id"],)).fetchone()[0]
-    assert "carried or set down" in reason
 
 
 def test_without_review_proofs_are_ready_at_once(store, media):

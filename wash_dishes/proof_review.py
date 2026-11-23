@@ -1,18 +1,23 @@
-"""A nightly second look at new proof pictures by a small local vision-language model (Qwen3.5-2B).
+"""An hourly look through the footage for someone USING each new proof's dish, by a small local
+vision-language model (Qwen3.5-2B).
 
 With WASHDISHES_PROOF_REVIEW=1 the tracer saves a finished proof as 'review' instead of 'ready',
 so it stays off the house page (the dish still shows as a plain still-out card) until this check
-passes it. Run as `python -m wash_dishes review-proofs` with live analysis stopped: the model needs
-the Jetson's GPU memory. The recorder keeps running.
+passes it to 'ready' or marks it 'vetoed'. Run as `python -m wash_dishes review-proofs` with live
+analysis stopped: the model needs the Jetson's GPU memory. The recorder keeps running.
 
-The question, asked of the put-down picture cropped around the dish (yellow) and person (cyan):
-is that person USING the dish (eating, drinking, cooking, serving) rather than only carrying or
-setting it down? A logistic head on the model's hidden state answers it. Measured on 352
-hand-labelled frames from 2026-11-17..21 on the Jetson's GPU, leaving each day out in turn:
-AUC 0.90 (the model's own A/B answer: 0.85); at the 0.7 threshold it kept 77% of real use and
-rejected 90% of carrying or setting down. A proof below the threshold is 'vetoed' with its score
-and reason, and is never traced again. Asking the model whether the outlined thing is a dish at
-all was tried and dropped: AUC 0.70 on 648 audited boxes, below the CLIP probes already in use.
+The tracer's middle picture is whoever put the dish down, and moving a dish is not using it: the
+house rule is that the last person who used a dish is responsible for it. So this check looks for
+use. From the "before" picture to the late photo it takes the journal's frames with a person within
+reach of the dish's spot (up to three per visit, 40 in all), cuts each from the footage with the dish
+outlined yellow and the person cyan, and asks whether that person is USING the dish (eating,
+drinking, cooking, serving) rather than only handling it. A logistic head on the model's hidden
+state answers. A proof passes only when enough frames at least 3 s apart clear the head's threshold
+(the head's min_frames; 3 adopted); the best two become the collage's middle pictures and the
+latest one's person is the one shown. Measured on 73 dishes from 2026-11-19..21, holding each dish's
+frames out of training: with 3 frames at 0.9, 8 passed; in 4 both pictures show the dish being used,
+in 1 one does and the other is unclear, 2 are unclear, and in 1 the person was handling a different
+pan beside it. With 2 frames 14 passed but 4 had a wrong picture; a single frame was worse still.
 
 On Apple GPUs this model returns NaN in every precision; it runs on CUDA or, slowly, on a CPU.
 """
@@ -21,7 +26,7 @@ from __future__ import annotations
 import io
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from .store import Store, stamp, utcnow
@@ -86,7 +91,8 @@ class Judge:
                                                   tokenize=False, enable_thinking=False)
         inputs = self.processor(text=[text], images=images, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            out = self.model(**inputs, output_hidden_states=bool(layers))
+            # Only the last position's answer is read; the full-vocabulary logits for every token cost ~0.5 GB.
+            out = self.model(**inputs, output_hidden_states=bool(layers), logits_to_keep=1)
         logits = out.logits[0, -1].float()
         p = torch.softmax(logits[self.answers], 0)[0].item()
         if p != p:  # NaN: the numerics broke; never let that pass or veto a proof by accident
@@ -112,19 +118,72 @@ def load_head(root: Path) -> dict | None:
         return None
 
 
-def judge_proof(judge: Judge, folder: Path, data: dict) -> dict:
-    """Score and verdict for one proof folder's put-down picture and its saved boxes."""
+REACH = 0.02          # a person this close to the dish's spot (see putdown._reach) could be using it
+VISIT_GAP = 10.0      # s; frames further apart are separate visits
+MAX_FRAMES = 40
+SPACING = 3.0         # s between the frames that count, so one moment is not counted twice
+WINDOW = 3 * 3600     # s searched after the before picture at most
+NOT_USED = "nobody was seen using the dish in the footage, only near it or moving it"
+NOBODY = "nobody was near the dish in the footage"
+
+
+def footage_moments(journal, buffer: Path) -> Callable[[list[float], float, float], list[dict]]:
+    """Frames from the recording with a person within reach of `box`: {at, person_box, jpeg}, in time order."""
+    import bisect
+
+    from .putdown import _reach, decoded_photos, segments
+
+    def moments(box: list[float], t0: float, t1: float) -> list[dict]:
+        visits, last = [], None
+        for frame in journal.frames(t0, t1):
+            people = [d["box"] for d in frame["detections"] if d["kind"] == "person" and _reach(box, d["box"]) <= REACH]
+            if not people:
+                continue
+            if last is None or frame["at"] - last > VISIT_GAP:
+                visits.append([])
+            visits[-1].append((frame["at"], tuple(min(people, key=lambda p: _reach(box, p)))))
+            last = frame["at"]
+        picks = sorted({pick for v in visits for pick in ((v[0], v[len(v) // 2], v[-1]) if len(v) >= 3 else v)})[:MAX_FRAMES]
+        segs = segments(buffer)
+        ends = [s[1] for s in segs]
+        by_segment: dict[int, list] = {}
+        for at, person in picks:
+            i = bisect.bisect_left(ends, at)
+            if i < len(segs) and segs[i][0] <= at <= segs[i][1]:
+                by_segment.setdefault(i, []).append((at, person))
+        out = []
+        for i, items in by_segment.items():
+            got = decoded_photos(segs[i], sample_times=[at for at, _ in items])
+            for at, person in items:
+                frame_at, jpeg = min(got, key=lambda g: abs(g[0] - at), default=(None, None))
+                if frame_at is not None and abs(frame_at - at) <= 1:
+                    out.append({"at": frame_at, "person_box": list(person), "jpeg": jpeg})
+        return sorted(out, key=lambda f: f["at"])
+    return moments
+
+
+def judge_proof(judge: Judge, data: dict, moments: Callable) -> dict:
+    """Verdict for one proof: the best two spaced use frames, or why there are none."""
     if judge.head is None:
         raise ValueError("No adopted head (models/proof-review-head.json).")
-    using = judge.using(crop((folder / "putting.jpg").read_bytes(), data["box"], data.get("person_box")))
-    threshold = judge.head["threshold"]
-    passed = using >= threshold
-    return {"scores": {"using": round(using, 4)}, "passed": passed, "threshold": threshold,
-            "reason": None if passed else "the put-down picture shows the dish being carried or set down, not used"}
+    threshold, need = judge.head["threshold"], judge.head.get("min_frames", 2)
+    t0 = data["before_at"]
+    frames = moments(data["box"], t0, min(data["late_at"], t0 + WINDOW))
+    for frame in frames:
+        frame["using"] = judge.using(crop(frame["jpeg"], data["box"], frame["person_box"]))
+    picked: list[dict] = []
+    for frame in sorted((f for f in frames if f["using"] >= threshold), key=lambda f: -f["using"]):
+        if all(abs(frame["at"] - p["at"]) >= SPACING for p in picked):
+            picked.append(frame)
+    uses = sorted(picked[:2], key=lambda f: f["at"])
+    passed = len(picked) >= need
+    return {"scores": {"using": [round(f["using"], 4) for f in uses], "frames": len(frames), "clear": len(picked)},
+            "passed": passed, "threshold": threshold, "uses": uses if passed else [],
+            "reason": None if passed else NOBODY if not frames else NOT_USED}
 
 
-def review(root: Path, store: Store, judge: Judge) -> list[dict]:
-    """Judge every proof waiting for review; pass it to 'ready' or mark it 'vetoed'."""
+def review(root: Path, store: Store, judge: Judge, moments: Callable) -> list[dict]:
+    """Judge every proof waiting for review; pass it to 'ready' with its use pictures, or mark it 'vetoed'."""
     folder = Path(root) / "proofs"
     with store.lock:
         rows = store.conn.execute("SELECT obligation_id, data FROM proofs WHERE status='review' ORDER BY obligation_id").fetchall()
@@ -132,18 +191,29 @@ def review(root: Path, store: Store, judge: Judge) -> list[dict]:
     for row in rows:
         oid, data = row["obligation_id"], json.loads(row["data"])
         try:
-            verdict = judge_proof(judge, folder / str(oid), data)
-        except OSError:
-            verdict = {"passed": False, "reason": "the proof pictures are gone", "scores": {}}
+            if not (folder / str(oid)).is_dir():
+                raise OSError("the proof pictures are gone")
+            verdict = judge_proof(judge, data, moments)
+        except OSError as error:
+            # Like the tracer: what cannot be read closes the proof, or it would pause analysis every hour.
+            verdict = {"passed": False, "uses": [], "scores": {}, "reason": f"could not read the footage or pictures ({error})"}
         except ValueError as error:
             # Leave it waiting: a broken run must neither publish nor discard a proof.
             log.warning("Proof %s left for the next review: %s", oid, error)
             results.append({"id": oid, "error": str(error)})
             continue
+        uses = verdict.pop("uses")
         data["review"] = verdict | {"at": stamp(utcnow())}
-        status = "ready" if verdict["passed"] else "vetoed"
-        if not verdict["passed"]:
+        if uses:
+            for n, frame in enumerate(uses, 1):
+                (folder / str(oid) / f"using{n}.jpg").write_bytes(frame["jpeg"])
+            data.update(using_at=[f["at"] for f in uses], using_boxes=[f["person_box"] for f in uses], person_box=uses[-1]["person_box"])
+            # Any name guess so far is of whoever put the dish down, who may only have moved it.
+            store.replace_putdown_samples(oid, {}, "", at=utcnow())
+            store.set_suggestion(oid, None, None)
+        else:
             data["reason"] = verdict["reason"]
+        status = "ready" if uses else "vetoed"
         with store.lock, store.conn:
             store.conn.execute("UPDATE proofs SET status=?, data=? WHERE obligation_id=? AND status='review'", (status, json.dumps(data), oid))
         results.append({"id": oid, "status": status, **verdict})

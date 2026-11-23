@@ -7,8 +7,8 @@ only while the dish is still out: once it is cleared, resolved or no longer seen
 and there is nothing left to send.
 
 With `review` on, a finished proof is saved as 'review' rather than 'ready' and stays off the page
-(its dish shows as a plain still-out card) until the nightly picture check (proof_review.py) passes
-it to 'ready' or marks it 'vetoed'.
+(its dish shows as a plain still-out card) until the hourly footage check (proof_review.py) finds
+someone using the dish and passes it to 'ready' with two pictures of that use, or marks it 'vetoed'.
 """
 from __future__ import annotations
 
@@ -324,7 +324,8 @@ class Proofs:
             if not cached.exists():
                 with self.store.lock:
                     data = json.loads(self.store.conn.execute("SELECT data FROM proofs WHERE obligation_id=?", (obligation_id,)).fetchone()["data"])
-                pictures = {key: (folder / f"{key}.jpg").read_bytes() for key in STAGES}
+                keys = (*STAGES, "using1", "using2") if data.get("using_at") else STAGES
+                pictures = {key: (folder / f"{key}.jpg").read_bytes() for key in keys}
                 meta = data | {"dish": item["dish"], "location": item["location"] or "Kitchen"}
                 tmp = cached.with_suffix(".tmp")
                 tmp.write_bytes(render(meta, pictures, item["resident_name"]))

@@ -55,7 +55,7 @@ def main() -> None:
     repair = sub.add_parser("repair-left-out", help="Restore observed left-out dismissals and close stale camera episodes")
     repair.add_argument("--since", help="Recover auto-dismissals deposited since this local date (YYYY-MM-DD); stale opens have no date cutoff")
     repair.add_argument("--dry-run", action="store_true", help="Print proposed changes without changing records")
-    review = sub.add_parser("review-proofs", help="Nightly, with live analysis stopped: a local vision-language model passes or vetoes proofs held for review")
+    review = sub.add_parser("review-proofs", help="Hourly, with live analysis stopped: a local vision-language model looks in the footage for someone using each held proof's dish")
     review.add_argument("--model-dir", help="Qwen3.5-2B folder (default: <data dir>/vlm/qwen3.5-2b)")
     review.add_argument("--device", help="cuda or cpu (default: cuda when available)")
     review.add_argument("--pending", action="store_true", help="Only check: exit 0 when a proof is held for review, 1 otherwise (for systemd ExecCondition)")
@@ -208,7 +208,8 @@ def main() -> None:
         import json
         from pathlib import Path
 
-        from .proof_review import Judge, load_head, review
+        from .journal import Journal
+        from .proof_review import Judge, footage_moments, load_head, review
         from .store import Store
         store = Store(config.root)
         try:
@@ -225,7 +226,8 @@ def main() -> None:
                 raise SystemExit("No adopted head (models/proof-review-head.json); held proofs stay held.")
             model = Path(args.model_dir) if args.model_dir else config.root.parent / "vlm" / "qwen3.5-2b"
             judge = Judge(model, head, device=args.device)
-            print(json.dumps(review(config.root, store, judge), indent=1))
+            with Journal(config.root / "journal.db") as journal:
+                print(json.dumps(review(config.root, store, judge, footage_moments(journal, config.root / "buffer")), indent=1))
         finally:
             store.close()
     elif args.command == "learn-nightly":
