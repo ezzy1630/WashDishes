@@ -3,7 +3,7 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 np = pytest.importorskip("numpy")
 
-from wash_dishes.alignment import REANCHOR_SECONDS, STABLE_READINGS, ViewAlignment, shift_areas  # noqa: E402
+from wash_dishes.alignment import REANCHOR_SECONDS, STABLE_READINGS, UNMATCHED_SECONDS, ViewAlignment, shift_areas  # noqa: E402
 
 
 def scene(dx=0, dy=0, brightness=1.0, seed=3):
@@ -95,6 +95,46 @@ def test_a_wrong_saved_offset_is_corrected_by_the_reference(tmp_path):
     changes = [view.observe(scene(), now=2 * n) for n in range(STABLE_READINGS)]
     assert changes[-1] == pytest.approx((0.006, -0.097), abs=0.003)
     assert view.offset == pytest.approx((0.0, 0.0), abs=0.003) and view.settled
+
+
+def test_a_re_aimed_camera_stops_counting_on_the_zones_and_a_restart_does_not_forget(tmp_path):
+    # 2026-11-22: the camera was pointed elsewhere. The reference could not read the new view, so
+    # every reading looked like the lights changing and the zones stayed on the window for six days.
+    view = ViewAlignment(tmp_path / "ref.npy")
+    view.set_reference(scene())
+    elsewhere = scene(seed=11)
+    assert view.measure(elsewhere)[2] < 0.05
+    for now in range(0, UNMATCHED_SECONDS // 2, 300):
+        view.observe(elsewhere, now=now)
+    assert view.settled
+    restarted = ViewAlignment(tmp_path / "ref.npy")
+    for now in range(UNMATCHED_SECONDS // 2, UNMATCHED_SECONDS + 1200, 300):
+        restarted.observe(elsewhere, now=now)
+    assert restarted.state == "moved" and restarted.unmatched and not restarted.settled
+    assert restarted.status()["unmatched"]
+    # Put back where the zones were drawn: one clear reading at the offset in use resumes tracking.
+    restarted.observe(scene(), now=UNMATCHED_SECONDS + 1500)
+    assert restarted.state == "aligned" and not restarted.unmatched and restarted.settled
+
+
+def test_the_right_view_keeps_confirming_the_zones_through_a_long_run(tmp_path):
+    view = ViewAlignment(tmp_path / "ref.npy")
+    view.set_reference(scene())
+    for now in range(0, 3 * UNMATCHED_SECONDS, 1800):
+        view.observe(scene(brightness=0.7), now=now)
+    assert view.state == "aligned" and view.settled and not view.unmatched
+
+
+def test_lights_changing_after_a_large_move_do_not_clear_it(tmp_path):
+    view = ViewAlignment(tmp_path / "ref.npy")
+    view.set_reference(scene())
+    for n in range(STABLE_READINGS):
+        view.observe(scene(dx=120, dy=60), now=2 * n)
+    assert view.state == "moved"
+    blank = cv2.imencode(".jpg", np.zeros((400, 720), np.uint8))[1].tobytes()
+    for now in range(100, 100 + 2 * REANCHOR_SECONDS, 30):
+        view.observe(blank, now=now)
+    assert view.reanchors >= 1 and view.state == "moved" and not view.settled
 
 
 def test_areas_shift_but_stay_inside_the_picture():

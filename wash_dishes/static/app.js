@@ -148,7 +148,7 @@ function renderStatus() {
     state.data.mode === "snapshot" ? ["Saved snapshot", "demo", "Isolated review preview; camera and sends are disabled."]
     : state.data.mode === "demo" ? ["Demo data", "demo", "A simulated household. Nothing here is recorded."]
     : state.error ? ["No connection", "late", state.error]
-    : cam.view?.state === "moved" ? ["Camera moved", "late", "It moved too far to follow, so new incidents are paused. See Settings → Camera."]
+    : cam.view?.state === "moved" ? ["Camera moved", "late", `${cam.view.unmatched ? "The view no longer matches the areas" : "It moved too far to follow"}, so new incidents are paused. See Settings → Camera.`]
     : cam.configured && !cam.enabled ? ["Paused", "out", "Monitoring is paused in Settings."]
     : lv || cam.connected ? [set.vision_enabled ? "Watching" : "Detection off", set.vision_enabled ? "ok" : "out", cam.vision_status || cam.message || ""]
     : [cam.configured ? "Camera offline" : "No camera", cam.configured ? "late" : "", cam.message || "Connect the camera in Settings."];

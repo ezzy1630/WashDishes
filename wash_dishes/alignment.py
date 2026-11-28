@@ -17,6 +17,13 @@ someone close to the camera (before the detector saw them) made the reference un
 anchor then read three spurious shifts in ten minutes, each saved into the next anchor, and the
 zones sat 12% too low all night while the reference still read the true position at 0.22 or
 better in every one of 836 checks. The anchor can say the zones are still in place, never move them.
+
+Because the anchor follows whatever the camera shows, it cannot notice the camera being re-aimed.
+On 2026-11-22 at about 19:20 PT the camera was pointed higher; the reference never read the new
+view above 0.09 (median 0.01 over 476 empty frames in five days), so every reading counted as "the
+lights" and the zones sat on the window and the wall for six days. In the right view, empty frames
+read the reference at 0.10 or better at the offset in use about every hour. So the reference must
+keep confirming the offset; after half a day without one, the zones are treated as not matching.
 """
 from __future__ import annotations
 
@@ -39,6 +46,11 @@ ANCHOR_SECONDS = 300
 # After this long with no readable empty view (usually the lights changed), the current view
 # becomes the anchor at the current offset.
 REANCHOR_SECONDS = 600
+# A reference reading this clear, this close to the offset in use, confirms the zones still fit.
+CONFIRM_RESPONSE = 0.10
+CONFIRM_DISTANCE = 0.02
+# With no confirmation for this long (of empty views), the camera is not where the zones were drawn.
+UNMATCHED_SECONDS = 12 * 3600
 WIDTH = 480
 
 
@@ -65,6 +77,9 @@ class ViewAlignment:
         self.last_reading: tuple[float, float] | None = None
         self.unreadable_since: float | None = None
         self.reanchors = 0
+        # When the reference last confirmed the offset; saved with the anchor so restarts keep the clock.
+        self.confirmed_at: float | None = None
+        self.unmatched = False
         if self.path.exists():
             import numpy as np
             try:
@@ -78,6 +93,8 @@ class ViewAlignment:
                     self.anchor, self.anchor_offset = saved["features"], (float(saved["offset"][0]), float(saved["offset"][1]))
                     self.offset = self.anchor_offset
                     self.locked, self.state = True, "aligned"
+                    if "confirmed_at" in saved.files and np.isfinite(saved["confirmed_at"]):
+                        self.confirmed_at = float(saved["confirmed_at"])
                 except (OSError, ValueError, KeyError):
                     self.anchor = None
 
@@ -119,14 +136,15 @@ class ViewAlignment:
         self.readings.clear()
         self.last_reading = None
         self.unreadable_since = None
+        self.confirmed_at, self.unmatched = None, False
         self._set_anchor(features, None)
         return True
 
     def _set_anchor(self, features, now: float | None) -> None:
         import numpy as np
-        offset = self.offset
+        offset, confirmed = self.offset, np.nan if self.confirmed_at is None else self.confirmed_at
         try:
-            self._save(self.anchor_path, lambda handle: np.savez(handle, features=features, offset=np.array(offset)))
+            self._save(self.anchor_path, lambda handle: np.savez(handle, features=features, offset=np.array(offset), confirmed_at=np.array(confirmed)))
         except OSError:
             pass  # The anchor still works for this run; it just will not survive a restart.
         self.anchor, self.anchor_offset, self.anchor_at = features, offset, now
@@ -162,6 +180,7 @@ class ViewAlignment:
         reading = self._shift(self.reference, current)
         if reading is None:
             return None
+        self._check_match(reading, now)
         trusted = reading[2] >= TRUSTED_RESPONSE
         if reading[2] < MIN_RESPONSE:
             reading = self._from_anchor(current) or reading
@@ -173,7 +192,10 @@ class ViewAlignment:
             self.unreadable_since = self.unreadable_since or now
             if now - self.unreadable_since >= REANCHOR_SECONDS:
                 self._set_anchor(current, now)
-                self.locked, self.state = True, "aligned"
+                # Lights changing is no reason to forget the camera was moved.
+                self.locked = True
+                if self.state != "moved":
+                    self.state = "aligned"
                 self.readings.clear()
                 self.last_reading, self.unreadable_since = None, None
                 self.reanchors += 1
@@ -192,7 +214,7 @@ class ViewAlignment:
         if max(abs(target[0]), abs(target[1])) > MAX_SHIFT:
             self.state = "moved"
             return None
-        self.state = "aligned"
+        self.state, self.unmatched = "aligned", False
         if not self.locked:
             # Tracked dishes were last seen in the current picture, whatever the offset is.
             self.offset, self.locked = target, True
@@ -207,6 +229,17 @@ class ViewAlignment:
         self._set_anchor(current, now)
         return change
 
+    def _check_match(self, reading: tuple[float, float, float], now: float) -> None:
+        dx, dy, response = reading
+        if response >= CONFIRM_RESPONSE and max(abs(dx - self.offset[0]), abs(dy - self.offset[1])) <= CONFIRM_DISTANCE:
+            self.confirmed_at = now
+            if self.unmatched:
+                self.unmatched, self.state = False, "aligned"
+        elif self.confirmed_at is None:
+            self.confirmed_at = now  # The clock starts with the first empty view after a new reference.
+        elif not self.unmatched and now - self.confirmed_at >= UNMATCHED_SECONDS:
+            self.unmatched, self.state = True, "moved"
+
     @property
     def settled(self) -> bool:
         """Whether zones match the picture right now. False mid-bump, before the new shift is confirmed."""
@@ -220,7 +253,8 @@ class ViewAlignment:
 
     def status(self) -> dict:
         return {"state": self.state if self.reference is not None else "unknown", "settled": self.settled, "offset": [round(self.offset[0], 4), round(self.offset[1], 4)],
-                "response": None if self.response is None else round(self.response, 3), "has_reference": self.reference is not None}
+                "response": None if self.response is None else round(self.response, 3), "has_reference": self.reference is not None,
+                "unmatched": self.unmatched}
 
 
 def shift_box(box: list[float], dx: float, dy: float) -> list[float]:

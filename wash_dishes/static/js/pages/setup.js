@@ -68,10 +68,10 @@ export function setupPage(main) {
       h("dl", { class: "facts" },
         line("Connection", cam.connected ? (cam.enabled ? "Connected" : "Paused") : cam.configured ? "Offline" : "Not set up", cam.connected ? (cam.enabled ? "ok" : "out") : cam.configured ? "late" : ""),
         line("Last picture", cam.latest_frame_at ? ago(cam.latest_frame_at) : "—"),
-        line("Position", v?.state === "moved" ? "Moved too far. New incidents are paused." : vs ? vs.text : v?.has_reference ? "Where it should be" : "No reference view yet", v?.state === "moved" ? "late" : vs ? "out" : ""),
+        line("Position", v?.state === "moved" ? (v.unmatched ? "Doesn't match the picture the areas were drawn on. New incidents are paused." : "Moved too far. New incidents are paused.") : vs ? vs.text : v?.has_reference ? "Where it should be" : "No reference view yet", v?.state === "moved" ? "late" : vs ? "out" : ""),
         line("Analysis", set.vision_enabled ? `${set.analysis_fps ?? "—"} pictures a second` : "Off", set.vision_enabled ? "" : "out")),
       (cam.vision_status || cam.message) && v?.state !== "moved" ? h("p", { class: "help" }, cam.vision_status || cam.message) : null,
-      v?.state === "moved" ? h("p", { class: "callout late" }, icon("alert", 15), h("span", {}, "Put the camera back, or confirm this view and redraw the counter areas.")) : null,
+      v?.state === "moved" ? h("p", { class: "callout late" }, icon("alert", 15), h("span", {}, "Put the camera back, or redraw the areas on a new picture and save them.")) : null,
       h("div", { class: "row-actions" }, pause, confirm)));
   }
 

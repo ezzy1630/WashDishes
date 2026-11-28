@@ -86,7 +86,8 @@ class Runtime:
             return bool(frame) and self.alignment.set_reference(frame)
 
     def _align(self, jpeg: bytes, people: int) -> None:
-        now = time.monotonic()
+        # Wall time: the last confirmation of the zones is saved and must still mean something after a restart.
+        now = time.time()
         if now - self.last_alignment < 2:
             return
         self.last_alignment = now
@@ -104,7 +105,10 @@ class Runtime:
             dx, dy = self.alignment.offset
             if max(abs(change[0]), abs(change[1])) >= 0.01:
                 self.store.event("camera_shifted", f"Camera shifted slightly; zones now follow it at {dx * 100:+.1f}% across, {dy * 100:+.1f}% down")
-        if self.alignment.state != before and self.alignment.state == "moved":
+        if self.alignment.state != before and self.alignment.state == "moved" and self.alignment.unmatched:
+            self.store.event("camera_moved", "Camera view no longer matches the picture the zones were drawn on (no clear match for 12 hours); "
+                             "new items are paused until it is put back or the areas are redrawn in Setup")
+        elif self.alignment.state != before and self.alignment.state == "moved":
             self.store.event("camera_moved", "Camera view moved too far to follow; new items are paused until it is put back or the new view is confirmed in Setup")
         elif before == "moved" and self.alignment.state == "aligned":
             self.store.event("camera_restored", "Camera view is back where the zones were drawn; detection resumed")
@@ -530,7 +534,9 @@ class Runtime:
         message = self.vision_message
         if self.inventory.capacity_warning:
             message += " Inventory capacity reached; additional dishes need manual logging and review."
-        if self.alignment.state == "moved":
+        if self.alignment.state == "moved" and self.alignment.unmatched:
+            message = "The camera no longer matches the picture the areas were drawn on. New items are paused until it is put back or the areas are redrawn in Setup."
+        elif self.alignment.state == "moved":
             message = "Camera view moved. New items are paused until it is put back or the new view is confirmed in Setup."
         return status | {"vision_status": message, "view": self.alignment.status()}
 
